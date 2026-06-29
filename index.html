@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E1726">
+<title>現金水位儀 · Cash-Weight Gauge</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<style>
+  :root{
+    --ink:#0E1726; --surf:#16223A; --surf2:#1B2A45; --line:#26375A;
+    --text:#E8EEF7; --muted:#8A9CB8; --faint:#5C6F90;
+    --teal:#2DD4BF; --amber:#FBBF24; --orange:#FB923C; --rose:#F43F5E;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --sans:"Inter",system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:var(--ink);color:var(--text);font-family:var(--sans);-webkit-font-smoothing:antialiased}
+  body{max-width:760px;margin:0 auto;padding:22px 18px 60px;min-height:100vh}
+  .eyebrow{font:600 11px/1 var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--faint)}
+  h1{font-size:20px;font-weight:700;letter-spacing:-.01em;margin:6px 0 2px}
+  .sub{color:var(--muted);font-size:12.5px;line-height:1.5}
+
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:20px}
+  #refresh{flex:none;background:var(--surf2);color:var(--text);border:1px solid var(--line);
+    border-radius:11px;padding:9px 13px;font:600 12px var(--sans);cursor:pointer;display:flex;align-items:center;gap:7px;transition:.15s}
+  #refresh:hover{border-color:var(--teal)}
+  #refresh:active{transform:scale(.97)}
+  #refresh.spin svg{animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+
+  /* HERO: gauge + readout */
+  .hero{display:grid;grid-template-columns:96px 1fr;gap:22px;align-items:stretch;
+    background:linear-gradient(160deg,var(--surf),var(--surf2));border:1px solid var(--line);
+    border-radius:20px;padding:22px;position:relative;overflow:hidden}
+  /* signature: vertical cash ladder */
+  .ladder{position:relative;width:96px;border-radius:13px;background:#0c1322;border:1px solid var(--line);overflow:hidden}
+  .ladder .fill{position:absolute;left:0;right:0;bottom:0;transition:height .9s cubic-bezier(.2,.7,.2,1)}
+  .ladder .rung{position:absolute;left:0;right:0;height:1px;background:#0c1322;opacity:.85}
+  .ladder .rlab{position:absolute;right:5px;font:600 9px var(--mono);color:#0c1322;transform:translateY(-50%);mix-blend-mode:difference;color:#cfe}
+  .ladder .cap{position:absolute;left:0;right:0;height:3px;background:#fff;box-shadow:0 0 12px #fff;transition:bottom .9s cubic-bezier(.2,.7,.2,1)}
+  .readout{display:flex;flex-direction:column;justify-content:center;min-width:0}
+  .readlab{font:600 11px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  .big{font:700 64px/0.95 var(--mono);letter-spacing:-.02em;margin:4px 0 2px;font-variant-numeric:tabular-nums}
+  .big small{font-size:26px;color:var(--muted)}
+  .verdict{font-size:13.5px;font-weight:600;margin-top:4px}
+  .asof{font:500 11px var(--mono);color:var(--faint);margin-top:9px}
+
+  /* leg cards */
+  .legs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
+  .card{background:var(--surf);border:1px solid var(--line);border-radius:15px;padding:14px 15px}
+  .card .t{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
+  .card .v{font:700 30px var(--mono);margin:7px 0 2px;font-variant-numeric:tabular-nums}
+  .card .d{font-size:11.5px;color:var(--faint);line-height:1.5}
+  .pill{font:600 10px var(--mono);padding:2px 7px;border-radius:20px;border:1px solid currentColor}
+
+  /* stat strip */
+  .strip{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:12px}
+  .stat{background:var(--surf);border:1px solid var(--line);border-radius:13px;padding:12px 13px}
+  .stat .k{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
+  .stat .x{font:700 19px var(--mono);margin-top:5px;font-variant-numeric:tabular-nums}
+  .stat .y{font-size:10.5px;color:var(--faint);margin-top:2px}
+
+  /* chart */
+  .panel{background:var(--surf);border:1px solid var(--line);border-radius:17px;padding:16px;margin-top:16px}
+  .panel h2{font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+  .panel h2 .lg{font:500 10.5px var(--mono);color:var(--faint);font-weight:500}
+  canvas{width:100%;height:200px;display:block;margin-top:8px}
+
+  details{margin-top:16px;background:var(--surf);border:1px solid var(--line);border-radius:14px;padding:0 16px}
+  summary{cursor:pointer;padding:14px 0;font-size:12.5px;font-weight:600;color:var(--muted);list-style:none;display:flex;justify-content:space-between}
+  summary::-webkit-details-marker{display:none}
+  details[open] summary{color:var(--text)}
+  .fine{font-size:11.5px;line-height:1.7;color:var(--faint);padding-bottom:16px}
+  .fine b{color:var(--muted)}
+  .fine code{font:11px var(--mono);background:#0c1322;padding:1px 5px;border-radius:4px;color:var(--teal)}
+  a{color:var(--teal);text-decoration:none}
+
+  #err{display:none;background:rgba(244,63,94,.1);border:1px solid var(--rose);color:#ffd3da;
+    border-radius:13px;padding:13px 15px;margin-bottom:16px;font-size:12.5px;line-height:1.5}
+  .skel{color:var(--faint)}
+  @media(max-width:430px){.big{font-size:54px}.legs,.strip{grid-template-columns:1fr 1fr}.hero{padding:18px}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="eyebrow">Trend × VIX · Union Logic</div>
+    <h1>現金水位儀</h1>
+    <div class="sub">即時計算「趨勢動能 × 真實VIX」聯集策略<br>建議的現金比重 — 最高可達 100%。</div>
+  </div>
+  <button id="refresh" title="重新抓取最新資料">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 7"/><path d="M21 3v4h-4"/></svg>
+    更新
+  </button>
+</header>
+
+<div id="err"></div>
+
+<section class="hero">
+  <div class="ladder" id="ladder">
+    <div class="fill" id="fill" style="height:0%"></div>
+    <div class="cap" id="cap" style="bottom:0%"></div>
+  </div>
+  <div class="readout">
+    <div class="readlab">建議現金比重</div>
+    <div class="big" id="bigpct"><span class="skel">··</span><small>%</small></div>
+    <div class="verdict" id="verdict">讀取資料中…</div>
+    <div class="asof" id="asof"></div>
+  </div>
+</section>
+
+<div class="legs">
+  <div class="card">
+    <div class="t">趨勢動能腿 <span class="pill" id="mompill">—</span></div>
+    <div class="v" id="momcash">··%</div>
+    <div class="d" id="momdesc">S&P 相對 12 月均線</div>
+  </div>
+  <div class="card">
+    <div class="t">VIX 領先腿 <span class="pill" id="vixpill">—</span></div>
+    <div class="v" id="vixcash">··%</div>
+    <div class="d" id="vixdesc">系統性風險分數</div>
+  </div>
+</div>
+
+<div class="strip">
+  <div class="stat"><div class="k">VIX 現值</div><div class="x" id="svix">··</div><div class="y" id="svixd"></div></div>
+  <div class="stat"><div class="k">S&P / MA12</div><div class="x" id="sma">··</div><div class="y" id="smad"></div></div>
+  <div class="stat"><div class="k">資料更新</div><div class="x" id="sfresh" style="font-size:13px">··</div><div class="y" id="sfreshd"></div></div>
+</div>
+
+<div class="panel">
+  <h2>現金水位歷史 <span class="lg">近 8 年 · 面積=現金% · 線=S&P</span></h2>
+  <canvas id="chart" width="720" height="200"></canvas>
+</div>
+
+<details>
+  <summary><span>運作邏輯與誠實邊界</span><span>＋</span></summary>
+  <div class="fine">
+    <p><b>邏輯(已回測,非黑箱):</b> 兩腿各算建議現金,取較高者(聯集)。<b>趨勢腿</b>= S&P 對 12 月均線乖離,跌破階梯式拉現金;<b>VIX 腿</b>= 真實 VIX 的水位+36月z-score+月內飆升組成風險分數,越高越拉。階梯:<code>0/24/42/66/90/100%</code>。參數 <code>MA12 / lvl1.2</code> 由 1990–2010 樣本內選出,2011–2026 樣本外驗證 Calmar 1.25 &gt; 買進持有 0.75,且 2020 把 -15% 壓到 -1%。</p>
+    <p style="margin-top:9px"><b>100% 現金</b> 僅在極端恐慌觸發 — 回測中只出現於 2001/2002/2008/2009/2020。</p>
+    <p style="margin-top:9px"><b>真實資料,持續更新:</b> VIX 來自 CBOE(每日),S&P 來自 Shiller(每月),皆即時抓取自公開資料庫,離線時顯示上次抓到的值。</p>
+    <p style="margin-top:9px"><b>誠實邊界:</b> ①月頻訊號,非日內;②VIX 是為「S&P/美股」校準的恐慌指標 — <b>不可直接套用到黃金或其他標的</b>,參數需重新校準;③缺真實 HY-OAS 信用利差,純信用事件預警未納入;④此工具僅供研究,非投資建議,盈虧自負。</p>
+    <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a></p>
+  </div>
+</details>
+
+<script>
+const VIX_URL="https://raw.githubusercontent.com/datasets/finance-vix/main/data/vix-daily.csv";
+const SP_URL ="https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv";
+const LS="cwgauge_v1";
+
+const $=id=>document.getElementById(id);
+const ym=d=>d.slice(0,7);
+function parseCSV(t){const L=t.trim().split(/\r?\n/);const H=L[0].split(",");return L.slice(1).map(r=>{const c=r.split(",");const o={};H.forEach((h,i)=>o[h.trim()]=c[i]);return o;});}
+
+// ---- validated 100%-cap union logic (mirrors Python exactly) ----
+function momCash(mom){let c=0; if(mom<0)c=.30; if(mom<-.03)c=.60; if(mom<-.08)c=.90; if(mom<-.13)c=1.0; return c;}
+function vixCash(r){let c=0; if(r>.5)c=.24; if(r>1.0)c=.42; if(r>1.8)c=.66; if(r>2.6)c=.90; if(r>3.4)c=1.0; return c;}
+function mean(a){return a.reduce((x,y)=>x+y,0)/a.length;}
+function sstd(a){const m=mean(a);return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2,0)/(a.length-1));}
+
+function buildVixMonthly(rows){
+  const g={};
+  for(const r of rows){const d=r.DATE,cl=parseFloat(r.CLOSE);if(!d||isNaN(cl))continue;const k=ym(d);(g[k]=g[k]||[]).push(cl);}
+  const months=Object.keys(g).sort();
+  return months.map(k=>{const a=g[k];return{ym:k,close:a[a.length-1],mean:mean(a),max:Math.max(...a),n:a.length};});
+}
+// vix risk score over monthly series (rolling 36 z, rolling 6 mean) — pandas faithful
+function vixRiskSeries(vm){
+  const closes=vm.map(x=>x.close);
+  return vm.map((x,i)=>{
+    const lvl=Math.max((x.close-16)/9,0);
+    let z=0; if(i>=35){const w=closes.slice(i-35,i+1);const sd=sstd(w);z=sd>0?(x.close-mean(w))/sd:0;}
+    let sp=0; if(i>=5){sp=(x.max-mean(closes.slice(i-5,i+1)))/12;}
+    return 0.55*Math.max(lvl,0)+0.30*Math.max(z,0)+0.15*Math.max(sp,0);
+  });
+}
+function spMonthly(rows){
+  return rows.map(r=>({ym:ym(r.Date),price:parseFloat(r.SP500)})).filter(x=>x.price>0&&x.ym);
+}
+
+function compute(spRows,vixRows){
+  const sp=spMonthly(spRows);
+  const vm=buildVixMonthly(vixRows);
+  const risk=vixRiskSeries(vm);
+  // S&P momentum series (SMA12)
+  const spSig=sp.map((x,i)=>{
+    if(i<11)return null;
+    const sma=mean(sp.slice(i-11,i+1).map(p=>p.price));
+    return {ym:x.ym,price:x.price,sma,mom:x.price/sma-1};
+  });
+  // latest legs (fast VIX leg can be a partial current month)
+  const vLast=vm[vm.length-1], rLast=risk[risk.length-1];
+  const sLast=[...spSig].reverse().find(x=>x);
+  const momC=momCash(sLast.mom), vixC=vixCash(rLast), uni=Math.max(momC,vixC);
+  // history (intersection by month) for chart, last 96
+  const riskMap={}; vm.forEach((x,i)=>riskMap[x.ym]=risk[i]);
+  const hist=[];
+  for(const s of spSig){if(!s)continue;const rk=riskMap[s.ym];if(rk==null)continue;
+    hist.push({ym:s.ym,price:s.price,cash:Math.max(momCash(s.mom),vixCash(rk))});}
+  return {sLast,vLast,rLast,momC,vixC,uni,hist:hist.slice(-96)};
+}
+
+// ---- rendering ----
+function riskColor(c){ // 0..1 cash -> color
+  const stops=[[0,[45,212,191]],[.25,[251,191,36]],[.55,[251,146,60]],[1,[244,63,94]]];
+  for(let i=0;i<stops.length-1;i++){const[a,ca]=stops[i],[b,cb]=stops[i+1];
+    if(c<=b){const t=(c-a)/(b-a||1);return`rgb(${ca.map((v,j)=>Math.round(v+(cb[j]-v)*t)).join(",")})`;}}
+  return"rgb(244,63,94)";
+}
+function verdictText(c){
+  if(c>=1)return"滿手現金 · 極端恐慌";
+  if(c>=.66)return"大幅避險 · 高風險";
+  if(c>=.42)return"中度避險 · 轉弱";
+  if(c>=.20)return"小幅避險 · 警戒";
+  if(c>0)return"輕微減碼";
+  return"全額投資 · 趨勢健康";
+}
+
+function paintLadder(c){
+  const fill=$("fill"),cap=$("cap"),lad=$("ladder");
+  // remove old rungs/labels
+  lad.querySelectorAll(".rung,.rlab").forEach(e=>e.remove());
+  fill.style.height=(c*100)+"%";
+  fill.style.background=`linear-gradient(0deg,#2DD4BF 0%, #FBBF24 45%, #FB923C 70%, #F43F5E 100%)`;
+  fill.style.clipPath="none";
+  cap.style.bottom=(c*100)+"%";
+  cap.style.display=c>0?"block":"none";
+  [.24,.42,.66,.90].forEach(f=>{
+    const r=document.createElement("div");r.className="rung";r.style.bottom=(f*100)+"%";lad.appendChild(r);
+  });
+}
+function drawChart(hist){
+  const cv=$("chart"),dpr=window.devicePixelRatio||1;
+  const W=cv.clientWidth,H=200;cv.width=W*dpr;cv.height=H*dpr;
+  const x=cv.getContext("2d");x.scale(dpr,dpr);x.clearRect(0,0,W,H);
+  if(!hist.length)return;
+  const pad={l:6,r:6,t:10,b:18};
+  const n=hist.length, iw=W-pad.l-pad.r, ih=H-pad.t-pad.b;
+  const px=i=>pad.l+iw*i/(n-1);
+  // cash area (0..1 -> bottom..top)
+  const cy=c=>pad.t+ih*(1-c);
+  x.beginPath();x.moveTo(px(0),cy(0));
+  hist.forEach((d,i)=>x.lineTo(px(i),cy(d.cash)));
+  x.lineTo(px(n-1),cy(0));x.closePath();
+  const g=x.createLinearGradient(0,pad.t,0,pad.t+ih);
+  g.addColorStop(0,"rgba(244,63,94,.45)");g.addColorStop(.4,"rgba(251,146,60,.30)");g.addColorStop(1,"rgba(45,212,191,.05)");
+  x.fillStyle=g;x.fill();
+  // cash outline
+  x.beginPath();hist.forEach((d,i)=>i?x.lineTo(px(i),cy(d.cash)):x.moveTo(px(i),cy(d.cash)));
+  x.strokeStyle="rgba(251,191,36,.8)";x.lineWidth=1.3;x.stroke();
+  // S&P line (log-normalized to panel)
+  const ps=hist.map(d=>Math.log(d.price));const mn=Math.min(...ps),mx=Math.max(...ps);
+  const sy=v=>pad.t+ih*(1-(v-mn)/(mx-mn||1))*.85-2;
+  x.beginPath();hist.forEach((d,i)=>{const y=sy(Math.log(d.price));i?x.lineTo(px(i),y):x.moveTo(px(i),y);});
+  x.strokeStyle="rgba(232,238,247,.55)";x.lineWidth=1.4;x.stroke();
+  // year ticks
+  x.fillStyle="#5C6F90";x.font="10px ui-monospace,monospace";x.textAlign="center";
+  let lastY="";hist.forEach((d,i)=>{const y=d.ym.slice(0,4);if(y!==lastY&&y%2===0){lastY=y;x.fillText("'"+y.slice(2),px(i),H-5);}});
+}
+
+function render(data,fetchedAt,fromCache){
+  const {sLast,vLast,rLast,momC,vixC,uni,hist}=data;
+  const pct=Math.round(uni*100);
+  $("bigpct").innerHTML=pct+'<small>%</small>';
+  $("bigpct").style.color=riskColor(uni);
+  paintLadder(uni);
+  const vt=verdictText(uni);$("verdict").textContent=vt;$("verdict").style.color=riskColor(uni);
+
+  $("momcash").textContent=Math.round(momC*100)+"%";$("momcash").style.color=riskColor(momC);
+  $("vixcash").textContent=Math.round(vixC*100)+"%";$("vixcash").style.color=riskColor(vixC);
+  $("momdesc").innerHTML=`乖離 ${(sLast.mom*100).toFixed(1)}% · ${sLast.ym}`;
+  $("vixdesc").innerHTML=`風險分數 ${rLast.toFixed(2)} · ${vLast.ym}${vLast.n<15?" (進行中)":""}`;
+  const drv=uni===0?"中性":(vixC>=momC?"VIX主導":"趨勢主導");
+  $("mompill").textContent=momC>=vixC&&uni>0?"主導":"";$("mompill").style.color=riskColor(momC);
+  $("vixpill").textContent=vixC>momC&&uni>0?"主導":"";$("vixpill").style.color=riskColor(vixC);
+
+  $("svix").textContent=vLast.close.toFixed(1);$("svix").style.color=vLast.close>25?"var(--orange)":vLast.close>18?"var(--amber)":"var(--teal)";
+  $("svixd").textContent=vLast.ym+(vLast.n<15?" 進行中":"");
+  const above=sLast.price>=sLast.sma;
+  $("sma").textContent=(above?"+":"")+(sLast.mom*100).toFixed(1)+"%";$("sma").style.color=above?"var(--teal)":"var(--rose)";
+  $("smad").textContent=above?"站上均線":"跌破均線";
+  const dt=new Date(fetchedAt);
+  $("sfresh").textContent=fromCache?"離線快取":"剛剛";
+  $("sfreshd").textContent=`VIX ${vLast.ym} · S&P ${sLast.ym}`;
+  $("asof").textContent=`資料 · VIX→${vLast.close.toFixed(1)} (${vLast.ym}) · S&P (${sLast.ym})`+(fromCache?" · 離線":"");
+  drawChart(hist);
+}
+
+async function load(force){
+  const btn=$("refresh");btn.classList.add("spin");$("err").style.display="none";
+  try{
+    const opt=force?{cache:"reload"}:{};
+    const [vt,st]=await Promise.all([
+      fetch(VIX_URL,opt).then(r=>{if(!r.ok)throw 0;return r.text()}),
+      fetch(SP_URL,opt).then(r=>{if(!r.ok)throw 0;return r.text()})
+    ]);
+    const data=compute(parseCSV(st),parseCSV(vt));
+    const at=Date.now();
+    try{localStorage.setItem(LS,JSON.stringify({vt,st,at}));}catch(e){}
+    render(data,at,false);
+  }catch(e){
+    // offline fallback: last good data
+    const raw=localStorage.getItem(LS);
+    if(raw){const{vt,st,at}=JSON.parse(raw);render(compute(parseCSV(st),parseCSV(vt)),at,true);
+      $("err").style.display="block";$("err").textContent="目前離線或來源無回應 — 顯示上次抓到的資料。連線後按「更新」即可刷新。";}
+    else{$("err").style.display="block";$("err").textContent="無法抓取資料,且尚無快取。請確認網路後重試。";}
+  }finally{btn.classList.remove("spin");}
+}
+
+$("refresh").onclick=()=>load(true);
+// auto-refresh when returning to app if data >6h old
+document.addEventListener("visibilitychange",()=>{
+  if(document.visibilityState==="visible"){
+    const raw=localStorage.getItem(LS);
+    if(!raw||Date.now()-JSON.parse(raw).at>216e5)load(false);
+  }
+});
+// instant paint from cache, then network
+(function(){const raw=localStorage.getItem(LS);
+  if(raw){try{const{vt,st,at}=JSON.parse(raw);render(compute(parseCSV(st),parseCSV(vt)),at,true);}catch(e){}}
+  load(false);
+})();
+if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
+</script>
+</body>
+</html>

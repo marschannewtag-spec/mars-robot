@@ -1,0 +1,17 @@
+{
+  "name": "現金水位儀 · Cash-Weight Gauge",
+  "short_name": "現金水位儀",
+  "description": "即時計算「趨勢動能 × 真實VIX」聯集策略建議的現金比重，最高可達 100%。資料即時抓取自 CBOE 與 Shiller 公開資料庫。",
+  "lang": "zh-Hant",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E1726",
+  "theme_color": "#0E1726",
+  "categories": ["finance", "productivity", "utilities"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
