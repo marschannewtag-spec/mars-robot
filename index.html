@@ -42,6 +42,11 @@
   .ladder .cap{position:absolute;left:0;right:0;height:3px;background:#fff;box-shadow:0 0 12px #fff;transition:bottom .9s cubic-bezier(.2,.7,.2,1)}
   .readout{display:flex;flex-direction:column;justify-content:center;min-width:0}
   .readlab{font:600 11px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
+  .allin{display:none;margin-left:8px;font:700 10px var(--mono);letter-spacing:.08em;
+    color:#04130d;background:var(--teal);padding:3px 8px;border-radius:20px;
+    box-shadow:0 0 0 0 rgba(45,212,191,.6);animation:pulse 2.4s infinite}
+  .allin.on{display:inline-block}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(45,212,191,.5)}70%{box-shadow:0 0 0 7px rgba(45,212,191,0)}100%{box-shadow:0 0 0 0 rgba(45,212,191,0)}}
   .big{font:700 64px/0.95 var(--mono);letter-spacing:-.02em;margin:4px 0 2px;font-variant-numeric:tabular-nums}
   .big small{font-size:26px;color:var(--muted)}
   .verdict{font-size:13.5px;font-weight:600;margin-top:4px}
@@ -122,7 +127,7 @@
     <div class="cap" id="cap" style="bottom:0%"></div>
   </div>
   <div class="readout">
-    <div class="readlab">建議現金比重</div>
+    <div class="readlab">建議現金比重 <span class="allin" id="allin">✓ ALL-IN 全額投資</span></div>
     <div class="big" id="bigpct"><span class="skel">··</span><small>%</small></div>
     <div class="verdict" id="verdict">讀取資料中…</div>
     <div class="asof" id="asof"></div>
@@ -170,7 +175,7 @@
   <summary><span>運作邏輯與誠實邊界</span><span>＋</span></summary>
   <div class="fine">
     <p><b>邏輯(已回測,非黑箱):</b> 兩腿各算建議現金,取較高者(聯集)。<b>趨勢腿</b>= S&P 對 12 月均線乖離,跌破階梯式拉現金;<b>VIX 腿</b>= 真實 VIX 的水位+36月z-score+月內飆升組成風險分數,越高越拉。階梯:<code>0/24/42/66/90/100%</code>。參數 <code>MA12 / lvl1.2</code> 由 1990–2010 樣本內選出,2011–2026 樣本外驗證 Calmar 1.25 &gt; 買進持有 0.75,且 2020 把 -15% 壓到 -1%。</p>
-    <p style="margin-top:9px"><b>100% 現金</b> 僅在極端恐慌觸發 — 回測中只出現於 2001/2002/2008/2009/2020。</p>
+    <p style="margin-top:9px"><b>ALL-IN 的意思:</b> 現金 0% = 沒有防禦性現金、<b>滿倉做多(100% 投入)</b>,對應強勢通「降現金到 0% 吃漲勢」的行為。<b>不含槓桿/融資</b>,訊號出現也<b>不代表該在滿倉之上再加碼</b> — 那超出已驗證範圍。</p>
     <p style="margin-top:9px"><b>真實資料,持續更新:</b> VIX 來自 CBOE(每日),S&P 來自 Shiller(每月),皆即時抓取自公開資料庫,離線時顯示上次抓到的值。</p>
     <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②缺真實 HY-OAS 信用利差,純信用事件預警未納入;③僅供研究,非投資建議,盈虧自負。</p>
     <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a></p>
@@ -337,6 +342,7 @@ function render(data,fetchedAt,fromCache){
   $("bigpct").style.color=riskColor(uni);
   paintLadder(uni);
   const vt=verdictText(uni);$("verdict").textContent=vt;$("verdict").style.color=riskColor(uni);
+  $("allin").classList.toggle("on", uni===0);
 
   $("momcash").textContent=Math.round(momC*100)+"%";$("momcash").style.color=riskColor(momC);
   $("vixcash").textContent=Math.round(vixC*100)+"%";$("vixcash").style.color=riskColor(vixC);
