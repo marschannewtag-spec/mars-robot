@@ -68,6 +68,24 @@
   .panel h2 .lg{font:500 10.5px var(--mono);color:var(--faint);font-weight:500}
   canvas{width:100%;height:200px;display:block;margin-top:8px}
 
+  /* drawdown odds card */
+  .ddnow{display:flex;justify-content:space-between;align-items:center;gap:14px;margin:10px 0 14px}
+  .ddlab{font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+  .ddbig{font:700 36px var(--mono);font-variant-numeric:tabular-nums;line-height:1;margin-top:4px}
+  .ddverdict{font-size:12px;line-height:1.55;color:var(--muted);max-width:60%;text-align:right}
+  .oddrows{display:flex;flex-direction:column;gap:4px}
+  .oddrow{display:grid;grid-template-columns:48px 1fr 70px;align-items:center;gap:10px;
+    padding:5px 8px;border-radius:8px;opacity:.5;transition:.3s}
+  .oddrow.hit{opacity:1}
+  .oddrow.cur{background:rgba(251,191,36,.10);outline:1px solid rgba(251,191,36,.4)}
+  .oddrow .od{font:700 13px var(--mono);color:var(--text)}
+  .oddrow .obar{height:9px;background:#0c1322;border-radius:5px;overflow:hidden}
+  .oddrow .obar i{display:block;height:100%;border-radius:5px;
+    background:linear-gradient(90deg,#2DD4BF,#FBBF24,#FB923C,#F43F5E)}
+  .oddrow .oev{font:600 11px var(--mono);color:var(--muted);text-align:right}
+  .oddnote{font-size:11px;line-height:1.6;color:var(--faint);margin-top:12px}
+  .oddnote b{color:var(--muted)}
+
   details{margin-top:16px;background:var(--surf);border:1px solid var(--line);border-radius:14px;padding:0 16px}
   summary{cursor:pointer;padding:14px 0;font-size:12.5px;font-weight:600;color:var(--muted);list-style:none;display:flex;justify-content:space-between}
   summary::-webkit-details-marker{display:none}
@@ -135,13 +153,26 @@
   <canvas id="chart" width="720" height="200"></canvas>
 </div>
 
+<div class="panel">
+  <h2>回撤賠率脈絡 <span class="lg">距高點 · 基準率 since 1928</span></h2>
+  <div class="ddnow">
+    <div>
+      <div class="ddlab">目前距高點</div>
+      <div class="ddbig" id="ddbig">··</div>
+    </div>
+    <div class="ddverdict" id="ddverdict">讀取中…</div>
+  </div>
+  <div class="oddrows" id="oddrows"></div>
+  <div class="oddnote">「每 N 年」為 1928 以來長期平均、<b>非時鐘</b> — 回撤會叢聚,別把平均讀成「快輪到了」。當前跌幅以月頻 S&P 估算。</div>
+</div>
+
 <details>
   <summary><span>運作邏輯與誠實邊界</span><span>＋</span></summary>
   <div class="fine">
     <p><b>邏輯(已回測,非黑箱):</b> 兩腿各算建議現金,取較高者(聯集)。<b>趨勢腿</b>= S&P 對 12 月均線乖離,跌破階梯式拉現金;<b>VIX 腿</b>= 真實 VIX 的水位+36月z-score+月內飆升組成風險分數,越高越拉。階梯:<code>0/24/42/66/90/100%</code>。參數 <code>MA12 / lvl1.2</code> 由 1990–2010 樣本內選出,2011–2026 樣本外驗證 Calmar 1.25 &gt; 買進持有 0.75,且 2020 把 -15% 壓到 -1%。</p>
     <p style="margin-top:9px"><b>100% 現金</b> 僅在極端恐慌觸發 — 回測中只出現於 2001/2002/2008/2009/2020。</p>
     <p style="margin-top:9px"><b>真實資料,持續更新:</b> VIX 來自 CBOE(每日),S&P 來自 Shiller(每月),皆即時抓取自公開資料庫,離線時顯示上次抓到的值。</p>
-    <p style="margin-top:9px"><b>誠實邊界:</b> ①月頻訊號,非日內;②VIX 是為「S&P/美股」校準的恐慌指標 — <b>不可直接套用到黃金或其他標的</b>,參數需重新校準;③缺真實 HY-OAS 信用利差,純信用事件預警未納入;④此工具僅供研究,非投資建議,盈虧自負。</p>
+    <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②缺真實 HY-OAS 信用利差,純信用事件預警未納入;③僅供研究,非投資建議,盈虧自負。</p>
     <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a></p>
   </div>
 </details>
@@ -195,12 +226,15 @@ function compute(spRows,vixRows){
   const vLast=vm[vm.length-1], rLast=risk[risk.length-1];
   const sLast=[...spSig].reverse().find(x=>x);
   const momC=momCash(sLast.mom), vixC=vixCash(rLast), uni=Math.max(momC,vixC);
+  // current drawdown from all-time monthly peak (real S&P)
+  const peakPx=Math.max(...sp.map(x=>x.price));
+  const ddPeak=sLast.price/peakPx-1;
   // history (intersection by month) for chart, last 96
   const riskMap={}; vm.forEach((x,i)=>riskMap[x.ym]=risk[i]);
   const hist=[];
   for(const s of spSig){if(!s)continue;const rk=riskMap[s.ym];if(rk==null)continue;
     hist.push({ym:s.ym,price:s.price,cash:Math.max(momCash(s.mom),vixCash(rk))});}
-  return {sLast,vLast,rLast,momC,vixC,uni,hist:hist.slice(-96)};
+  return {sLast,vLast,rLast,momC,vixC,uni,ddPeak,peakPx,hist:hist.slice(-96)};
 }
 
 // ---- rendering ----
@@ -261,6 +295,41 @@ function drawChart(hist){
   let lastY="";hist.forEach((d,i)=>{const y=d.ym.slice(0,4);if(y!==lastY&&y%2===0){lastY=y;x.fillText("'"+y.slice(2),px(i),H-5);}});
 }
 
+// Bilello intra-year decline base rates (daily, S&P 500 since 1928)
+const BILELLO=[
+  {d:5, pct:95, every:"1.1 年"},
+  {d:10,pct:64, every:"1.6 年"},
+  {d:15,pct:40, every:"2.5 年"},
+  {d:20,pct:27, every:"4 年"},
+  {d:25,pct:21, every:"5 年"},
+  {d:30,pct:10, every:"10 年"},
+  {d:40,pct:6,  every:"16 年"},
+  {d:50,pct:2,  every:"48 年"}
+];
+function ddColor(depth){ // depth = positive % magnitude
+  if(depth<5)return"var(--teal)"; if(depth<10)return"var(--amber)";
+  if(depth<20)return"var(--orange)"; return"var(--rose)";
+}
+function renderOdds(ddPeak){
+  const depth=Math.max(0,-ddPeak*100);
+  $("ddbig").textContent=(depth<0.05?"創新高":"-"+depth.toFixed(1)+"%");
+  $("ddbig").style.color=ddColor(depth);
+  const reached=BILELLO.filter(b=>depth>=b.d);
+  const cur=reached.length?reached[reached.length-1]:null;
+  const next=BILELLO.find(b=>depth<b.d);
+  let v;
+  if(!cur) v=`接近高點。-5% 級回檔幾乎每年都有,屬常態,不必空手等深跌。`;
+  else v=`這種深度歷史上約<b>每 ${cur.every}</b>一次。${next?`再深的 -${next.d}% 每 ${next.every}才一次,屬較稀有的買點。`:""}`;
+  $("ddverdict").innerHTML=v;
+  $("oddrows").innerHTML=BILELLO.map(b=>{
+    const hit=depth>=b.d, isCur=cur&&b.d===cur.d;
+    return `<div class="oddrow ${hit?'hit':''} ${isCur?'cur':''}">
+      <span class="od">-${b.d}%</span>
+      <span class="obar"><i style="width:${b.pct}%"></i></span>
+      <span class="oev">每 ${b.every}</span></div>`;
+  }).join("");
+}
+
 function render(data,fetchedAt,fromCache){
   const {sLast,vLast,rLast,momC,vixC,uni,hist}=data;
   const pct=Math.round(uni*100);
@@ -287,6 +356,7 @@ function render(data,fetchedAt,fromCache){
   $("sfreshd").textContent=`VIX ${vLast.ym} · S&P ${sLast.ym}`;
   $("asof").textContent=`資料 · VIX→${vLast.close.toFixed(1)} (${vLast.ym}) · S&P (${sLast.ym})`+(fromCache?" · 離線":"");
   drawChart(hist);
+  renderOdds(data.ddPeak);
 }
 
 async function load(force){
