@@ -186,8 +186,8 @@
   <summary><span>⚙ 資料來源(預設每日 · 免金鑰 · 自動退回)</span><span>＋</span></summary>
   <div class="fine">
     <p>趨勢腿資料來源,由新鮮到穩定<b>自動逐層退回</b>,不會斷線:</p>
-    <p style="margin-top:8px">① <b>每日 · Stooq</b>(預設、<b>免金鑰</b>)— 15 年老牌資料商,每日 EOD,讓趨勢腿反映到昨收、不再卡月底。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要當日盤中即時、且願意自備免費 key 才需要。<br>③ <b>月頻 · Shiller</b>(最終退回)— 前兩者都抓不到時的保底,永遠可用。</p>
-    <p style="margin-top:9px;color:var(--faint)">目前實際使用的來源會顯示在上方「資料更新」欄。Stooq 為瀏覽器跨網域(CORS)抓取,若你的瀏覽器擋下,會自動退回月頻——功能不會壞,只是少了每日新鮮度。SPY/SPX/Shiller 的「乖離比值」相同,換來源不影響訊號。</p>
+    <p style="margin-top:8px">① <b>每日 · Yahoo ^GSPC</b>(預設、<b>免金鑰</b>)— 經 allorigins CORS 代理抓 Yahoo 指數,讓趨勢腿反映到昨收。<br>② <b>每日 · Stooq</b>(免金鑰、直連)— Yahoo 代理失敗時試;部分瀏覽器可。<br>③ <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>④ <b>月頻 · Shiller</b>(最終退回)— 全部失敗時的保底,永遠可用。</p>
+    <p style="margin-top:9px;color:var(--faint)">目前實際來源顯示在上方「資料更新」欄。①②為跨網域抓取,若你的瀏覽器/代理擋下會自動往下退,功能不會壞,只是少了每日新鮮度。代理(allorigins)是第三方免費服務,偶有不穩;要最穩定可填金鑰(③),或自架 Cloudflare Worker 當私有代理(我可幫你寫)。</p>
     <div style="display:flex;gap:8px;margin-top:13px">
       <input id="apikey" type="text" autocomplete="off" spellcheck="false" placeholder="(選填)Twelve Data API key — 要盤中即時才需要" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
       <button id="savekey" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
@@ -242,6 +242,16 @@ function spFromTwelveData(json){
   const months=Object.keys(byMonth).sort();
   return months.map(k=>({ym:k,price:byMonth[k]}));
 }
+// Build monthly [{ym,price}] from Yahoo chart JSON (^GSPC daily) — 經 CORS 代理,免金鑰
+function spFromYahoo(json){
+  const r=json&&json.chart&&json.chart.result&&json.chart.result[0];
+  if(!r||!r.timestamp||!r.indicators||!r.indicators.quote[0]) throw new Error("無 Yahoo 資料");
+  const ts=r.timestamp, cl=r.indicators.quote[0].close, byMonth={};
+  for(let i=0;i<ts.length;i++){const c=cl[i]; if(!isFinite(c))continue;
+    const d=new Date(ts[i]*1000); byMonth[d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")]=c;}
+  const months=Object.keys(byMonth).sort();
+  return months.map(k=>({ym:k,price:byMonth[k]}));
+}
 // Build monthly [{ym,price}] from Stooq daily CSV (Date,Open,High,Low,Close,Volume) — 免金鑰
 function spFromStooq(csv){
   const rows=parseCSV(csv); // 由舊到新
@@ -251,7 +261,10 @@ function spFromStooq(csv){
   return months.map(k=>({ym:k,price:byMonth[k]}));
 }
 // 取得 S&P 月序列(由新鮮到穩定,逐層自動退回):
-//   有 key → 即時 SPY/TwelveData ;  否則 → 每日 Stooq(免金鑰) ;  都失敗 → Shiller 月頻
+//   有 key → 即時 SPY/TwelveData
+//   否則 → 每日 Yahoo^GSPC(經 allorigins CORS 代理,免金鑰)
+//   否則 → 每日 Stooq(直連,免金鑰;部分瀏覽器可)
+//   都失敗 → Shiller 月頻(永遠可用)
 async function fetchSP(force){
   const key=getKey(), opt=force?{cache:"reload"}:{};
   if(key){
@@ -262,8 +275,16 @@ async function fetchSP(force){
       const spArr=spFromTwelveData(j);
       if(spArr.length<13) throw new Error("歷史太短");
       return {spArr, src:"即時 · SPY/TwelveData"};
-    }catch(err){ /* 退到 Stooq */ }
+    }catch(err){ /* 退到 Yahoo 代理 */ }
   }
+  try{
+    const y="https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=10y";
+    const u="https://api.allorigins.win/raw?url="+encodeURIComponent(y);
+    const j=await fetch(u,opt).then(r=>{if(!r.ok)throw 0;return r.json()});
+    const spArr=spFromYahoo(j);
+    if(spArr.length>=13) return {spArr, src:"每日 · Yahoo^GSPC(免金鑰)"};
+    throw new Error("Yahoo 資料不足");
+  }catch(err){ /* 退到 Stooq 直連 */ }
   try{
     const u="https://stooq.com/q/d/l/?s=^spx&i=d&d1=20140101";
     const txt=await fetch(u,opt).then(r=>{if(!r.ok)throw 0;return r.text()});
