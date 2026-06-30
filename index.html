@@ -176,16 +176,33 @@
   <div class="fine">
     <p><b>邏輯(已回測,非黑箱):</b> 兩腿各算建議現金,取較高者(聯集)。<b>趨勢腿</b>= S&P 對 12 月均線乖離,跌破階梯式拉現金;<b>VIX 腿</b>= 真實 VIX 的水位+36月z-score+月內飆升組成風險分數,越高越拉。階梯:<code>0/24/42/66/90/100%</code>。參數 <code>MA12 / lvl1.2</code> 由 1990–2010 樣本內選出,2011–2026 樣本外驗證 Calmar 1.25 &gt; 買進持有 0.75,且 2020 把 -15% 壓到 -1%。</p>
     <p style="margin-top:9px"><b>ALL-IN 的意思:</b> 現金 0% = 沒有防禦性現金、<b>滿倉做多(100% 投入)</b>,對應強勢通「降現金到 0% 吃漲勢」的行為。<b>不含槓桿/融資</b>,訊號出現也<b>不代表該在滿倉之上再加碼</b> — 那超出已驗證範圍。</p>
-    <p style="margin-top:9px"><b>真實資料,持續更新:</b> VIX 來自 CBOE(每日),S&P 來自 Shiller(每月),皆即時抓取自公開資料庫,離線時顯示上次抓到的值。</p>
+    <p style="margin-top:9px"><b>即時資料:</b> VIX 來自 CBOE(每日)。S&P 趨勢腿:填了 API key → SPY 每日即時;未填 → Shiller 月頻(延遲約一個月)。離線時顯示上次抓到的值。</p>
     <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②缺真實 HY-OAS 信用利差,純信用事件預警未納入;③僅供研究,非投資建議,盈虧自負。</p>
-    <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a></p>
+    <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a> · <a href="https://twelvedata.com" target="_blank">Twelve Data</a></p>
+  </div>
+</details>
+
+<details>
+  <summary><span>⚙ 資料來源(預設每日 · 免金鑰 · 自動退回)</span><span>＋</span></summary>
+  <div class="fine">
+    <p>趨勢腿資料來源,由新鮮到穩定<b>自動逐層退回</b>,不會斷線:</p>
+    <p style="margin-top:8px">① <b>每日 · Stooq</b>(預設、<b>免金鑰</b>)— 15 年老牌資料商,每日 EOD,讓趨勢腿反映到昨收、不再卡月底。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要當日盤中即時、且願意自備免費 key 才需要。<br>③ <b>月頻 · Shiller</b>(最終退回)— 前兩者都抓不到時的保底,永遠可用。</p>
+    <p style="margin-top:9px;color:var(--faint)">目前實際使用的來源會顯示在上方「資料更新」欄。Stooq 為瀏覽器跨網域(CORS)抓取,若你的瀏覽器擋下,會自動退回月頻——功能不會壞,只是少了每日新鮮度。SPY/SPX/Shiller 的「乖離比值」相同,換來源不影響訊號。</p>
+    <div style="display:flex;gap:8px;margin-top:13px">
+      <input id="apikey" type="text" autocomplete="off" spellcheck="false" placeholder="(選填)Twelve Data API key — 要盤中即時才需要" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
+      <button id="savekey" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
+    </div>
+    <p id="keystatus" style="margin-top:9px"></p>
+    <p style="margin-top:9px;color:var(--faint)">key 只存在你裝置本機(localStorage),不上傳任何伺服器。留空即用免金鑰的 Stooq。</p>
   </div>
 </details>
 
 <script>
 const VIX_URL="https://raw.githubusercontent.com/datasets/finance-vix/main/data/vix-daily.csv";
 const SP_URL ="https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv";
-const LS="cwgauge_v1";
+const LS="cwgauge_v2";
+const KEY_LS="cwgauge_apikey";
+function getKey(){ try{return localStorage.getItem(KEY_LS)||"";}catch(e){return"";} }
 
 const $=id=>document.getElementById(id);
 const ym=d=>d.slice(0,7);
@@ -216,9 +233,50 @@ function vixRiskSeries(vm){
 function spMonthly(rows){
   return rows.map(r=>({ym:ym(r.Date),price:parseFloat(r.SP500)})).filter(x=>x.price>0&&x.ym);
 }
+// Build monthly [{ym,price}] from Twelve Data daily JSON (month-end close)
+function spFromTwelveData(json){
+  if(!json||!json.values||!json.values.length) throw new Error("無 values");
+  const rows=json.values.slice().reverse(); // 由舊到新
+  const byMonth={};
+  for(const r of rows){const c=parseFloat(r.close); if(isFinite(c)&&r.datetime) byMonth[ym(r.datetime)]=c;} // 最後一筆=當月最後收盤
+  const months=Object.keys(byMonth).sort();
+  return months.map(k=>({ym:k,price:byMonth[k]}));
+}
+// Build monthly [{ym,price}] from Stooq daily CSV (Date,Open,High,Low,Close,Volume) — 免金鑰
+function spFromStooq(csv){
+  const rows=parseCSV(csv); // 由舊到新
+  const byMonth={};
+  for(const r of rows){const c=parseFloat(r.Close); if(isFinite(c)&&r.Date&&/^\d{4}-\d{2}/.test(r.Date)) byMonth[ym(r.Date)]=c;} // 每月最後一筆=月收
+  const months=Object.keys(byMonth).sort();
+  return months.map(k=>({ym:k,price:byMonth[k]}));
+}
+// 取得 S&P 月序列(由新鮮到穩定,逐層自動退回):
+//   有 key → 即時 SPY/TwelveData ;  否則 → 每日 Stooq(免金鑰) ;  都失敗 → Shiller 月頻
+async function fetchSP(force){
+  const key=getKey(), opt=force?{cache:"reload"}:{};
+  if(key){
+    try{
+      const u=`https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&outputsize=5000&apikey=${encodeURIComponent(key)}`;
+      const j=await fetch(u,opt).then(r=>r.json());
+      if(j.status==="error") throw new Error(j.message||"API error");
+      const spArr=spFromTwelveData(j);
+      if(spArr.length<13) throw new Error("歷史太短");
+      return {spArr, src:"即時 · SPY/TwelveData"};
+    }catch(err){ /* 退到 Stooq */ }
+  }
+  try{
+    const u="https://stooq.com/q/d/l/?s=^spx&i=d&d1=20140101";
+    const txt=await fetch(u,opt).then(r=>{if(!r.ok)throw 0;return r.text()});
+    const spArr=spFromStooq(txt);
+    if(spArr.length>=13) return {spArr, src:"每日 · Stooq(免金鑰)"};
+    throw new Error("Stooq 資料不足");
+  }catch(err){ /* 退到 Shiller */ }
+  const t=await fetch(SP_URL,opt).then(r=>{if(!r.ok)throw 0;return r.text()});
+  return {spArr:spMonthly(parseCSV(t)), src:"月頻 · Shiller(退回)"};
+}
 
-function compute(spRows,vixRows){
-  const sp=spMonthly(spRows);
+function compute(spArr,vixRows){
+  const sp=spArr;
   const vm=buildVixMonthly(vixRows);
   const risk=vixRiskSeries(vm);
   // S&P momentum series (SMA12)
@@ -359,8 +417,8 @@ function render(data,fetchedAt,fromCache){
   $("smad").textContent=above?"站上均線":"跌破均線";
   const dt=new Date(fetchedAt);
   $("sfresh").textContent=fromCache?"離線快取":"剛剛";
-  $("sfreshd").textContent=`VIX ${vLast.ym} · S&P ${sLast.ym}`;
-  $("asof").textContent=`資料 · VIX→${vLast.close.toFixed(1)} (${vLast.ym}) · S&P (${sLast.ym})`+(fromCache?" · 離線":"");
+  $("sfreshd").innerHTML=`${data.src||"S&P "+sLast.ym}`;
+  $("asof").textContent=`${data.src||""} · S&P ${sLast.ym} · VIX→${vLast.close.toFixed(1)} (${vLast.ym})`+(fromCache?" · 離線":"");
   drawChart(hist);
   renderOdds(data.ddPeak);
 }
@@ -368,21 +426,19 @@ function render(data,fetchedAt,fromCache){
 async function load(force){
   const btn=$("refresh");btn.classList.add("spin");$("err").style.display="none";
   try{
-    const opt=force?{cache:"reload"}:{};
-    const [vt,st]=await Promise.all([
-      fetch(VIX_URL,opt).then(r=>{if(!r.ok)throw 0;return r.text()}),
-      fetch(SP_URL,opt).then(r=>{if(!r.ok)throw 0;return r.text()})
+    const [vt, spRes]=await Promise.all([
+      fetch(VIX_URL,force?{cache:"reload"}:{}).then(r=>{if(!r.ok)throw 0;return r.text()}),
+      fetchSP(force)
     ]);
-    const data=compute(parseCSV(st),parseCSV(vt));
+    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src;
     const at=Date.now();
-    try{localStorage.setItem(LS,JSON.stringify({vt,st,at}));}catch(e){}
+    try{localStorage.setItem(LS,JSON.stringify({vt,spArr:spRes.spArr,src:spRes.src,at}));}catch(e){}
     render(data,at,false);
   }catch(e){
-    // offline fallback: last good data
     const raw=localStorage.getItem(LS);
-    if(raw){const{vt,st,at}=JSON.parse(raw);render(compute(parseCSV(st),parseCSV(vt)),at,true);
+    if(raw){const o=JSON.parse(raw);const data=compute(o.spArr,parseCSV(o.vt));data.src=o.src;render(data,o.at,true);
       $("err").style.display="block";$("err").textContent="目前離線或來源無回應 — 顯示上次抓到的資料。連線後按「更新」即可刷新。";}
-    else{$("err").style.display="block";$("err").textContent="無法抓取資料,且尚無快取。請確認網路後重試。";}
+    else{$("err").style.display="block";$("err").textContent="無法抓取資料"+(getKey()?"(API key 可能錯誤或額度用盡,可清空 key 改用月頻)":"")+"。請確認網路後重試。";}
   }finally{btn.classList.remove("spin");}
 }
 
@@ -396,9 +452,25 @@ document.addEventListener("visibilitychange",()=>{
 });
 // instant paint from cache, then network
 (function(){const raw=localStorage.getItem(LS);
-  if(raw){try{const{vt,st,at}=JSON.parse(raw);render(compute(parseCSV(st),parseCSV(vt)),at,true);}catch(e){}}
+  if(raw){try{const o=JSON.parse(raw);const data=compute(o.spArr,parseCSV(o.vt));data.src=o.src;render(data,o.at,true);}catch(e){}}
   load(false);
 })();
+// ---- API key 設定 ----
+function refreshKeyStatus(){
+  const k=getKey();
+  if($("apikey")) $("apikey").value=k;
+  if($("keystatus")){
+    $("keystatus").textContent = k? "✓ 已設定 — 趨勢腿使用即時 SPY" : "未設定 — 趨勢腿使用 Shiller 月頻(延遲)";
+    $("keystatus").style.color = k? "var(--teal)" : "var(--faint)";
+  }
+}
+if($("savekey")) $("savekey").onclick=()=>{
+  const k=$("apikey").value.trim();
+  try{ if(k)localStorage.setItem(KEY_LS,k); else localStorage.removeItem(KEY_LS); }catch(e){}
+  refreshKeyStatus(); load(true);
+};
+refreshKeyStatus();
+
 if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
 </script>
 </body>
