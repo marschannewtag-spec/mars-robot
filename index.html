@@ -189,11 +189,16 @@
     <p style="margin-top:8px">① <b>每日 · Yahoo ^GSPC</b>(預設、<b>免金鑰</b>)— 經 allorigins CORS 代理抓 Yahoo 指數,讓趨勢腿反映到昨收。<br>② <b>每日 · Stooq</b>(免金鑰、直連)— Yahoo 代理失敗時試;部分瀏覽器可。<br>③ <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>④ <b>月頻 · Shiller</b>(最終退回)— 全部失敗時的保底,永遠可用。</p>
     <p style="margin-top:9px;color:var(--faint)">目前實際來源顯示在上方「資料更新」欄。①②為跨網域抓取,若你的瀏覽器/代理擋下會自動往下退,功能不會壞,只是少了每日新鮮度。代理(allorigins)是第三方免費服務,偶有不穩;要最穩定可填金鑰(③),或自架 Cloudflare Worker 當私有代理(我可幫你寫)。</p>
     <div style="display:flex;gap:8px;margin-top:13px">
+      <input id="workerurl" type="text" autocomplete="off" spellcheck="false" placeholder="(推薦)你的 Cloudflare Worker 網址 — 最長久穩定" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
+      <button id="saveworker" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
+    </div>
+    <p id="workerstatus" style="margin-top:9px"></p>
+    <div style="display:flex;gap:8px;margin-top:13px">
       <input id="apikey" type="text" autocomplete="off" spellcheck="false" placeholder="(選填)Twelve Data API key — 要盤中即時才需要" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
       <button id="savekey" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
     </div>
     <p id="keystatus" style="margin-top:9px"></p>
-    <p style="margin-top:9px;color:var(--faint)">key 只存在你裝置本機(localStorage),不上傳任何伺服器。留空即用免金鑰的 Stooq。</p>
+    <p style="margin-top:9px;color:var(--faint)">兩者皆只存你裝置本機(localStorage),不上傳。<b>Worker 是最推薦的長久解</b>:自架一支 Cloudflare Worker(永久免費、你掌控),貼上其網址即為最優先來源。留空則依序試免費代理→月頻。</p>
   </div>
 </details>
 
@@ -202,7 +207,9 @@ const VIX_URL="https://raw.githubusercontent.com/datasets/finance-vix/main/data/
 const SP_URL ="https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv";
 const LS="cwgauge_v2";
 const KEY_LS="cwgauge_apikey";
+const WORKER_LS="cwgauge_worker";
 function getKey(){ try{return localStorage.getItem(KEY_LS)||"";}catch(e){return"";} }
+function getWorker(){ try{return localStorage.getItem(WORKER_LS)||"";}catch(e){return"";} }
 
 const $=id=>document.getElementById(id);
 const ym=d=>d.slice(0,7);
@@ -266,7 +273,16 @@ function spFromStooq(csv){
 //   否則 → 每日 Stooq(直連,免金鑰;部分瀏覽器可)
 //   都失敗 → Shiller 月頻(永遠可用)
 async function fetchSP(force){
-  const key=getKey(), opt=force?{cache:"reload"}:{};
+  const key=getKey(), worker=getWorker(), opt=force?{cache:"reload"}:{};
+  // 0) 自有 Cloudflare Worker(最長久穩定,回傳 Yahoo 格式)
+  if(worker){
+    try{
+      const j=await fetch(worker,opt).then(r=>{if(!r.ok)throw 0;return r.json()});
+      const spArr=spFromYahoo(j);
+      if(spArr.length>=13) return {spArr, src:"每日 · 自有Worker"};
+      throw new Error("Worker 資料不足");
+    }catch(err){ /* 退到下一層 */ }
+  }
   if(key){
     try{
       const u=`https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&outputsize=5000&apikey=${encodeURIComponent(key)}`;
@@ -490,6 +506,20 @@ if($("savekey")) $("savekey").onclick=()=>{
   try{ if(k)localStorage.setItem(KEY_LS,k); else localStorage.removeItem(KEY_LS); }catch(e){}
   refreshKeyStatus(); load(true);
 };
+function refreshWorkerStatus(){
+  const w=getWorker();
+  if($("workerurl")) $("workerurl").value=w;
+  if($("workerstatus")){
+    $("workerstatus").textContent = w? "✓ 已設定 — 趨勢腿使用你的 Worker(每日)" : "未設定 — 將依序試免費代理 → 月頻";
+    $("workerstatus").style.color = w? "var(--teal)" : "var(--faint)";
+  }
+}
+if($("saveworker")) $("saveworker").onclick=()=>{
+  let w=$("workerurl").value.trim();
+  try{ if(w)localStorage.setItem(WORKER_LS,w); else localStorage.removeItem(WORKER_LS); }catch(e){}
+  refreshWorkerStatus(); load(true);
+};
+refreshWorkerStatus();
 refreshKeyStatus();
 
 if("serviceWorker"in navigator)navigator.serviceWorker.register("sw.js").catch(()=>{});
