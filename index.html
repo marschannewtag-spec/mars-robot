@@ -52,7 +52,20 @@
   .verdict{font-size:13.5px;font-weight:600;margin-top:4px}
   .asof{font:500 11px var(--mono);color:var(--faint);margin-top:9px}
 
-  /* leg cards */
+  /* risk temperature bar */
+  .tempwrap{background:var(--surf);border:1px solid var(--line);border-radius:15px;padding:14px 16px 13px;margin-top:14px}
+  .templab{display:flex;justify-content:space-between;align-items:baseline;font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+  .templab b{font-size:13px;letter-spacing:0}
+  .tempdrv{font:600 10px var(--mono);color:var(--faint)}
+  .tempbar{position:relative;height:13px;border-radius:7px;margin:16px 0 7px;
+    background:linear-gradient(90deg,#2DD4BF 0%, #FBBF24 42%, #FB923C 70%, #F43F5E 100%)}
+  .tmark{position:absolute;top:-4px;left:0;width:4px;height:21px;background:#fff;border-radius:2px;
+    box-shadow:0 0 7px rgba(0,0,0,.6);transition:left .7s cubic-bezier(.2,.7,.2,1)}
+  .tval{position:absolute;top:-21px;left:0;font:700 12px var(--mono);transform:translateX(-50%);
+    transition:left .7s cubic-bezier(.2,.7,.2,1);font-variant-numeric:tabular-nums}
+  .tempscale{display:flex;justify-content:space-between;font:500 9.5px var(--mono);color:var(--faint)}
+  .tempnote{font-size:10.5px;line-height:1.5;color:var(--faint);margin-top:8px}
+  .tempnote b{color:var(--muted)}
   .legs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px}
   .card{background:var(--surf);border:1px solid var(--line);border-radius:15px;padding:14px 15px}
   .card .t{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
@@ -133,6 +146,19 @@
     <div class="asof" id="asof"></div>
   </div>
 </section>
+
+<div class="tempwrap">
+  <div class="templab">
+    <span>風險溫度 <b id="tempstate">·</b></span>
+    <span class="tempdrv" id="tempdrv"></span>
+  </div>
+  <div class="tempbar">
+    <div class="tmark" id="tmark"></div>
+    <div class="tval" id="tval">·</div>
+  </div>
+  <div class="tempscale"><span>0 平靜</span><span>警戒</span><span>高風險</span><span>極端 100</span></div>
+  <div class="tempnote">刻度＝現金水位(已驗證聯集),<b>非獨立預測指標</b>,不預測跌幅</div>
+</div>
 
 <div class="legs">
   <div class="card">
@@ -430,6 +456,16 @@ function renderOdds(ddPeak){
   }).join("");
 }
 
+function renderTemp(uni,momC,vixC){
+  const pct=Math.round(uni*100);
+  const c=riskColor(uni);
+  $("tmark").style.left=pct+"%";
+  $("tval").style.left=pct+"%"; $("tval").textContent=pct; $("tval").style.color=c;
+  const st=uni===0?"平靜":uni<0.42?"警戒":uni<0.90?"高風險":"極端";
+  $("tempstate").textContent=st; $("tempstate").style.color=c;
+  $("tempdrv").textContent=uni===0?"":(vixC>momC?"VIX 主導":"趨勢主導");
+}
+
 function render(data,fetchedAt,fromCache){
   const {sLast,vLast,rLast,momC,vixC,uni,hist}=data;
   const pct=Math.round(uni*100);
@@ -438,6 +474,7 @@ function render(data,fetchedAt,fromCache){
   paintLadder(uni);
   const vt=verdictText(uni);$("verdict").textContent=vt;$("verdict").style.color=riskColor(uni);
   $("allin").classList.toggle("on", uni===0);
+  renderTemp(uni,momC,vixC);
 
   $("momcash").textContent=Math.round(momC*100)+"%";$("momcash").style.color=riskColor(momC);
   $("vixcash").textContent=Math.round(vixC*100)+"%";$("vixcash").style.color=riskColor(vixC);
