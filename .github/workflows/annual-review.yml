@@ -1,0 +1,94 @@
+name: L3 年度健檢
+
+# 一年跑一次,手動觸發。跑完會把報告 commit 進 reports/ 並開一個 Issue 通知你去讀。
+# 這是整套系統唯一需要你花時間的地方 —— 大約 15 分鐘。
+#
+# 報告只陳述數字與偏離,不建議調參。若它說「參數已漂出穩健區」,
+# 那個「要不要調整」的決定是你的。
+
+on:
+  workflow_dispatch:
+    inputs:
+      open_issue:
+        description: "跑完是否開 Issue 提醒你去讀"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  review:
+    name: 產出年度健檢報告
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ops/requirements.txt
+
+      - name: 安裝相依
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ops/requirements.txt
+
+      - name: 產出報告
+        id: report
+        working-directory: ops
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python src/annual_review.py
+          echo "path=ops/reports/$(date -u +%Y)-health.md" >> "$GITHUB_OUTPUT"
+
+      - name: 放進 workflow summary
+        run: cat "${{ steps.report.outputs.path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 保存為 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: annual-health-report
+          path: ${{ steps.report.outputs.path }}
+          retention-days: 90
+
+      - name: Commit 報告
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ops/reports/
+          if git diff --cached --quiet; then
+            echo "報告內容無變化,跳過 commit"
+          else
+            git commit -m "報告: 年度健檢 $(date -u +%Y) [skip ci]"
+            git push
+          fi
+
+      - name: 開 Issue 提醒閱讀
+        if: inputs.open_issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "年度健檢報告已產出:[\`${{ steps.report.outputs.path }}\`](../blob/main/${{ steps.report.outputs.path }})"
+            echo
+            echo "請花 15 分鐘讀完。重點看兩件事:"
+            echo
+            echo "1. **基準漂移** — 訊號層若有任何差異,那是 bug,不是市場變化。"
+            echo "2. **參數敏感度** — 現行參數還在不在高原上。"
+            echo
+            echo "報告只陳述數字,不建議調參。要不要動是你的決定。"
+            echo
+            echo "<details><summary>完整報告</summary>"
+            echo
+            cat "${{ steps.report.outputs.path }}"
+            echo
+            echo "</details>"
+          } > issue_body.md
+          gh issue create \
+            --title "年度健檢 $(date -u +%Y) · 待閱讀" \
+            --body-file issue_body.md

@@ -168,8 +168,24 @@ Pine 那份是唯一無法自動化驗證的 —— TradingView 是封閉環境�
 使用模式。**沒有心跳的話這套系統會在約兩個月後安靜地停掉,而它的設計就是
 沒消息等於正常** —— 你不會發現。
 
-心跳機制:每日 job 把 `data/manifest.json` commit 回去製造 repo 活動
-(原始 CSV 不進版控,太大)。此機制是否有效**必須實測驗證**,不能只靠假設。
+**心跳機制:** 每日 job 把 `data/manifest.json` 與 `data/health_log.csv` commit
+回去製造 repo 活動(原始 CSV 不進版控,太大)。
+
+**這個機制沒有被驗證過,而且短期內也無法驗證** —— 它的效果要 60 天才看得出來。
+已知的不確定點是:`GITHUB_TOKEN` 產生的 bot commit 是否被 GitHub 計為
+「repository activity」。有多方回報它**不算**。
+
+因此請把下面這兩件事當成真正的防線:
+
+1. **GitHub 會在停用前寄 email 通知。** 那封信不要當廣告忽略 —— 它是這套系統
+   唯一會主動告訴你「監控要停了」的訊號。
+2. **若收到那封信,把心跳改用 PAT 推送**:建一個 fine-grained PAT
+   (只需 `contents: write`),存成 repo secret,再把 `daily-health.yml` 的
+   checkout 步驟改成 `token: ${{ secrets.HEARTBEAT_PAT }}`。真人身分的推送
+   一定算活動。
+
+驗證方式:兩個月後到 Actions 頁面看排程是否仍在跑。或更簡單 —— 只要每年
+手動觸發一次 L3 年度健檢,那本身就是一次 repo 活動,足以重置計時器。
 
 ---
 

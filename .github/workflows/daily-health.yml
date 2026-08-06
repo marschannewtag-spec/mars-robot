@@ -1,0 +1,122 @@
+name: L1 每日資料健檢
+
+# 平常完全靜默。只有偵測到異常才開 Issue —— 沒消息就是好消息。
+#
+# ⚠ GitHub 會在 repo 靜置 60 天後自動停用排程 workflow,而「一年碰一次」
+#   正是會觸發它的使用模式。本流程每天把 data/manifest.json commit 回去製造
+#   repo 活動當心跳。GitHub 在停用前會寄信通知,那封信不要忽略。
+#   若心跳無效(bot commit 是否算活動未經長期驗證),見 ops/CLAUDE.md 的說明。
+
+on:
+  schedule:
+    - cron: "0 22 * * *" # 每天 UTC 22:00(美股收盤後)
+  workflow_dispatch:
+
+permissions:
+  contents: write # 心跳 commit
+  issues: write # 開/關異常 Issue
+
+concurrency:
+  group: daily-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: 資料源 · 新鮮度 · 合理性 · PWA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ops/requirements.txt
+
+      - name: 安裝相依
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r ops/requirements.txt
+
+      - name: 執行健檢
+        id: check
+        working-directory: ops
+        env:
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          set +e
+          python src/health_check.py --markdown > "$GITHUB_WORKSPACE/health_report.md"
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "健檢結束,exit code = $code"
+
+      - name: 確保標籤存在
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create health-fail \
+            --color B60205 \
+            --description "每日健檢偵測到的異常" 2>/dev/null || true
+
+      # 去重:資料源掛掉是【持續性狀態】不是單次事件。每天開新 Issue 等於一年 365 個,
+      # 而使用者會直接關掉通知 —— 那整層就白做了。有開放的就留言,沒有才新建。
+      - name: 異常 → 開或更新 Issue
+        if: steps.check.outputs.code != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          existing=$(gh issue list --label health-fail --state open --limit 1 \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "已有開放的 Issue #$existing,改為留言更新"
+            {
+              echo "### 仍未恢復 — $(date -u '+%Y-%m-%d %H:%M UTC')"
+              echo
+              cat "$GITHUB_WORKSPACE/health_report.md"
+            } | gh issue comment "$existing" --body-file -
+          else
+            gh issue create \
+              --title "健檢異常 · $(date -u '+%Y-%m-%d')" \
+              --label health-fail \
+              --body-file "$GITHUB_WORKSPACE/health_report.md"
+          fi
+
+      - name: 恢復正常 → 關閉 Issue
+        if: steps.check.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for n in $(gh issue list --label health-fail --state open \
+                       --json number --jq '.[].number'); do
+            echo "關閉 #$n"
+            gh issue close "$n" \
+              --comment "健檢已恢復正常($(date -u '+%Y-%m-%d %H:%M UTC')),自動關閉。"
+          done
+
+      # 心跳:即使健檢失敗也要跑,否則「來源掛掉」會連帶讓排程被停用,
+      # 變成故障期間反而失去監控 —— 最糟的失效模式。
+      - name: 心跳 — commit 資料 manifest
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ops/data/manifest.json ops/data/health_log.csv
+          if git diff --cached --quiet; then
+            echo "manifest 無變化,跳過 commit"
+          else
+            # [skip ci] 避免觸發 L2 —— 資料 manifest 的變動與邏輯無關
+            git commit -m "chore: 每日資料心跳 $(date -u '+%Y-%m-%d') [skip ci]"
+            git push
+          fi
+
+      - name: 摘要
+        if: always()
+        run: |
+          if [ "${{ steps.check.outputs.code }}" = "0" ]; then
+            echo "✅ 所有檢查通過" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ 偵測到異常,詳見 Issue" >> "$GITHUB_STEP_SUMMARY"
+            cat "$GITHUB_WORKSPACE/health_report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
