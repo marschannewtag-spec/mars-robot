@@ -12,7 +12,15 @@ TradingView 是封閉環境,CI 跑不了 Pine。所以流程是人工的,但只�
 
 差異 > 1e-9 即視為漂移。腳本會列出不一致的月份與兩邊的值。
 
-⚠ Pine 在被這支腳本驗證過之前,狀態只能算「已寫好」,不能算「已驗證」。
+這支腳本補的是**執行層**。邏輯層已由 `tests/pine_sim.py` 自動驗證
+(從 .pine 原始檔解析常數與階梯,用 Pine 語義重現後與 engine.py 逐月比對,
+CI 每次都跑)。所以這裡真正要確認的是那些離線驗不到的事:
+
+  · .pine 編譯得過嗎(語法、型別、Pine 版本差異)
+  · request.security 的實際行為是否如假設
+  · TradingView 的 VIX/SPX 資料是否與 Yahoo/GitHub 來源一致
+
+⚠ 在跑過這支腳本之前,Pine 的狀態是「邏輯已驗證、執行未驗證」。
 """
 
 from __future__ import annotations

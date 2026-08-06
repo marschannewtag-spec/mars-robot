@@ -10,9 +10,14 @@
 //  ⚠ 建議套用在 SP:SPX(或 SPY / ES1!)上,策略是為美國大盤設計的。
 //
 //  ⚠ 這份實作必須與 ops/src/engine.py 完全一致 —— engine.py 是真理來源。
-//    改動任一方後,把本指標的 cash 序列從 TradingView 匯出成 CSV,執行:
+//
+//    邏輯層已自動驗證:ops/tests/pine_sim.py 會從【本檔原始碼】解析常數與階梯,
+//    用 Pine 的語義重現計算後與 engine.py 逐月比對,CI 每次都跑。
+//    所以改動下面任何一個數字,測試都會失敗 —— 那是刻意的。
+//
+//    執行層仍需人工:把本指標的 cash 序列從 TradingView 匯出成 CSV,執行
 //        python ops/scripts/check_pine_parity.py <匯出的.csv>
-//    差異 > 1e-9 即視為漂移。
+//    差異 > 1e-9 即視為漂移。在跑過之前,本檔算「邏輯已驗證、執行未驗證」。
 // =============================================================================
 indicator("現金水位儀 · Cash-Weight Gauge", shorttitle="CWG", overlay=false, precision=1)
 

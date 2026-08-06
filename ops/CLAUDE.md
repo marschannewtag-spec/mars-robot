@@ -135,10 +135,28 @@ FRED 免金鑰 CSV 的全段歷史。
 |---|---|---|
 | 1 | `ops/src/engine.py` | **真理來源**。純函式、零 IO、零網路 |
 | 2 | PWA `index.html` 的 JS | `tests/test_parity.py` — jsdom 載入線上真的在跑的那個檔案,逐月精確比對 |
-| 3 | `ops/pine/CashWeightGauge.pine` | **無法在 CI 執行**。需人工從 TradingView 匯出 CSV,跑 `scripts/check_pine_parity.py` |
+| 3 | `ops/pine/CashWeightGauge.pine` | **兩段式**,見下 |
 
-Pine 那份是唯一無法自動化驗證的 —— TradingView 是封閉環境。所以它的狀態必須
-明確區分「已寫好」與「已驗證」,不要混為一談。
+### Pine 的驗證分兩段,不要混為一談
+
+**第一段 · 邏輯層(已自動化,CI 每次跑)**
+`tests/pine_sim.py` 從 `.pine` **原始檔解析**常數與階梯門檻,再用 Pine 的語義
+(`ta.sma` 視窗含 na 回傳 na、序列往回索引、樣本標準差手算、`na < 0` 為 false)
+重現計算,與 `engine.py` 逐月比對。**測的是那個檔案本身**,不是另抄的副本 ——
+改動 `.pine` 裡任何一個數字都會被抓到(已用 6 種突變驗證測試確實會失敗)。
+
+也涵蓋「圖表歷史比 VIX 長」的 na 對齊情境(SPX 從 1988、VIX 從 1990)。
+
+**第二段 · 執行層(必須人工,尚未完成)**
+邏輯對不代表 Pine 跑得起來。以下只有真的在 TradingView 上跑過才知道:
+
+- `.pine` 是否編譯得過(語法、型別、Pine 版本差異)
+- `request.security` 的實際行為是否如假設
+- TradingView 的 VIX/SPX 資料是否與 Yahoo/GitHub 來源一致
+
+做法:月線 SPX 圖套用指標 → 匯出 CSV → `python ops/scripts/check_pine_parity.py <檔案>`。
+
+**在第二段完成前,Pine 的狀態是「邏輯已驗證、執行未驗證」。**
 
 ---
 
