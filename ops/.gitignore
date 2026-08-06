@@ -1,0 +1,7 @@
+# 原始資料快照不進版控 —— 每日抓的 CSV 加起來 ~500KB,天天 commit 會把 repo 撐爆。
+# 心跳改用 data/manifest.json(小、且記錄了來源與 sha256,有稽核價值)。
+data/raw/*.csv
+__pycache__/
+*.pyc
+.pytest_cache/
+node_modules/
