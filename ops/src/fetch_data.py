@@ -192,17 +192,22 @@ def save(name: str, text: str) -> dict:
     }
 
 
+def write_manifest(manifest: dict) -> None:
+    """寫回 manifest。獨立成函式,讓 health_check 也能維護稽核軌跡。"""
+    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    MANIFEST_PATH.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8", newline="\n",
+    )
+
+
 def refresh(names: list[str] | None = None) -> dict:
     """抓取指定資料源、落地、更新 manifest。回傳新的 manifest。"""
     names = names or [n for n, s in SOURCES.items() if not s.needs_fred_key]
     manifest = read_manifest()
     for name in names:
         manifest[name] = save(name, fetch_source(name))
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST_PATH.write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8", newline="\n",
-    )
+    write_manifest(manifest)
     return manifest
 
 

@@ -61,8 +61,15 @@ def load_config() -> dict:
 
 
 def check_sources_reachable(cfg: dict) -> list[Result]:
-    """能不能抓到,以及抓到的資料夠不夠長。"""
+    """能不能抓到,以及抓到的資料夠不夠長。
+
+    順帶更新 data/manifest.json 的稽核軌跡(來源、抓取時間、筆數、sha256)。
+    這一步曾經漏掉 —— `save()` 只寫原始檔並回傳條目,不會寫 manifest,
+    結果 manifest 一直停在最後一次手動 refresh() 的舊值,稽核軌跡形同虛設,
+    而且心跳 commit 也少了一個會變動的檔案。
+    """
     out: list[Result] = []
+    manifest = fetch_data.read_manifest()
     for name in ["sp_daily", "vix", "shiller"]:
         try:
             text = fetch_data.fetch_source(name)
@@ -75,9 +82,10 @@ def check_sources_reachable(cfg: dict) -> list[Result]:
                 ))
             else:
                 out.append(Result(f"來源可達性 · {name}", OK, f"{len(df)} 列"))
-            fetch_data.save(name, text)
+            manifest[name] = fetch_data.save(name, text)
         except Exception as exc:  # noqa: BLE001
             out.append(Result(f"來源可達性 · {name}", FAIL, f"抓取失敗:{exc}"))
+    fetch_data.write_manifest(manifest)
     return out
 
 
