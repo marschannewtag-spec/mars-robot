@@ -51,6 +51,9 @@
   .big small{font-size:26px;color:var(--muted)}
   .verdict{font-size:13.5px;font-weight:600;margin-top:4px}
   .asof{font:500 11px var(--mono);color:var(--faint);margin-top:9px}
+  .defnote{display:none;margin-top:8px;padding:7px 10px;border-radius:9px;font-size:11px;line-height:1.5;
+    background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.45);color:#FBBF24}
+  .defnote.on{display:block}
 
   /* risk temperature bar */
   .tempwrap{background:var(--surf);border:1px solid var(--line);border-radius:15px;padding:14px 16px 13px;margin-top:14px}
@@ -144,6 +147,7 @@
     <div class="readlab">建議現金比重 <span class="allin" id="allin">✓ ALL-IN 全額投資</span></div>
     <div class="big" id="bigpct"><span class="skel">··</span><small>%</small></div>
     <div class="verdict" id="verdict">讀取資料中…</div>
+    <div class="defnote" id="defnote"></div>
     <div class="asof" id="asof"></div>
   </div>
 </section>
@@ -202,7 +206,11 @@
 <details>
   <summary><span>運作邏輯與誠實邊界</span><span>＋</span></summary>
   <div class="fine">
-    <p><b>邏輯(已回測,非黑箱):</b> 兩腿各算建議現金,取較高者(聯集)。<b>趨勢腿</b>= S&P 對 12 月均線乖離,跌破階梯式拉現金,階梯 <code>0/30/60/90/100%</code>(門檻:乖離 <code>0 / -3% / -8% / -13%</code>);<b>VIX 腿</b>= 真實 VIX 的水位+36月z-score+月內飆升組成風險分數,越高越拉,階梯 <code>0/24/42/66/90/100%</code>(門檻:分數 <code>0.5 / 1.0 / 1.8 / 2.6 / 3.4</code>)。兩腿階梯不同,別互相套用。參數 <code>MA12 / lvl1.2</code> 由 1990–2010 樣本內選出,2011–2026 樣本外驗證 Calmar 1.25 &gt; 買進持有 0.75,且 2020 把 -15% 壓到 -1%。</p>
+    <p><b>邏輯(已回測,非黑箱):</b> 兩腿各算建議現金,取較高者(聯集)。<b>趨勢腿</b>= S&P 對 12 月均線乖離,跌破階梯式拉現金,階梯 <code>0/30/60/90/100%</code>(門檻:乖離 <code>0 / -3% / -8% / -13%</code>);<b>VIX 腿</b>= 真實 VIX 的水位+36月z-score+月內飆升組成風險分數,越高越拉,階梯 <code>0/24/42/66/90/100%</code>(門檻:分數 <code>0.5 / 1.0 / 1.8 / 2.6 / 3.4</code>)。兩腿階梯不同,別互相套用。</p>
+    <p style="margin-top:9px"><b>回測結果(1990–2026 月收盤,現金不計息):</b>這個工具做的是<b>用報酬換回撤</b>,不是兩者兼得 —— 誠實的數字如下。<br>
+    最大回撤 <b>-25.8%</b>,買進持有 -52.6%;年化 <b>7.5%</b>,買進持有 9.0%。<br>
+    分段:網路泡沫 -25.5% vs -46.3% · 金融海嘯 <b>-16.4% vs -52.6%</b> · 2020 疫情 -7.6% vs -19.9% · 2022 升息 -16.2% vs -20.9%。<br>
+    全期有 <b>59.3%</b> 的月份是完全投入(現金 0%),現金拉到 90% 以上的只佔 8.6%。</p>
     <p style="margin-top:9px"><b>ALL-IN 的意思:</b> 現金 0% = 沒有防禦性現金、<b>滿倉做多(100% 投入)</b>,對應強勢通「降現金到 0% 吃漲勢」的行為。<b>不含槓桿/融資</b>,訊號出現也<b>不代表該在滿倉之上再加碼</b> — 那超出已驗證範圍。</p>
     <p style="margin-top:9px"><b>即時資料:</b> VIX 來自 CBOE(每日)。S&P 趨勢腿預設走 Yahoo ^GSPC 每日(免金鑰,反映到昨收);填了 Worker 網址或 API key 可更穩定/更即時;全部抓不到才退回 Shiller 月頻(延遲約一個月)。離線時顯示上次抓到的值。</p>
     <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②缺真實 HY-OAS 信用利差,純信用事件預警未納入;③僅供研究,非投資建議,盈虧自負。</p>
@@ -264,7 +272,8 @@ function readCache(){
 function dropCache(){ try{localStorage.removeItem(LS);}catch(e){} }
 // 由快取畫面,失敗就丟掉壞快取並回報 false
 function paintFromCache(o){
-  try{ const data=compute(o.spArr,parseCSV(o.vt)); data.src=o.src; render(data,o.at,true); return true; }
+  try{ const data=compute(o.spArr,parseCSV(o.vt)); data.src=o.src; data.altDef=!!o.altDef;
+       render(data,o.at,true); return true; }
   catch(e){ dropCache(); return false; }
 }
 const ym=d=>d.slice(0,7);
@@ -360,7 +369,10 @@ async function fetchSP(force){
     }
   }
   const t=await fetchT(SP_URL,opt,12000).then(r=>{if(!r.ok)throw 0;return r.text()});
-  return {spArr:spMonthly(parseCSV(t)), src:"月頻 · Shiller(退回)"};
+  // ⚠ Shiller 的 SP500 欄是「當月每日收盤的平均價」,不是月收盤。已實測與 Yahoo
+  // 月均價差異精確為 0.00。這個定義與回測基準(月收盤)不同,在 17.3% 的月份會
+  // 給出不同的現金建議。保留它當最後保底,但必須在畫面上標示,不能無聲切換。
+  return {spArr:spMonthly(parseCSV(t)), src:"月頻 · Shiller(退回)", altDef:true};
 }
 
 function compute(spArr,vixRows){
@@ -517,6 +529,11 @@ function render(data,fetchedAt,fromCache){
   $("bigpct").style.color=riskColor(uni);
   paintLadder(uni);
   const vt=verdictText(uni);$("verdict").textContent=vt;$("verdict").style.color=riskColor(uni);
+  // 退回 Shiller 時價格定義會從「月收盤」變成「月均價」,17.3% 的月份結果不同 —— 必須明說
+  $("defnote").classList.toggle("on", !!data.altDef);
+  $("defnote").innerHTML = data.altDef
+    ? "⚠ 目前用的是 <b>Shiller 月均價</b>,與回測基準的<b>月收盤</b>定義不同 —— 歷史上約 17% 的月份兩者會給出不同水位。每日來源恢復後會自動切回。"
+    : "";
   $("allin").classList.toggle("on", uni===0);
   renderTemp(uni,momC,vixC);
 
@@ -547,9 +564,9 @@ async function load(force){
       fetchT(VIX_URL,force?{cache:"reload"}:{},12000).then(r=>{if(!r.ok)throw 0;return r.text()}),
       fetchSP(force)
     ]);
-    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src;
+    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src; data.altDef=!!spRes.altDef;
     const at=Date.now();
-    try{localStorage.setItem(LS,JSON.stringify({vt,spArr:spRes.spArr,src:spRes.src,at}));}catch(e){}
+    try{localStorage.setItem(LS,JSON.stringify({vt,spArr:spRes.spArr,src:spRes.src,altDef:!!spRes.altDef,at}));}catch(e){}
     render(data,at,false);
   }catch(e){
     const o=readCache();
