@@ -287,9 +287,21 @@ function sstd(a){const m=mean(a);return Math.sqrt(a.reduce((s,x)=>s+(x-m)**2,0)/
 
 function buildVixMonthly(rows){
   const g={};
-  for(const r of rows){const d=r.DATE,cl=parseFloat(r.CLOSE);if(!d||isNaN(cl))continue;const k=ym(d);(g[k]=g[k]||[]).push(cl);}
+  for(const r of rows){
+    const d=r.DATE, cl=parseFloat(r.CLOSE);
+    if(!d||isNaN(cl))continue;
+    // max 必須是【日內最高】而非收盤最高 —— 風險分數的「月內飆升」項要的就是盤中飆升。
+    // 2024-08 那次 VIX 盤中衝到 65.7,但當月最高收盤只有 38.6,用收盤會整個漏掉。
+    // 歷史上有 9 個月份因此翻轉現金水位。HIGH 缺漏時退回用 CLOSE。
+    const hi=parseFloat(r.HIGH);
+    const k=ym(d);
+    (g[k]=g[k]||[]).push({c:cl, h:isFinite(hi)?hi:cl});
+  }
   const months=Object.keys(g).sort();
-  return months.map(k=>{const a=g[k];return{ym:k,close:a[a.length-1],mean:mean(a),max:Math.max(...a),n:a.length};});
+  return months.map(k=>{
+    const a=g[k], cs=a.map(x=>x.c);
+    return {ym:k, close:cs[cs.length-1], mean:mean(cs), max:Math.max(...a.map(x=>x.h)), n:a.length};
+  });
 }
 // vix risk score over monthly series (rolling 36 z, rolling 6 mean) — pandas faithful
 function vixRiskSeries(vm){

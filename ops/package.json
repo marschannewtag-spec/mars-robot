@@ -1,0 +1,10 @@
+{
+  "name": "cash-gauge-ops",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "三方一致性測試用 — 在 Node 裡載入 PWA 的 index.html 並取出其純函式",
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  }
+}
