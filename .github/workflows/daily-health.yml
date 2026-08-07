@@ -188,18 +188,31 @@ jobs:
       issues: write
       id-token: write # claude-code-action 用 OIDC 換 App token,少了這個會直接失敗
     steps:
-      # 沒設 API key 就安靜跳過,讓整套系統在未啟用時仍然可用
+      # 兩種認證都支援,沒設就安靜跳過,讓整套系統在未啟用時仍然可用。
+      #
+      # CLAUDE_CODE_OAUTH_TOKEN 走 Pro/Max 訂閱額度,不另外計費 —— 優先用它。
+      # ANTHROPIC_API_KEY 是按 token 計費的 API 額度,當備援。
+      # 兩者不可同時傳給 action(靜態憑證會互相搶),所以下面用三元運算只傳一個。
       - name: 檢查是否已啟用
         id: guard
         env:
+          OAUTH: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          if [ -z "$KEY" ]; then
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "⏭ 未設定 ANTHROPIC_API_KEY,略過自動修復。健檢 Issue 已開,請手動處理。" \
-              >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$OAUTH" ]; then
+            echo "enabled=true"  >> "$GITHUB_OUTPUT"
+            echo "mode=oauth"    >> "$GITHUB_OUTPUT"
+            echo "🔑 使用 CLAUDE_CODE_OAUTH_TOKEN(Pro/Max 訂閱額度)" >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$KEY" ]; then
+            echo "enabled=true"  >> "$GITHUB_OUTPUT"
+            echo "mode=apikey"   >> "$GITHUB_OUTPUT"
+            echo "🔑 使用 ANTHROPIC_API_KEY(按量計費)" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "⏭ 未設定 CLAUDE_CODE_OAUTH_TOKEN 或 ANTHROPIC_API_KEY,略過自動修復。" \
+              >> "$GITHUB_STEP_SUMMARY"
+            echo "健檢 Issue 已開,請手動處理。設定方式見 ops/SETUP.md。" \
+              >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: actions/checkout@v4
@@ -233,10 +246,10 @@ jobs:
       - name: Claude 診斷並修復
         if: steps.guard.outputs.enabled == 'true'
         uses: anthropics/claude-code-action@c038e4dcdedfbbca18dfb17df35a17e40ded4ddc # v1.0.186
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # 只會有一個非空 —— 見上面 guard 步驟的說明
+          claude_code_oauth_token: ${{ steps.guard.outputs.mode == 'oauth' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          anthropic_api_key: ${{ steps.guard.outputs.mode == 'apikey' && secrets.ANTHROPIC_API_KEY || '' }}
           # 明確傳入內建的 GITHUB_TOKEN,避免走 OIDC 去換官方 Claude GitHub App 的
           # token —— 那條路需要在 repo 上安裝該 App。這個 token 的權限由上面的
           # permissions 決定,一樣推不動 main(分支保護)。

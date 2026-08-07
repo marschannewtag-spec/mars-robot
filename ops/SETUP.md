@@ -7,25 +7,50 @@
 
 ---
 
-## 1. Anthropic 帳戶儲值 ← **目前唯一的阻礙**
+## 1. 認證 ← **目前唯一的阻礙**
 
-`ANTHROPIC_API_KEY` 你已經設好了。**但實測跑出來是:**
+有兩條路,**建議走免費的那條**。
+
+### 🟢 走 Pro/Max 訂閱(不另外收費,建議)
+
+你已經在用 Claude Code,那筆訂閱費已經付了。action 官方支援直接吃訂閱額度:
+
+```bash
+claude setup-token
+```
+
+會開瀏覽器走一次 OAuth,然後印出一個長效 token。**只會顯示一次,馬上複製。**
+
+接著到 repo → **Settings → Secrets and variables → Actions → New repository secret**,
+名稱填 `CLAUDE_CODE_OAUTH_TOKEN`,值貼上那個 token。
+
+流程會優先用它。設好之後 `ANTHROPIC_API_KEY` 就用不到了(留著當備援無妨)。
+
+**要知道的兩件事:**
+
+- 它消耗的是**你訂閱的額度**,和你互動用 Claude Code 是同一個池子。
+  以這個專案的規模(健檢平常是綠的,一年可能只跑幾次)完全可以忽略。
+- token 綁在你的個人帳號上。存成 repo secret 是加密的,但別貼到別的地方。
+
+### 🟡 走 API 額度(按量計費)
+
+`ANTHROPIC_API_KEY` 你已經設好了,**但實測跑出來是:**
 
 ```
 result: Credit balance is too low
 num_turns: 1   total_cost_usd: 0   duration_ms: 486
 ```
 
-帳戶沒有餘額,所以 API 呼叫在第一步就被拒絕,486 毫秒、零花費就結束。
+帳戶沒有餘額,呼叫在第一步就被拒絕。要走這條就到
+https://console.anthropic.com/settings/billing 儲值。
 
-**要做的:** 到 https://console.anthropic.com/settings/billing 儲值。
+一次診斷大約幾萬到十幾萬 token,最低儲值額度能撐很久 —— 但既然訂閱那條是
+免費的,除非你有理由要把用量分開計帳,否則沒必要。
 
-**費用概念:** 只有健檢失敗時才會觸發,而健檢平常是綠的 —— 這個專案實際上
-一年可能只跑幾次。一次診斷大約幾萬到十幾萬 token。最低儲值額度就足以撐很久。
+### 兩條都不做會怎樣
 
-**不做會怎樣:** 健檢照常跑、Issue 照常開,但沒有人去修 —— 回到「你手動把
-Issue 貼給 Claude Code」。而且要注意:**autofix job 會顯示失敗**,
-但健檢 Issue 照常開,所以表面上看不出自動修復其實沒跑起來。
+健檢照常跑、Issue 照常開,但沒有人去修 —— 回到「你手動把 Issue 貼給 Claude Code」。
+`autofix` job 會安靜跳過(不是失敗),並在 summary 註明未設定。
 
 ### 儲值後怎麼驗證
 
