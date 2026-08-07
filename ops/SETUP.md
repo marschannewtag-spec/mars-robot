@@ -7,22 +7,41 @@
 
 ---
 
-## 1. `ANTHROPIC_API_KEY` — 啟用自動修復
+## 1. Anthropic 帳戶儲值 ← **目前唯一的阻礙**
 
-**不做會怎樣:** 健檢照常跑、Issue 照常開,但沒有人去修 —— 也就是回到「你手動把 Issue 貼給 Claude Code」。
-`autofix` job 會安靜跳過並在 summary 註明,不會讓流程失敗。
+`ANTHROPIC_API_KEY` 你已經設好了。**但實測跑出來是:**
 
-1. 到 https://console.anthropic.com/settings/keys 建一把 API key
-2. repo → **Settings → Secrets and variables → Actions → New repository secret**
-3. Name 填 `ANTHROPIC_API_KEY`,Value 貼上金鑰
+```
+result: Credit balance is too low
+num_turns: 1   total_cost_usd: 0   duration_ms: 486
+```
 
-**費用:** 每次觸發才會用到,而且只在健檢失敗時。以這個專案的規模,
-一次診斷大約幾萬到十幾萬 token。健檢平常是綠的,所以實際上一年可能只跑幾次。
+帳戶沒有餘額,所以 API 呼叫在第一步就被拒絕,486 毫秒、零花費就結束。
 
-**先驗證再放心:** 設好之後,到 Actions 手動觸發一次「L1 每日資料健檢」。
-健檢是綠的話 autofix 仍會跳過 —— 那是正常的。要真的測到它,
-可以暫時把 `ops/config.yml` 裡某個 `freshness_days` 改成 `0` 逼出一次失敗,
-看它開不開得出 PR,測完記得改回來。
+**要做的:** 到 https://console.anthropic.com/settings/billing 儲值。
+
+**費用概念:** 只有健檢失敗時才會觸發,而健檢平常是綠的 —— 這個專案實際上
+一年可能只跑幾次。一次診斷大約幾萬到十幾萬 token。最低儲值額度就足以撐很久。
+
+**不做會怎樣:** 健檢照常跑、Issue 照常開,但沒有人去修 —— 回到「你手動把
+Issue 貼給 Claude Code」。而且要注意:**autofix job 會顯示失敗**,
+但健檢 Issue 照常開,所以表面上看不出自動修復其實沒跑起來。
+
+### 儲值後怎麼驗證
+
+到 Actions → 「L1 每日資料健檢」→ **Run workflow**,把 **drill** 勾起來。
+
+那會強制跑一次自動修復(即使健檢是綠的),用來驗證整條鏈接得起來,
+不需要去改壞 config。健檢正常時 Claude 應該讀完報告後回報「沒有需要修的」。
+
+### 已經替你踩掉的坑(不用再處理)
+
+實測過程中撞到兩個,都已修正並驗證:
+
+| 問題 | 現象 | 已做的處理 |
+|---|---|---|
+| 缺 `id-token: write` | `Could not fetch an OIDC token` | 已加進 autofix job 的 permissions |
+| 官方 Claude GitHub App 未安裝 | `App token exchange failed: 401 — Claude Code is not installed on this repository` | 改為明確傳入內建的 `github_token`,**你不需要安裝那個 App** |
 
 ---
 
