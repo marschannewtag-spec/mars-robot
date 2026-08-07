@@ -1,20 +1,29 @@
 name: L1 每日資料健檢
 
-# 平常完全靜默。只有偵測到異常才開 Issue —— 沒消息就是好消息。
+# 平常完全靜默。偵測到異常才開 Issue,並(若已設定 API key)讓 Claude 診斷並開 PR。
 #
-# ⚠ GitHub 會在 repo 靜置 60 天後自動停用排程 workflow,而「一年碰一次」
-#   正是會觸發它的使用模式。本流程每天把 data/manifest.json commit 回去製造
-#   repo 活動當心跳。GitHub 在停用前會寄信通知,那封信不要忽略。
-#   若心跳無效(bot commit 是否算活動未經長期驗證),見 ops/CLAUDE.md 的說明。
+# 安全設計 —— 請不要「順手」放寬這些限制:
+#
+# 1. **Claude 只由本流程自己的健檢報告觸發,絕不由使用者的 Issue 觸發。**
+#    這個 repo 是公開的,任何人都能開 Issue。2026-06 已有公開的攻擊鏈:
+#    開一個惡意 Issue -> agent 讀它 -> 交出 repo 寫入憑證。輸入必須是我們自己
+#    產生且已淨化的文字,不能是外人可控的內容。
+#
+# 2. **Claude 的 contents:write 只用來推 fix/ 分支。** 擋住它動 main 的是
+#    main 的分支保護(要求 CI 通過),那道保護是這個設計的承重牆,不是裝飾。
+#
+# 3. **心跳推到 ops-data 分支,不推 main。** 一來心跳 commit 不跑 CI、
+#    會被分支保護擋下;二來不給任何自動流程碰 main 的理由。
+#    推到任何分支都算 repo 活動,一樣能避免排程被停用。
+#
+# 4. **action 釘死 SHA。** 用 @main 或浮動標籤正是出事的那種用法。
 
 on:
   schedule:
     - cron: "0 22 * * *" # 每天 UTC 22:00(美股收盤後)
   workflow_dispatch:
 
-permissions:
-  contents: write # 心跳 commit
-  issues: write # 開/關異常 Issue
+permissions: {}
 
 concurrency:
   group: daily-health
@@ -24,6 +33,11 @@ jobs:
   health:
     name: 資料源 · 新鮮度 · 合理性 · PWA
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # 只用來推 ops-data 分支;main 由分支保護擋住
+      issues: write
+    outputs:
+      code: ${{ steps.check.outputs.code }}
     steps:
       - uses: actions/checkout@v4
 
@@ -38,6 +52,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r ops/requirements.txt
 
+      # 健檢軌跡累積在 ops-data 分支上,先取回來再追加,否則每天都會從零開始
+      - name: 取回既有的健檢軌跡
+        run: |
+          mkdir -p ops/data
+          if git fetch origin ops-data 2>/dev/null; then
+            git show origin/ops-data:ops/data/health_log.csv > ops/data/health_log.csv 2>/dev/null \
+              && echo "已取回 $(wc -l < ops/data/health_log.csv) 行軌跡" || echo "分支上尚無軌跡檔"
+            git show origin/ops-data:ops/data/manifest.json > ops/data/manifest.json 2>/dev/null || true
+          else
+            echo "ops-data 分支尚不存在,將由本次建立"
+          fi
+
       - name: 執行健檢
         id: check
         working-directory: ops
@@ -51,6 +77,15 @@ jobs:
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "健檢結束,exit code = $code"
+
+      # 交給 autofix job 用。jobs 之間不共用檔案系統,只能走 artifact。
+      - name: 保存健檢報告
+        if: steps.check.outputs.code != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: health-report
+          path: health_report.md
+          retention-days: 7
 
       - name: 確保標籤存在
         env:
@@ -97,18 +132,29 @@ jobs:
 
       # 心跳:即使健檢失敗也要跑,否則「來源掛掉」會連帶讓排程被停用,
       # 變成故障期間反而失去監控 —— 最糟的失效模式。
-      - name: 心跳 — commit 資料 manifest
+      - name: 心跳 — 推資料到 ops-data 分支
         if: always()
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ops/data/manifest.json ops/data/health_log.csv
+
+          tmp=$(mktemp -d)
+          cp ops/data/manifest.json   "$tmp/" 2>/dev/null || true
+          cp ops/data/health_log.csv  "$tmp/" 2>/dev/null || true
+
+          git fetch origin ops-data 2>/dev/null \
+            && git checkout -f -B ops-data origin/ops-data \
+            || git checkout -f -B ops-data
+          mkdir -p ops/data
+          cp "$tmp"/manifest.json  ops/data/ 2>/dev/null || true
+          cp "$tmp"/health_log.csv ops/data/ 2>/dev/null || true
+
+          git add -f ops/data/manifest.json ops/data/health_log.csv 2>/dev/null || true
           if git diff --cached --quiet; then
-            echo "manifest 無變化,跳過 commit"
+            echo "資料無變化,跳過 commit"
           else
-            # [skip ci] 避免觸發 L2 —— 資料 manifest 的變動與邏輯無關
-            git commit -m "chore: 每日資料心跳 $(date -u '+%Y-%m-%d') [skip ci]"
-            git push
+            git commit -m "chore: 每日資料心跳 $(date -u '+%Y-%m-%d')"
+            git push origin ops-data
           fi
 
       - name: 摘要
@@ -120,3 +166,96 @@ jobs:
             echo "❌ 偵測到異常,詳見 Issue" >> "$GITHUB_STEP_SUMMARY"
             cat "$GITHUB_WORKSPACE/health_report.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  autofix:
+    name: Claude 診斷並開 PR
+    needs: health
+    if: needs.health.outputs.code != '0'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 只推 fix/ 分支;main 由分支保護擋住
+      pull-requests: write
+      issues: write
+    steps:
+      # 沒設 API key 就安靜跳過,讓整套系統在未啟用時仍然可用
+      - name: 檢查是否已啟用
+        id: guard
+        env:
+          KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$KEY" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "⏭ 未設定 ANTHROPIC_API_KEY,略過自動修復。健檢 Issue 已開,請手動處理。" \
+              >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          name: health-report
+
+      - uses: actions/setup-python@v5
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        if: steps.guard.outputs.enabled == 'true'
+        with:
+          node-version: "22"
+
+      - name: 安裝相依
+        if: steps.guard.outputs.enabled == 'true'
+        run: |
+          pip install -r ops/requirements.txt
+          npm ci --prefix ops
+
+      # 釘死 SHA。v1.0.186 —— 遠高於修掉 Issue 注入漏洞的 v1.0.94。
+      # 絕對不要改成 @main 或 @v1:那是浮動參照,正是 2026-06 出事的用法。
+      - name: Claude 診斷並修復
+        if: steps.guard.outputs.enabled == 'true'
+        uses: anthropics/claude-code-action@c038e4dcdedfbbca18dfb17df35a17e40ded4ddc # v1.0.186
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        with:
+          prompt: |
+            你是這個 repo 的維運工程師。每日健檢失敗了,報告在 `health_report.md`。
+
+            工程規格與系統不變量見 `ops/CLAUDE.md`,動手前先讀。
+
+            ## 任務
+
+            1. 讀 `health_report.md`,判斷失敗的真正原因。
+            2. **先判斷這是不是程式問題。** 很多失敗是外部資料源暫時故障
+               (來源停更、代理逾時、上游改格式)。那些不是 bug。
+            3. 若確實是程式問題:只修那一個問題,不要順手改別的。
+            4. 在 `ops/` 下跑 `python -m pytest tests/ -q`,必須全過。
+            5. 開一個 PR,標題以 `fix:` 開頭,說明裡寫清楚:
+               根因是什麼、你改了什麼、為什麼這樣改、以及你不確定的地方。
+
+            ## 絕對不可以做的事
+
+            - **不要放寬健檢的閾值來讓檢查通過。** 那等於把警報關掉。
+              如果閾值真的訂得太緊,在 PR 說明裡提出理由讓人決定,不要自己改。
+            - **不要修改 `ops/tests/fixtures/` 的黃金基準。** 基準漂移代表有東西
+              壞了;改基準等於湮滅證據。若你認為基準真的該變,在 PR 說明陳述理由。
+            - **不要修改 `.github/workflows/` 底下任何檔案。**
+            - **不要 push 到 main。** 只在 `fix/` 開頭的分支上工作。
+            - **不要印出、複製或以任何形式外洩 secret。**
+            - 若原因是外部資料源故障,不要為了讓 CI 綠燈而動程式碼。
+              直接在 PR 或健檢 Issue 留言說明現況即可。
+
+            ## 判斷不了就說不知道
+
+            資訊不足以定位根因時,不要猜著改。開一個只有說明、沒有程式碼改動的
+            PR,或在健檢 Issue 留言列出你查到的事實與還缺什麼。
+            **報告事實比硬修一個你不確定的東西有價值得多。**
+          claude_args: |
+            --max-turns 40

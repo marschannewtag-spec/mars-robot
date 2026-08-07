@@ -22,6 +22,7 @@ import io
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -38,6 +39,27 @@ CONFIG_PATH = OPS_ROOT / "config.yml"
 UA = {"User-Agent": "cash-gauge-ops/1.0 health-check"}
 
 OK, FAIL, SKIP = "OK", "FAIL", "SKIP"
+
+# 從外部回應擷取片段時允許的字元。刻意極保守。
+_SAFE_CHARS = re.compile(r"[^A-Za-z0-9 ,.:;/_@=<>()\[\]{}\"'?!+*%-]")
+
+
+def safe_snippet(text: str, limit: int = 60) -> str:
+    """把外部回應內容裁成可安全放進報告的片段。
+
+    為什麼需要這個:健檢報告會變成 GitHub Issue 的內文,而 Issue 內文可能被
+    自動化流程餵給 LLM。若原樣嵌入第三方伺服器回傳的 body,一個被入侵(或單純
+    惡意)的資料源就能把指令注入到那個提示裡 —— 這正是 2026 年 claude-code-action
+    被攻破的那類路徑。
+
+    做法:去掉換行與反引號(避免破壞 markdown 結構)、只留白名單字元、限長。
+    診斷需要的是「回了什麼型態的東西」,不需要原文逐字重現。
+    """
+    if not text:
+        return "(空回應)"
+    flat = " ".join(str(text).split())
+    cleaned = _SAFE_CHARS.sub("·", flat)[:limit]
+    return cleaned + ("…" if len(flat) > limit else "")
 
 
 @dataclass
@@ -251,7 +273,7 @@ def check_proxies(cfg: dict) -> list[Result]:
                 alive.append(p["name"])
                 detail.append(f"{p['name']}: OK ({len(r.text) // 1024} KB)")
             else:
-                detail.append(f"{p['name']}: HTTP {r.status_code} {r.text[:50]!r}")
+                detail.append(f"{p['name']}: HTTP {r.status_code} {safe_snippet(r.text, 50)}")
         except Exception as exc:  # noqa: BLE001
             detail.append(f"{p['name']}: {type(exc).__name__}")
 
@@ -304,7 +326,7 @@ def check_worker(cfg: dict) -> list[Result]:
         if r.status_code == 200 and '"chart"' in r.text[:400]:
             return [Result("自架 Worker", OK, f"HTTP 200,{len(r.text) // 1024} KB")]
         return [Result("自架 Worker", FAIL,
-                       f"HTTP {r.status_code},回傳前 60 字元 {r.text[:60]!r}")]
+                       f"HTTP {r.status_code},回應片段 {safe_snippet(r.text)}")]
     except Exception as exc:  # noqa: BLE001
         return [Result("自架 Worker", FAIL, f"無法連線:{exc}")]
 

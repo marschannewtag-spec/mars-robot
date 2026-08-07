@@ -36,6 +36,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r ops/requirements.txt
 
+      # 「資料源穩定度」那一節需要每日健檢累積的軌跡,而軌跡放在 ops-data 分支
+      # (心跳刻意不推 main —— 見 daily-health.yml 的說明)
+      - name: 取回健檢軌跡
+        run: |
+          mkdir -p ops/data
+          if git fetch origin ops-data 2>/dev/null; then
+            git show origin/ops-data:ops/data/health_log.csv > ops/data/health_log.csv 2>/dev/null \
+              && echo "已取回 $(wc -l < ops/data/health_log.csv) 行軌跡" \
+              || echo "分支上尚無軌跡檔 —— 報告的資料源穩定度一節會是空的"
+          else
+            echo "ops-data 分支尚不存在 —— 每日健檢還沒跑過"
+          fi
+
       - name: 產出報告
         id: report
         working-directory: ops
@@ -56,16 +69,23 @@ jobs:
           path: ${{ steps.report.outputs.path }}
           retention-days: 90
 
-      - name: Commit 報告
+      # 報告推到 ops-data 分支,不推 main —— main 有分支保護且要求 CI 通過,
+      # 而報告 commit 不該去跑一輪 CI。報告已同時存成 artifact 與 workflow summary。
+      - name: Commit 報告到 ops-data 分支
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ops/reports/
+          tmp=$(mktemp -d) && cp -r ops/reports "$tmp/"
+          git fetch origin ops-data 2>/dev/null \
+            && git checkout -f -B ops-data origin/ops-data \
+            || git checkout -f -B ops-data
+          mkdir -p ops && cp -r "$tmp/reports" ops/
+          git add -f ops/reports/
           if git diff --cached --quiet; then
             echo "報告內容無變化,跳過 commit"
           else
-            git commit -m "報告: 年度健檢 $(date -u +%Y) [skip ci]"
-            git push
+            git commit -m "報告: 年度健檢 $(date -u +%Y)"
+            git push origin ops-data
           fi
 
       - name: 開 Issue 提醒閱讀
