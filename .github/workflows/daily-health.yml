@@ -275,3 +275,22 @@ jobs:
             **報告事實比硬修一個你不確定的東西有價值得多。**
           claude_args: |
             --max-turns 40
+
+      # 失敗時只挖出錯誤欄位。刻意不開 show_full_output —— 這是公開 repo,
+      # workflow log 是公開的,把 Claude 的完整輸出印出來風險太大。
+      - name: 失敗診斷(只印錯誤欄位)
+        if: failure() && steps.guard.outputs.enabled == 'true'
+        run: |
+          f=/home/runner/work/_temp/claude-execution-output.json
+          if [ ! -f "$f" ]; then echo "找不到 $f"; exit 0; fi
+          python3 - "$f" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1], encoding="utf-8"))
+          if isinstance(d, list):
+              d = d[-1] if d else {}
+          for k in ("type", "subtype", "is_error", "num_turns",
+                    "total_cost_usd", "error", "result", "message"):
+              if k in d:
+                  v = str(d[k])
+                  print(f"{k}: {v[:600]}")
+          PY
