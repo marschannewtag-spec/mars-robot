@@ -154,9 +154,14 @@ FRED 免金鑰 CSV 的全段歷史。
 - `request.security` 的實際行為是否如假設
 - TradingView 的 VIX/SPX 資料是否與 Yahoo/GitHub 來源一致
 
-做法:月線 SPX 圖套用指標 → 匯出 CSV → `python ops/scripts/check_pine_parity.py <檔案>`。
+**完整步驟見 [`pine/README.md`](pine/README.md)。** 摘要:月線 `SP:SPX` 圖套用指標 →
+往回捲到 1990 之前(TradingView 只匯出已載入的 bar)→ 匯出 CSV →
+`python ops/scripts/check_pine_parity.py <檔案>`。
 
 **在第二段完成前,Pine 的狀態是「邏輯已驗證、執行未驗證」。**
+
+已知盲點:一份邏輯完全正確但編譯不過的 `.pine`,CI 會給綠燈。
+這是離線驗證無法消除的,只能靠上面那個手動步驟補。
 
 ---
 

@@ -17,6 +17,7 @@
 | `icon-192.png` / `icon-512.png` | App 圖示 |
 | `pwa_preview.png` | 截圖,程式未引用 |
 | `ops/` | 維運專案:訊號引擎(真理來源)、資料管線、測試、健檢與年度報告 |
+| `ops/pine/` | TradingView 版指標 + [執行層驗證步驟](ops/pine/README.md) |
 
 ---
 

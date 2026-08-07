@@ -110,11 +110,31 @@ def main() -> int:
     if len(bad) > 30:
         print(f"… 另外 {len(bad) - 30} 個月")
 
-    print("\n常見原因:")
-    print("  · 圖表不是月線 —— 所有滾動窗口長度會全錯")
-    print("  · VIX 來源符號不同(CBOE:VIX vs TVC:VIX)歷史起點不一樣")
-    print("  · Pine 的 ta.stdev() 是母體標準差,必須手算成樣本標準差(ddof=1)")
-    print("  · 圖表載入的歷史不夠長,前 36 個月的 z-score 還在暖機")
+    # 把「資料時點差異」和「真正的邏輯漂移」分開 —— 兩者的處理方式完全不同,
+    # 混在一起會讓人把前者誤判成 bug,浪費一整個下午。
+    tail_two = set(sorted(common)[-2:])
+    if set(bad.index) <= tail_two:
+        print("\n▲ 所有差異都集中在最後兩個月。")
+        print("  這**很可能不是 bug** —— TradingView 的當月是進行中的 bar,")
+        print("  會隨盤中報價一直變,而 engine.py 用的是有固定截止點的快照。")
+        print("  判斷方式:等當月收完再匯出一次;若歷史月份全部吻合,就是資料時點差異。")
+        return 1
+
+    early = [ym for ym in bad.index if ym < sorted(common)[36]]
+    if early and len(early) == len(bad):
+        print("\n▲ 差異全部落在最前面 36 個月(z-score 暖機期)。")
+        print("  常見原因是圖表載入的歷史不夠長 —— TradingView 只匯出【已載入】的 bar,")
+        print("  暖機期的滾動視窗因此吃不到足夠資料。往回捲到 1990 之前再匯出一次。")
+        return 1
+
+    print("\n差異散布在歷史各處,比較可能是真的漂移。常見原因:")
+    print("  · 圖表不是月線 —— 所有滾動窗口長度會全錯(指標右上角會顯示紅色警告)")
+    print("  · VIX 來源符號不同(CBOE:VIX vs TVC:VIX)歷史起點與數值可能不同")
+    print("  · TradingView 的 SPX 序列與 Yahoo ^GSPC 有調整差異")
+    print("  · .pine 被改過但 ops/src/engine.py 沒跟著改(或反過來)")
+    print("\n下一步:先跑 `python -m pytest ops/tests/test_pine_sim.py -v`。")
+    print("  那一層若也失敗 → 是 .pine 的邏輯真的與 engine.py 不一致。")
+    print("  那一層若通過 → 邏輯是對的,問題出在 TradingView 的執行環境或資料源。")
     return 1
 
 
