@@ -7,3 +7,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 node_modules/
+
+# 這兩個檔由每日健檢維護,住在 ops-data 分支(見 .github/workflows/daily-health.yml)。
+# 留在 main 會變成永遠停在某次執行的過期值,比沒有更誤導。
+data/manifest.json
+data/health_log.csv
