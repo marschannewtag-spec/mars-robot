@@ -176,6 +176,7 @@ jobs:
       contents: write # 只推 fix/ 分支;main 由分支保護擋住
       pull-requests: write
       issues: write
+      id-token: write # claude-code-action 用 OIDC 換 App token,少了這個會直接失敗
     steps:
       # 沒設 API key 就安靜跳過,讓整套系統在未啟用時仍然可用
       - name: 檢查是否已啟用
