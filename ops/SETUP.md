@@ -7,9 +7,17 @@
 
 ---
 
-## 1. 認證 ← **目前唯一的阻礙**
+## 1. 認證(目前刻意未啟用)
 
-有兩條路,**建議走免費的那條**。
+**現況:兩個 secret 都沒設,`autofix` job 會乾淨地跳過。**
+
+這是有意的選擇,不是漏做。系統目前運作方式:健檢偵測到異常 → 開 Issue →
+**你手動把 Issue 貼給 Claude Code 處理**。和啟用自動修復的差別只在最後一步是誰按的。
+
+實測過的降級行為(2026-08-08 drill):整體 run `success`,autofix job 只執行
+guard 那一步就跳過,不浪費 runner 時間、不亮紅燈。
+
+想啟用的話,有兩條路 —— **建議走免費的那條**。
 
 ### 🟢 走 Pro/Max 訂閱(不另外收費,建議)
 
@@ -34,23 +42,28 @@ claude setup-token
 
 ### 🟡 走 API 額度(按量計費)
 
-`ANTHROPIC_API_KEY` 你已經設好了,**但實測跑出來是:**
+`ANTHROPIC_API_KEY` 曾經設過,但實測是:
 
 ```
 result: Credit balance is too low
 num_turns: 1   total_cost_usd: 0   duration_ms: 486
 ```
 
-帳戶沒有餘額,呼叫在第一步就被拒絕。要走這條就到
-https://console.anthropic.com/settings/billing 儲值。
+帳戶沒有餘額,呼叫在第一步就被拒絕。**該 secret 已於 2026-08-08 刪除** ——
+留著只會讓 guard 誤判「已啟用」,每次白跑一分鐘裝相依然後失敗。
 
-一次診斷大約幾萬到十幾萬 token,最低儲值額度能撐很久 —— 但既然訂閱那條是
-免費的,除非你有理由要把用量分開計帳,否則沒必要。
+要走這條:到 https://console.anthropic.com/settings/billing 儲值,再把
+`ANTHROPIC_API_KEY` 加回去。一次診斷大約幾萬到十幾萬 token。
 
-### 兩條都不做會怎樣
+但既然訂閱那條是免費的,除非你有理由要把用量分開計帳,否則沒必要。
 
-健檢照常跑、Issue 照常開,但沒有人去修 —— 回到「你手動把 Issue 貼給 Claude Code」。
-`autofix` job 會安靜跳過(不是失敗),並在 summary 註明未設定。
+### ⚠ 若哪天啟用了,記得驗證
+
+設好任一 secret 後,到 Actions → 「L1 每日資料健檢」→ Run workflow → 勾 **drill**。
+
+**不要假設設好就會動。** 這條鏈實測撞過三個坑,前兩個已修在 workflow 裡
+(`id-token: write`、改傳內建 `github_token` 以免要裝官方 GitHub App),
+第三個就是額度。認證方式換了之後,還可能有沒踩過的坑。
 
 ### 儲值後怎麼驗證
 
