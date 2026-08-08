@@ -182,6 +182,12 @@ jobs:
     needs: health
     if: needs.health.outputs.code != '0' || inputs.drill
     runs-on: ubuntu-latest
+    # 自動修復失敗不該讓整個 run 變紅。這兩層的語意必須分開:
+    #   run 顏色 = 自動化本身有沒有壞
+    #   Issue    = 資料健不健康
+    # 混在一起的話,每次健檢異常都會同時出現紅燈,而紅燈看久了就會被無視 ——
+    # 對一個「沒消息就是好消息」的系統,那等於把整層關掉。
+    continue-on-error: true
     permissions:
       contents: write # 只推 fix/ 分支;main 由分支保護擋住
       pull-requests: write
@@ -307,3 +313,16 @@ jobs:
                   v = str(d[k])
                   print(f"{k}: {v[:600]}")
           PY
+
+      - name: 自動修復失敗的說明
+        if: failure() && steps.guard.outputs.enabled == 'true'
+        run: |
+          {
+            echo "### ⚠️ 自動修復沒有跑成功"
+            echo
+            echo "**健檢本身正常運作** — 失敗的只有 Claude 這一步(見上一個 job)。"
+            echo "資料健康狀況以 Issue 為準,不是以這個 run 的顏色為準。"
+            echo
+            echo "最常見的原因是認證:API 額度用盡、或 token 過期。"
+            echo "處理方式見 \`ops/SETUP.md\` 的「認證」一節。"
+          } >> "$GITHUB_STEP_SUMMARY"
