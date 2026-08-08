@@ -12,3 +12,6 @@ node_modules/
 # 留在 main 會變成永遠停在某次執行的過期值,比沒有更誤導。
 data/manifest.json
 data/health_log.csv
+
+# 年度報告由 annual-review.yml 產生並推到 ops-data 分支,同理不留在 main。
+reports/
