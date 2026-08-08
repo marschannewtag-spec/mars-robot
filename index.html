@@ -161,6 +161,7 @@
     <div class="verdict" id="verdict">讀取資料中…</div>
     <div class="defnote" id="defnote"></div>
     <div class="asof" id="asof"></div>
+    <div class="defnote" id="opsnote"></div>
   </div>
 </section>
 
@@ -622,6 +623,37 @@ document.addEventListener("visibilitychange",()=>{
 });
 // instant paint from cache, then network
 (function(){const o=readCache(); if(o)paintFromCache(o); load(false);})();
+
+// ---- 自動監控的心跳偵測(看門狗的看門狗)------------------------------------
+// L1 每日健檢是排程 workflow,而 GitHub 會在 repo 靜置約 60 天後【自動停用排程】。
+// 這整套系統的前提是「沒消息就是好消息」—— 所以監控自己死掉的時候,症狀和一切
+// 正常【完全一樣】,不會有任何人察覺。原本唯一的主動訊號是 GitHub 寄的那封信,
+// 而那要靠人記得看信。這裡補上第二條:直接讀每日健檢推到 ops-data 分支的 manifest,
+// 心跳停太久就在這個頁面上說一聲 —— 因為這是你真的會打開的東西。
+//
+// 【刻意失敗即靜默】:抓不到就什麼都不顯示。離線、防火牆、GitHub 抽風都會讓
+// fetch 失敗,那些都不是「監控死了」的證據。誤報比漏報更糟 —— 一個會亂叫的
+// 指示燈幾天後就會被無視,那等於沒有。這是次要防線,不是主要防線。
+const OPS_MANIFEST="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/manifest.json";
+const OPS_STALE_DAYS=4;   // 心跳是每日的;4 天容得下週末與單次 outage,離 60 天大限還很遠
+function checkOpsHeartbeat(){
+  fetchT(OPS_MANIFEST,null,6000)
+    .then(r=>r.ok?r.json():Promise.reject(new Error(r.status)))
+    .then(m=>{
+      const ts=Object.values(m||{}).map(v=>Date.parse(v&&v.fetched_at)).filter(isFinite);
+      if(!ts.length)return;
+      const days=Math.floor((Date.now()-Math.max.apply(null,ts))/864e5);
+      if(days<OPS_STALE_DAYS)return;
+      const el=$("opsnote"); if(!el)return;
+      el.classList.add("on");
+      el.innerHTML="⚠ <b>背後的自動監控已 "+days+" 天沒有心跳。</b>每日資料健檢可能已停止運作"
+        +"（GitHub 會自動停用長期靜置 repo 的排程流程）。<br>"
+        +"上面的數字仍是<b>即時抓的、沒有問題</b> —— 失效的是那層在幫你盯"
+        +"「資料源有沒有默默壞掉」的機制。處理方式見 repo 的 <code>ops/SETUP.md</code> 第 4 項。";
+    })
+    .catch(()=>{});   // 刻意吞掉,理由見上
+}
+checkOpsHeartbeat();
 // ---- API key 設定 ----
 function refreshKeyStatus(){
   const k=getKey();

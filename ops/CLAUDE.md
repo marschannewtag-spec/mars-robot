@@ -87,7 +87,7 @@ PWA 退回 Shiller 時會顯示警示列說明定義不同,**不得無聲切換*
 | Yahoo `^GSPC` 日K | 價格(月收盤) | 免金鑰。**必須用 `period1=0`** 才拿得到全段(1970 起 14k+ 筆);`range=max` 會被自動降頻成 168 根月K |
 | GitHub `finance-vix` | VIX 日頻 | 免金鑰,1990 起,穩定 |
 | GitHub `s-and-p-500` | Shiller 股息 | 免金鑰。⚠ `Dividend` 與 `Long Interest Rate` 欄**自 2023-07 起全為 0**(未發布) |
-| FRED HY-OAS / T10Y3M | 年度健檢脈絡 | **需要免費 API key**。`fredgraph.csv` 端點忽略 `cosd` 參數、只回近三年;`/data/*.txt` 會轉址到 HTML |
+| FRED HY-OAS / T10Y3M | **目前無人消費** | ⚠ 抓取路徑寫在 `fetch_data.py`,但 `refresh()` 預設排除需金鑰的來源,且 `annual_review.py` 沒有對應章節 —— 設了 `FRED_API_KEY` 也不會改變任何輸出。要接上或拆掉見 `SETUP.md` 第 2 項。(技術限制仍然成立:`fredgraph.csv` 端點忽略 `cosd` 只回近三年,`/data/*.txt` 轉址到 HTML,所以全段歷史確實需要金鑰) |
 
 **已知不可用,別再加回來:** Stooq(不送 CORS 標頭,經代理則回傳擋爬蟲的 HTML)、
 FRED 免金鑰 CSV 的全段歷史。
@@ -253,17 +253,32 @@ L1 健檢偵測到異常
 已知的不確定點是:`GITHUB_TOKEN` 產生的 bot commit 是否被 GitHub 計為
 「repository activity」。有多方回報它**不算**。
 
-因此請把下面這兩件事當成真正的防線:
+因此**偵測**比**預防**重要 —— 預防驗不了,偵測可以:
 
-1. **GitHub 會在停用前寄 email 通知。** 那封信不要當廣告忽略 —— 它是這套系統
-   唯一會主動告訴你「監控要停了」的訊號。
-2. **若收到那封信,把心跳改用 PAT 推送**:建一個 fine-grained PAT
+1. **GitHub 會在停用前寄 email 通知。** 那封信不要當廣告忽略。
+2. **PWA 的心跳指示器** —— `index.html` 的 `checkOpsHeartbeat()` 讀
+   `ops-data` 上的 `ops/data/manifest.json`,取所有來源 `fetched_at` 的最大值,
+   超過 `OPS_STALE_DAYS`(4 天)就顯示 `#opsnote` 琥珀色警告。
+
+   **這段程式碼有兩條不得違反的性質:**
+
+   - **失敗即靜默。** fetch 失敗、非 200、`fetched_at` 解析不出來 —— 一律不顯示。
+     離線與網路故障不是「監控死了」的證據。**不要「順手」把 catch 改成顯示錯誤** ——
+     一個會亂叫的指示燈幾天後就會被無視,那等於沒有。已用 5 個分支測過
+     (3天/9天/離線/404/壞資料)。
+   - **門檻不得低於 3 天。** 心跳是每日的,但單次 outage、GitHub 事故、
+     workflow 排隊都會製造 1–2 天空窗。4 天離 60 天大限還很遠,不必激進。
+
+   已知限制:**只在使用者打開 PWA 時才檢查**。它是第二條防線,不是取代 email。
+
+3. **若收到那封信,把心跳改用 PAT 推送**:建一個 fine-grained PAT
    (只需 `contents: write`),存成 repo secret,再把 `daily-health.yml` 的
    checkout 步驟改成 `token: ${{ secrets.HEARTBEAT_PAT }}`。真人身分的推送
    一定算活動。
 
-驗證方式:兩個月後到 Actions 頁面看排程是否仍在跑。或更簡單 —— 只要每年
-手動觸發一次 L3 年度健檢,那本身就是一次 repo 活動,足以重置計時器。
+⚠ **不要拿 repo 的 `pushed_at` 當作「bot commit 有算活動」的證據** ——
+2026-08-08 試過,bot 的心跳(`02:29:00Z`)被人類 push(`02:30:25Z`)蓋掉,
+分辨不出來。要驗必須挑一段確定沒有人類 push 的窗口再比對。
 
 ---
 

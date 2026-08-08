@@ -19,7 +19,13 @@
 //        python ops/scripts/check_pine_parity.py <匯出的.csv>
 //    差異 > 1e-9 即視為漂移。在跑過之前,本檔算「邏輯已驗證、執行未驗證」。
 // =============================================================================
-indicator("現金水位儀 · Cash-Weight Gauge", shorttitle="CWG", overlay=false, precision=1)
+// max_bars_back:底下 sampleStdev() 用 src[i](i 是迴圈變數)往回取值,Pine 的
+// 編譯器無法靜態推導需要多深的歷史緩衝,會丟「Pine cannot determine the referencing
+// length of series」。那是【執行期】錯誤,而且不一定在第一根 bar 就爆 —— 正是離線
+// 驗證抓不到、只會在 TradingView 上浪費你時間的那種問題。
+// 實際只需要 36(Z_LEN),給 500 是純保險;這支腳本很輕,記憶體代價可忽略。
+indicator("現金水位儀 · Cash-Weight Gauge", shorttitle="CWG", overlay=false, precision=1,
+     max_bars_back=500)
 
 // ---- 參數 -------------------------------------------------------------------
 vixSym   = input.symbol("CBOE:VIX", "VIX 來源", tooltip="歷史較長的替代來源:TVC:VIX")

@@ -83,14 +83,32 @@ num_turns: 1   total_cost_usd: 0   duration_ms: 486
 
 ---
 
-## 2. `FRED_API_KEY` — 補齊年度健檢的信用利差
+## 2. `FRED_API_KEY` — ⚠ 現在設了也沒用,先別浪費時間
 
-**不做會怎樣:** 年度報告仍然產得出來,但沒有 HY-OAS 的長期脈絡。
-`fredgraph.csv` 免金鑰端點只回近三年且忽略 `cosd` 參數 —— 這是實測過的,
-不是設定問題。
+**這一項原本的說明(「補齊年度健檢的信用利差」)是錯的,我寫錯了。** 實際盤點:
 
-1. 到 https://fred.stlouisfed.org/docs/api/api_key.html 免費申請(填個表就好)
-2. 存成 repo secret,名稱 `FRED_API_KEY`
+| 有的東西 | 位置 |
+|---|---|
+| `hy_oas` / `t10y3m` 的來源定義與 FRED JSON API 抓取路徑 | `src/fetch_data.py` |
+| workflow 有把 `FRED_API_KEY` 傳進環境變數 | 兩支 workflow 都有 |
+
+| 沒有的東西 | 後果 |
+|---|---|
+| `refresh()` 預設**排除**所有需要金鑰的來源 | 每日流程根本不會去抓 |
+| 沒有任何 `refresh(["hy_oas"])` 或 `load("hy_oas")` 呼叫 | 抓了也沒人讀 |
+| `annual_review.py` 的六節裡**沒有信用利差那一節** | 報告本來就不含這個內容 |
+
+所以現在申請金鑰、設好 secret,年度報告會**一字不差地跟現在一樣**。
+管線鋪好了但沒接上出海口。
+
+**要真的有用,得先決定一件事(這是你的決定,不是我的):**
+
+- **接上** → 我在 `annual_review.py` 加一節「信用利差脈絡」,只陳述當前 HY-OAS
+  的絕對水準與歷史分位,不做判斷。之後金鑰才有意義。
+- **拆掉** → 把 `fetch_data.py` 裡兩個 FRED 來源與 workflow 的環境變數刪掉,
+  少兩段沒人走的路。
+
+在你決定之前,**不用去申請金鑰**。
 
 ---
 
@@ -109,18 +127,33 @@ num_turns: 1   total_cost_usd: 0   duration_ms: 486
 GitHub 會在 repo 靜置一段時間後自動停用排程 workflow,而「一年碰一次」
 正是會觸發它的使用模式。
 
-**目前的緩解:** 每日健檢會把資料推到 `ops-data` 分支製造 repo 活動。
-**但這個機制沒有被驗證過** —— 效果要兩個月後才看得出來,而且已知的不確定點是
-`GITHUB_TOKEN` 產生的 bot commit 是否被計為「repository activity」,
-有多方回報**不算**。
+**為什麼這件事比看起來嚴重:** 這套系統的前提是「沒消息就是好消息」。
+監控自己死掉的時候,症狀和一切正常**完全一樣** —— 一樣安靜。所以它不像其他故障
+會自己浮出來,必須有東西主動告訴你。
 
-所以真正的防線是這兩件事:
+**預防(製造活動,但沒被驗證過):** 每日健檢會把資料推到 `ops-data` 分支。
+效果要兩個月後才看得出來,而且已知的不確定點是 `GITHUB_TOKEN` 產生的 bot commit
+是否被計為「repository activity」,有多方回報**不算**。
 
-1. **GitHub 停用前會寄 email。** 那封信不要當廣告忽略 —— 它是這套系統唯一會
-   主動告訴你「監控要停了」的訊號。
-2. **收到就把心跳改用 PAT 推送:** 建一個 fine-grained PAT(只需 `contents: write`),
-   存成 secret `HEARTBEAT_PAT`,把 `daily-health.yml` 的 checkout 步驟加上
-   `token: ${{ secrets.HEARTBEAT_PAT }}`。真人身分的推送一定算活動。
+> 2026-08-08 試著實測過:repo 的 `pushed_at` 是 `02:30:27Z`,但那是我自己
+> 那次 push(`02:30:25`)蓋掉了 bot 的心跳(`02:29:00`)。**這次分辨不出來**,
+> 所以上面的不確定性維持原狀,沒有被排除。
+
+**偵測(兩條,互相獨立):**
+
+1. **GitHub 停用前會寄 email。** 那封信不要當廣告忽略。
+2. **PWA 上的心跳指示器**(2026-08-08 加,`index.html` 的 `checkOpsHeartbeat()`)——
+   頁面會去讀 `ops-data` 上的 `manifest.json`,心跳停超過 **4 天**就在建議現金比重
+   底下顯示一列琥珀色警告。平常完全不出現。
+   - **為什麼放在 PWA:** 那是你真的會打開的東西,不需要你記得去看 Actions 頁面。
+   - **刻意失敗即靜默:** 抓不到、404、垃圾內容一律不顯示。離線不是「監控死了」的
+     證據,誤報比漏報更糟。五個分支都實測過(3天/9天/離線/404/壞資料)。
+   - **⚠ 它的限制:** 只在你**打開 PWA** 時才會檢查。你半年不開,它半年不會說話。
+     所以它是第二條防線,不是取代那封 email。
+
+**收到通知後怎麼處理:** 建一個 fine-grained PAT(只需 `contents: write`),
+存成 secret `HEARTBEAT_PAT`,把 `daily-health.yml` 的 checkout 步驟加上
+`token: ${{ secrets.HEARTBEAT_PAT }}`。真人身分的推送一定算活動。
 
 或者更簡單 —— 你每年手動觸發一次 L3 年度健檢,那本身就是一次 repo 活動。
 

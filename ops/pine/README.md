@@ -132,11 +132,78 @@ python -m pytest ops/tests/test_pine_sim.py -v
 
 ---
 
+## 如果編譯失敗 —— 已預先分析的三個候選
+
+離線驗不到編譯,但**可以事先把最可能出事的地方標出來**。
+下面三個是靜態審查後認定的高風險點,按可能性排序。
+每個都附了確切改法,自己 30 秒就能試,不用先問人。
+
+> 這三個都是**純執行層**的調整,不動任何數字。
+> 改完務必回頭跑 `python -m pytest ops/tests/test_pine_sim.py -q` 確認邏輯層還是綠的。
+
+### 候選 1 · `ta.sma` 的 length 型別(最可能)
+
+**錯誤訊息長這樣:**
+
+```
+Cannot call 'ta.sma' with argument 'length'='len'.
+An argument of 'series int' type was used but a 'simple int' is expected.
+```
+
+原因:`sampleStdev` 的 `len` 參數沒寫限定詞,Pine 可能推導成 `series int`,
+但 `ta.sma` 的長度要 `simple int`。
+
+**改法** —— 第 44 行附近:
+
+```diff
+-sampleStdev(float src, int len) =>
++sampleStdev(float src, simple int len) =>
+```
+
+沒先改是因為兩種推導結果我無法離線判定,而**改一個本來就對的東西也可能引入新錯誤**。
+若沒出現這個訊息就不要動它。
+
+### 候選 2 · 歷史緩衝不足
+
+**錯誤訊息長這樣:**
+
+```
+Pine cannot determine the referencing length of series.
+Try using max_bars_back in the indicator() or strategy() function.
+```
+
+`indicator()` 已經帶了 `max_bars_back=500`,理論上夠(實際只需 36)。
+若仍出現,把它調到上限:
+
+```diff
+-     max_bars_back=500)
++     max_bars_back=5000)
+```
+
+⚠ 這個錯誤**不一定在加上圖表的當下就出現** —— 它可能在你捲到某段歷史時才爆。
+所以做完步驟 3(往回捲)之後要再看一次有沒有紅色驚嘆號。
+
+### 候選 3 · 換行縮排
+
+**錯誤訊息長這樣:** `end of line without line continuation`
+
+`levelColor()` 的巢狀三元運算子跨了四行。Pine 規定續行的縮排**不可以是 4 的倍數**
+(4 的倍數被解讀成區塊縮排)。現在用的是 6 格,應該是對的,但若真的報這個錯,
+把那四行併成一行即可。
+
+### 不是錯誤、但可能看起來怪的一項
+
+右上角資訊表的「乖離」用了 `str.tostring(mom * 100, "+#.##")`。
+`+` 是格式字串裡的字面前綴,**負值有可能印成 `-+2.34`**。
+純顯示問題,不影響任何計算,也不影響匯出比對 —— 看到的話忽略即可,或把 `"+#.##"` 改成 `"#.##"`。
+
+---
+
 ## 疑難排解
 
 | 症狀 | 可能原因 | 處理 |
 |---|---|---|
-| 指標加不上去 / 紅字錯誤 | `.pine` 編譯失敗 | 把錯誤訊息貼給 Claude Code。這正是離線驗不到、需要這一步的原因 |
+| 指標加不上去 / 紅字錯誤 | `.pine` 編譯失敗 | 先看上一節的三個候選。都不是的話再把錯誤訊息貼給 Claude Code |
 | 右上角紅色警告 | 圖表不是月線 | 切到 1M |
 | `交集不足 24 個月` | 匯出區間太短 | 步驟 3:往回捲 |
 | `找不到現金比重欄` | 匯出的欄名不同 | 用 `--cash-column "<實際欄名>"` 指定。腳本會列出所有欄名 |
