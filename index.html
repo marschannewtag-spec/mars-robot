@@ -457,13 +457,20 @@ function paintLadder(c){
     const r=document.createElement("div");r.className="rung";r.style.bottom=(f*100)+"%";lad.appendChild(r);
   });
 }
-let _lastHist=null,_rzTimer=null;
+let _lastHist=null,_rzTimer=null,_drawRetry=0;
 function drawChart(hist){
-  if(hist)_lastHist=hist; else hist=_lastHist;
+  if(hist){_lastHist=hist;_drawRetry=0;} else hist=_lastHist;
   if(!hist)return;
   const cv=$("chart"),dpr=window.devicePixelRatio||1;
   const W=cv.clientWidth,H=200;
-  if(W<=0)return;                       // 面板還沒佈局完(或被隱藏)就先不畫
+  if(W<=0){
+    // 版面還沒成形(首次載入時真的會發生,實測過)。
+    // 不能靜靜放棄 —— 那會留下一張永久空白的圖表,而且復原只能靠 ResizeObserver,
+    // 但已實測有些環境根本不派送那個事件。這裡自己重試,最多 2 秒。
+    if(_drawRetry++ < 20) setTimeout(()=>drawChart(), 100);
+    return;
+  }
+  _drawRetry=0;
   cv.width=W*dpr;cv.height=H*dpr;
   const x=cv.getContext("2d");x.scale(dpr,dpr);x.clearRect(0,0,W,H);
   if(!hist.length)return;
