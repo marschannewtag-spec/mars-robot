@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  現金水位儀 · Cash-Weight Gauge
+
+  ⚠ 改動本檔後,請把 sw.js 的 CACHE 版本號 +1,否則已安裝的使用者可能吃到舊殼。
+
+  ⚠ 本檔的計算邏輯必須與 ops/src/engine.py 一致(那是真理來源)。
+    CI 會用 jsdom 載入這個檔案、呼叫它自己的函式,與 engine.py 逐月精確比對。
+    改了計算就跑 `cd ops && python -m pytest tests/ -q`。
+
+  工程規格與系統不變量:ops/CLAUDE.md
+-->
 <html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
