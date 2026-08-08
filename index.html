@@ -613,6 +613,9 @@ $("refresh").onclick=()=>load(true);
 // auto-refresh when returning to app if data >6h old
 document.addEventListener("visibilitychange",()=>{
   if(document.visibilityState==="visible"){
+    // 在背景分頁載入時版面尺寸是 0(實測:cssW=0,drawChart 重試 20 次後放棄),
+    // 圖表會是空白的。切回前景時補畫一次 —— 不依賴 ResizeObserver 是否派送事件。
+    scheduleRedraw();
     const o=readCache();
     if(!o||Date.now()-o.at>216e5)load(false);
   }
