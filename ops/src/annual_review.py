@@ -28,6 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import backtest  # noqa: E402
 import engine  # noqa: E402
 import fetch_data  # noqa: E402
+from console import force_utf8  # noqa: E402
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 REPORTS = OPS_ROOT / "reports"
@@ -181,27 +182,51 @@ def section_extremes(sig: pd.DataFrame) -> Section:
 
 
 def section_data_health() -> Section:
-    """資料源穩定度:過去一年每日健檢的成功率。"""
+    """資料源穩定度:過去一年每日健檢的成功率。
+
+    ⚠ `health_log.csv` 是【每次執行】追加一行,不是每天一行 —— 手動觸發、drill、
+    重跑都會讓同一天出現多列。所以這裡必須先按日期彙總,否則「天數」會被執行次數
+    灌水。2026-08-09 實測:兩天的紀錄被印成「10 天」,成功率也跟著失真。
+
+    原始 log 維持 append-only 當稽核軌跡(每次執行都是一筆證據),彙總只在讀的
+    時候做 —— 不要反過來去改 append_log() 讓它一天只留一行,那會丟掉資訊。
+
+    一天只要有任何一次執行是紅的,那天就算紅:資料源當天確實出過問題,
+    後來的重跑通過不代表沒發生。
+    """
     if not HEALTH_LOG.exists():
         return Section("資料源穩定度",
                        "尚無 `data/health_log.csv` —— 每日健檢還沒累積足夠紀錄。\n"
                        "這一節要等每日流程跑滿一段時間才有內容。")
     log = pd.read_csv(HEALTH_LOG)
-    log["date"] = pd.to_datetime(log["date"])
+    log["date"] = pd.to_datetime(log["date"], errors="coerce")
+    log = log.dropna(subset=["date"])
+    if log.empty:
+        return Section("資料源穩定度", "`data/health_log.csv` 存在但沒有可判讀的紀錄。")
+
     cutoff = log["date"].max() - pd.Timedelta(days=365)
     recent = log[log["date"] >= cutoff]
-    rows = [f"- 紀錄區間:{recent['date'].min().date()} .. {recent['date'].max().date()}"
-            f"({len(recent)} 天)",
-            f"- 全綠天數:**{int(recent['ok'].sum())}/{len(recent)}** "
-            f"({recent['ok'].mean() * 100:.1f}%)"]
-    fails = recent[recent["ok"] == 0]["failed"].dropna()
-    if len(fails):
-        counter: dict[str, int] = {}
-        for row in fails:
-            for name in str(row).split("|"):
-                if name:
-                    counter[name] = counter.get(name, 0) + 1
-        rows += ["", "最常失敗的檢查項:", ""]
+
+    by_day = recent.groupby(recent["date"].dt.date)
+    day_ok = by_day["ok"].min()          # 當天所有執行都綠,那天才算綠
+    n_days = len(day_ok)
+    n_green = int(day_ok.sum())
+
+    rows = [f"- 紀錄區間:{day_ok.index.min()} .. {day_ok.index.max()}"
+            f"({n_days} 天 · 共 {len(recent)} 次執行)",
+            f"- 全綠天數:**{n_green}/{n_days}**({n_green / n_days * 100:.1f}%)"]
+
+    # 失敗項同樣按天去重 —— 同一天跑三次不該把同一個故障算成三天
+    counter: dict[str, int] = {}
+    for _, grp in by_day:
+        names: set[str] = set()
+        for row in grp.loc[grp["ok"] == 0, "failed"].dropna():
+            names.update(n for n in str(row).split("|") if n)
+        for name in names:
+            counter[name] = counter.get(name, 0) + 1
+
+    if counter:
+        rows += ["", "最常失敗的檢查項(按天計):", ""]
         for name, n in sorted(counter.items(), key=lambda x: -x[1])[:8]:
             rows.append(f"- `{name}` — {n} 天")
     else:
@@ -319,6 +344,7 @@ def build_report() -> str:
 
 
 def main() -> int:
+    force_utf8()  # Windows 的 cp950 印不出 ✅❌⚠∈,不設會直接 UnicodeEncodeError
     ap = argparse.ArgumentParser(description="年度健檢報告")
     ap.add_argument("--stdout", action="store_true", help="印到畫面而非寫檔")
     args = ap.parse_args()

@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import engine  # noqa: E402
 import fetch_data  # noqa: E402
+from console import force_utf8  # noqa: E402
 
 TOL = 1e-9
 # TradingView 匯出的欄名就是 plot 的標題
@@ -61,6 +62,7 @@ def to_ym(series: pd.Series) -> pd.Series:
 
 
 def main() -> int:
+    force_utf8()  # Windows 的 cp950 印不出 ⚠✓✗,不設會直接 UnicodeEncodeError
     ap = argparse.ArgumentParser(description="比對 TradingView 匯出的 Pine 輸出與 engine.py")
     ap.add_argument("csv", help="TradingView 匯出的 CSV")
     ap.add_argument("--cash-column", help="現金比重欄名(預設自動偵測)")

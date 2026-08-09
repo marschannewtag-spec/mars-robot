@@ -33,6 +33,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fetch_data  # noqa: E402
+from console import force_utf8  # noqa: E402
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = OPS_ROOT / "config.yml"
@@ -401,6 +402,7 @@ def render_markdown(results: list[Result]) -> str:
 
 
 def main() -> int:
+    force_utf8()  # Windows 的 cp950 印不出 ✅❌⏭,不設會直接 UnicodeEncodeError
     ap = argparse.ArgumentParser(description="現金水位儀每日健檢")
     ap.add_argument("--verbose", action="store_true", help="一律列出每一項")
     ap.add_argument("--markdown", action="store_true", help="輸出 markdown 給 Issue 用")
