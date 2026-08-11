@@ -120,6 +120,40 @@
   .oddnote{font-size:11px;line-height:1.6;color:var(--faint);margin-top:12px}
   .oddnote b{color:var(--muted)}
 
+  /* 市場體制與早期警訊(輔助層 — 不參與現金水位計算) */
+  #regimepanel{display:none}
+  #regimepanel.on{display:block}
+  .domwrap{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center;margin:12px 0 4px}
+  .domlead{font:700 26px var(--mono);line-height:1.1;margin-top:4px}
+  .domscores{display:flex;flex-direction:column;gap:3px;min-width:0}
+  .domrow{display:grid;grid-template-columns:34px 1fr 42px;align-items:center;gap:8px;
+    font:600 10px var(--mono);color:var(--faint)}
+  .domrow .dbar{height:7px;background:#0c1322;border-radius:4px;overflow:hidden}
+  .domrow .dbar i{display:block;height:100%;border-radius:4px;background:var(--faint)}
+  .domrow.top{color:var(--text)}
+  .domrow.top .dbar i{background:var(--teal)}
+  .domrow .dnum{text-align:right;font-variant-numeric:tabular-nums}
+
+  .warnhead{display:flex;justify-content:space-between;align-items:baseline;
+    margin:16px 0 9px;padding-top:14px;border-top:1px solid var(--line);
+    font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  .warnhead b{font-size:14px;letter-spacing:0}
+  .flag{border:1px solid var(--line);border-radius:11px;margin-bottom:6px;background:#0c1322}
+  .flag>summary{display:grid;grid-template-columns:14px 1fr auto;align-items:center;gap:9px;
+    padding:10px 12px;cursor:pointer;list-style:none;font-size:12.5px}
+  .flag>summary::-webkit-details-marker{display:none}
+  .flag .dot{width:8px;height:8px;border-radius:50%;background:var(--faint);justify-self:center}
+  .flag .fl{font-weight:600;color:var(--muted);min-width:0}
+  .flag .fd{font:600 11px var(--mono);color:var(--faint);text-align:right;
+    font-variant-numeric:tabular-nums;white-space:nowrap}
+  .flag.on{border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.07)}
+  .flag.on .dot{background:var(--amber);box-shadow:0 0 8px rgba(251,191,36,.8)}
+  .flag.on .fl,.flag.on .fd{color:var(--amber)}
+  .flag.na .dot{background:transparent;border:1px dashed var(--faint)}
+  .flag .fbody{padding:0 12px 11px 35px;font-size:11.5px;line-height:1.65;color:var(--faint)}
+  .flag .fbody b{color:var(--muted)}
+  .flag .fbody code{font:10.5px var(--mono);background:#16223A;padding:1px 5px;border-radius:4px;color:var(--teal)}
+
   details{margin-top:16px;background:var(--surf);border:1px solid var(--line);border-radius:14px;padding:0 16px}
   summary{cursor:pointer;padding:14px 0;font-size:12.5px;font-weight:600;color:var(--muted);list-style:none;display:flex;justify-content:space-between}
   summary::-webkit-details-marker{display:none}
@@ -132,7 +166,12 @@
   #err{display:none;background:rgba(244,63,94,.1);border:1px solid var(--rose);color:#ffd3da;
     border-radius:13px;padding:13px 15px;margin-bottom:16px;font-size:12.5px;line-height:1.5}
   .skel{color:var(--faint)}
-  @media(max-width:430px){.big{font-size:54px}.legs,.strip{grid-template-columns:1fr 1fr}.hero{padding:18px}}
+  /* 窄螢幕:主體判定改成上下堆疊。並排時分數條只剩約 36px 寬,長條圖失去意義 */
+  @media(max-width:430px){.big{font-size:54px}.legs,.strip{grid-template-columns:1fr 1fr}.hero{padding:18px}
+    .domwrap{grid-template-columns:1fr;gap:12px}
+    .flag>summary{grid-template-columns:14px 1fr;row-gap:2px}
+    .flag .fd{grid-column:2;text-align:left}
+    .flag .fbody{padding-left:12px}}
 </style>
 </head>
 <body>
@@ -216,6 +255,27 @@
   <div class="oddnote">「每 N 年」為 1928 以來長期平均、<b>非時鐘</b> — 回撤會叢聚,別把平均讀成「快輪到了」。當前跌幅以<b>月收</b>估算,回看區間見左上角:走每日 Yahoo 時只回看約 10 年,退回 Shiller 時可回看到 1871,兩者的「高點」定義不同。</div>
 </div>
 
+<!-- 輔助層:主體市場判定 + 外部早期警訊。
+     資料抓不到時整塊隱藏(display:none),不佔版面、不報錯 —— 與心跳指示器同一條紀律。
+     ⚠ 這一塊【不參與】上方現金水位的計算,理由見 ops/src/regime.py 的模組說明。 -->
+<div class="panel" id="regimepanel">
+  <h2>市場體制與早期警訊 <span class="lg" id="regimeage">·</span></h2>
+  <div class="domwrap">
+    <div>
+      <div class="ddlab">目前金融主體</div>
+      <div class="domlead" id="domleader">··</div>
+      <div class="ddspan" id="dommargin"></div>
+    </div>
+    <div class="domscores" id="domscores"></div>
+  </div>
+  <div class="warnhead">
+    <span>外部早期警訊 <b id="warncount">·</b></span>
+    <span id="warnband"></span>
+  </div>
+  <div id="flaglist"></div>
+  <div class="oddnote" id="regimenote"></div>
+</div>
+
 <details>
   <summary><span>運作邏輯與誠實邊界</span><span>＋</span></summary>
   <div class="fine">
@@ -226,7 +286,8 @@
     全期有 <b>59.3%</b> 的月份是完全投入(現金 0%),現金拉到 90% 以上的只佔 8.6%。</p>
     <p style="margin-top:9px"><b>ALL-IN 的意思:</b> 現金 0% = 沒有防禦性現金、<b>滿倉做多(100% 投入)</b>,對應強勢通「降現金到 0% 吃漲勢」的行為。<b>不含槓桿/融資</b>,訊號出現也<b>不代表該在滿倉之上再加碼</b> — 那超出已驗證範圍。</p>
     <p style="margin-top:9px"><b>即時資料:</b> VIX 來自 CBOE(每日)。S&P 趨勢腿預設走 Yahoo ^GSPC 每日(免金鑰,反映到昨收);填了 Worker 網址或 API key 可更穩定/更即時;全部抓不到才退回 Shiller 月頻(延遲約一個月)。離線時顯示上次抓到的值。</p>
-    <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②缺真實 HY-OAS 信用利差,純信用事件預警未納入;③僅供研究,非投資建議,盈虧自負。</p>
+    <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②現金水位本身<b>不含</b>信用利差,信用面只以下方「早期警訊」的垃圾債需求子指標<b>間接</b>觀察,且該層不參與計算;③僅供研究,非投資建議,盈虧自負。</p>
+    <p style="margin-top:9px"><b>為什麼「早期警訊」是分開的一層:</b> 上方兩腿的階梯與門檻由 1990 起 440 個月的凍結基準釘住,那是判斷「有沒有改壞」的唯一依據。把未回測的新訊號併進那個數字,會同時失去基準與驗證能力 —— 所以新訊號一律平行呈現,由你決定要不要動手,程式不替你改水位。</p>
     <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a> · <a href="https://twelvedata.com" target="_blank">Twelve Data</a></p>
   </div>
 </details>
@@ -654,6 +715,89 @@ function checkOpsHeartbeat(){
     .catch(()=>{});   // 刻意吞掉,理由見上
 }
 checkOpsHeartbeat();
+
+// ---- 市場體制與早期警訊(輔助讀數)----------------------------------------
+// 【硬邊界】這一段【不會】碰上方的現金水位。理由寫在 ops/src/regime.py 的模組
+// 說明裡,摘要:cash = max(趨勢腿, VIX腿) 有 440 個月的凍結黃金基準釘著,而
+// CNN 的端點只給 250 天歷史 —— 用 250 天的雜訊去改一個用 440 個月驗過的規則,
+// 是把工具改爛。所以這是【平行的第二個讀數】:報事實與門檻,決定權在使用者。
+//
+// 資料來自每日 workflow 產生、推到 ops-data 的 signals.json。原始站(CNN、
+// 國發會)大多不送 CORS 標頭,瀏覽器直接抓不到;繞一手是唯一可行的路。
+//
+// 【失敗即靜默】:抓不到就整塊不顯示,和心跳指示器同一條紀律。
+const OPS_SIGNALS="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/signals.json";
+const SIGNALS_STALE_DAYS=7;   // 每日更新;7 天容得下連假 + 一次 outage
+// signals.json 裡有來自外部來源的字串(國發會燈號、錯誤訊息)。這些值直接進
+// innerHTML 等於把一個被入侵的資料源變成 XSS 入口 —— 一律逸出。
+function esc(s){return String(s==null?"":s).replace(/[&<>"']/g,
+  c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+
+function renderRegime(s){
+  const dom=s&&s.dominance, warn=s&&s.warning;
+  if(!dom||!warn||!Array.isArray(warn.flags)||!warn.flags.length)return;
+
+  // 資料年齡:一律顯示。看得到年齡才知道這些數字能不能信
+  const gen=Date.parse(s.generated_at);
+  let stale=false;
+  if(isFinite(gen)){
+    const hrs=(Date.now()-gen)/36e5, d=Math.floor(hrs/24);
+    stale=d>=SIGNALS_STALE_DAYS;
+    $("regimeage").textContent=d>=1?("資料 "+d+" 天前"):("資料 "+Math.max(1,Math.round(hrs))+" 小時前");
+    $("regimeage").style.color=stale?"var(--amber)":"";
+  }
+
+  // ── 主體判定 ──
+  const scores=dom.scores||{};
+  const names=Object.keys(scores).sort((a,b)=>scores[b]-scores[a]);
+  $("domleader").textContent=dom.leader||"資料不足";
+  $("domleader").style.color=dom.leader?"var(--teal)":"var(--faint)";
+  $("dommargin").textContent=dom.leader
+    ? ("領先第二名 "+(dom.margin==null?"—":dom.margin+"×")+" · 近"+(dom.window==="2y"?"兩年":dom.window)+"日報酬")
+    : "可用市場不足,不下結論";
+  const max=names.length?scores[names[0]]:0;
+  $("domscores").innerHTML=names.map((n,i)=>
+    '<div class="domrow'+(i===0?" top":"")+'"><span>'+esc(n)+'</span>'
+    +'<span class="dbar"><i style="width:'+(max>0?Math.round(scores[n]/max*100):0)+'%"></i></span>'
+    +'<span class="dnum">'+scores[n].toFixed(2)+'</span></div>').join("");
+
+  // ── 早期警訊 ──
+  const n=warn.n_triggered, tot=warn.n_usable;
+  $("warncount").textContent=n+" / "+tot;
+  $("warncount").style.color=n===0?"var(--teal)":(n<=2?"var(--amber)":"var(--orange)");
+  $("warnband").textContent=esc(warn.band||"");
+  $("warnband").style.color=n===0?"var(--teal)":(n<=2?"var(--amber)":"var(--orange)");
+
+  $("flaglist").innerHTML=warn.flags.map(f=>{
+    const cls="flag"+(f.triggered?" on":"")+(f.ok?"":" na");
+    return '<details class="'+cls+'"><summary>'
+      +'<span class="dot"></span>'
+      +'<span class="fl">'+esc(f.label)+'</span>'
+      +'<span class="fd">'+esc(f.detail)+'</span></summary>'
+      +'<div class="fbody"><b>為什麼要看:</b>'+esc(f.why)
+      +'<br><b>觸發條件:</b><code>'+esc(f.rule)+'</code>'
+      +'<br><b>來源:</b>'+esc(f.source)+'</div></details>';
+  }).join("");
+
+  $("regimenote").innerHTML=
+    "<b>這一塊不改變上方的現金水位。</b>上方是已回測 440 個月的聯集訊號;"
+    +"這裡是它按定義做不到的另一件事 —— 兩腿都要等 VIX 跳、等均線跌破才會動,"
+    +"處理「崩盤中」很好,處理「崩盤前」處理不了。這六條看的是"
+    +"<b>價格還在高檔、但內部已經在惡化</b>。<br>"
+    +"⚠ <b>這六個門檻沒有經過回測</b> —— CNN 端點只給 250 天歷史,做不出統計顯著性。"
+    +"它們是常識性的極端值,不是最佳化出來的參數,請當作「該去看一眼」而不是「該賣了」。"
+    +"台灣景氣對策信號為月頻、發布落後約兩個月。"
+    +(stale?"<br>⚠ <b>這份資料已超過 "+SIGNALS_STALE_DAYS+" 天沒更新</b>,下方數值可能已不是現況。":"");
+
+  $("regimepanel").classList.add("on");
+}
+function checkRegime(){
+  fetchT(OPS_SIGNALS,null,6000)
+    .then(r=>r.ok?r.json():Promise.reject(new Error(r.status)))
+    .then(renderRegime)
+    .catch(()=>{});   // 刻意吞掉 —— 抓不到就當這塊不存在
+}
+checkRegime();
 // ---- API key 設定 ----
 function refreshKeyStatus(){
   const k=getKey();

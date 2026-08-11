@@ -94,6 +94,101 @@ FRED 免金鑰 CSV 的全段歷史。
 
 ---
 
+## 體制層(主體判定 + 早期警訊)—— 2026-08-12 新增
+
+`src/regime.py`(純函式)+ `src/fetch_signals.py`(唯一的網路端)+ PWA 的
+`#regimepanel`。每日 workflow 產出 `data/signals.json` 推到 `ops-data`,PWA 讀它。
+
+### 最重要的一條:這層不得參與現金水位計算
+
+```
+cash = max(mom_cash, vix_cash)          ← 440 個月凍結基準釘住,不准動
+早期警訊 = 平行的第二個讀數              ← 只報事實與門檻
+```
+
+把新訊號併進 `cash` 會同時毀掉兩件事:**黃金基準**(判斷「有沒有改壞」的唯一依據)
+與**驗證能力本身**。而且 CNN 端點只給 **250 天**歷史 —— 用 250 天的雜訊去改一個
+用 440 個月驗過的規則,方向就是錯的。
+
+這條由三個測試從三個角度釘住,不是靠自律:
+
+| 測試 | 釘住什麼 |
+|---|---|
+| `test_regime_does_not_touch_the_engine` | AST 掃描:`regime.py` 沒有 import engine、沒呼叫 `mom_cash`/`vix_cash` |
+| `test_pwa_regime_layer_does_not_touch_the_cash_number` | `renderRegime()` 沒碰任何核心讀數的 DOM 節點 |
+| `test_core_ladder_constants_are_untouched` | 兩腿階梯的原始字串當金絲雀 |
+
+用 AST 而不是字串搜尋是刻意的:模組 docstring 裡本來就要寫「為什麼不能碰
+mom_cash」,字串比對會把那段說明本身判成違規,逼人刪掉最該留的註解。
+
+### 主體判定的定義
+
+對每一對(跟隨者 f、領先者 l)算 `R²(f 今日報酬 ~ l 前一交易日報酬)`,
+每個市場當領先者時的 R² 加總 = 領先總分。最高者即金融主體。
+
+- **錯開一天**才有方向性。同日相關分不出誰帶誰。
+- 「前一交易日」是 leader 序列中早於 follower 當日的**最近一筆**,
+  不是「日期減一」—— 兩地假期不同,硬減一天會大量落空。已用測試釘住。
+- **這個定義會失效**,這是它的優點:哪天美國不再帶動全球,分數會自己掉下來。
+  一個永遠回答「美國」的硬編碼是信仰不是量測。
+- 2026-08-12 實測(近兩年,6 個市場):美國 0.763、歐洲 0.159、香港 0.050、
+  日本 0.038、台灣 0.028、中國 0.021。美國那一列(當跟隨者)全部 ≤0.021 ——
+  **沒有任何市場帶得動美國**。
+
+### 六條早期警訊
+
+⚠ **門檻沒有經過回測,而且短期內也做不到** —— CNN 端點只回 250 天,
+統計顯著性做不出來。它們是常識性的極端值,不是最佳化參數。
+**UI 上必須照實說**(`#regimenote` 已寫死這段警語,不得刪)。
+
+意圖:兩腿都要等 VIX 跳、等均線跌破才會動,處理「崩盤中」很好,處理「崩盤前」
+**按定義做不到**。這六條看的是「價格還在高檔、但內部已經在惡化」。
+
+- **「缺資料」與「沒觸發」必須在畫面上長得不一樣**(`ok=False` vs `triggered=False`)。
+  混在一起的話,資料源死掉會偽裝成一切平安 —— 那正是這整個專案在防的事。
+- 信用那條看**變化**不看**水位**:低檔盤整是常態,轉折才是資訊。
+
+### 資料源:八個連結逐一實測後的取捨
+
+完整對照表寫在 `src/fetch_signals.py` 的模組 docstring(含每個被拒絕的實測理由)。
+摘要:**採用 CNN Fear & Greed(官方 JSON、7 子指標、送 `ACAO:*`)、
+國發會景氣指標(走 data.gov.tw 開放資料集 6099)、Yahoo 六市場日K**。
+
+**不要再試的(已實測失敗,理由不是「今天剛好壞」):**
+
+| 來源 | 實測結果 |
+|---|---|
+| MacroMicro | 專有指標 + 付費牆。它的 CNN/FINRA 圖是轉載,直接打原始站 |
+| AAII sentiment | 頁面有 bot 防護,數字散在 HTML 沒有結構化出口。解析器會在某次改版後**無聲**壞掉 |
+| FINRA margin statistics | 對非瀏覽器 UA 回 **403** |
+| TradingEconomics | ToS 禁止抓取 |
+| 財政部 `/multiplehtml/383` | 是公告清單頁,不是資料端點 |
+| 國發會網站直連 | Angular + CSRF,`POST /n/json/leading` 回 **419** |
+| 證交所 OpenAPI | 憑證鏈缺 Subject Key Identifier,OpenSSL 3 直接拒絕。Ubuntu runner 同樣是 OpenSSL 3,不能賭 |
+| FRED 直連 | 開發機被本機安全軟體中斷(WinError 10053),經 corsproxy 回 403 —— **在本機無法驗證,所以不併進來** |
+
+### 刻意不做的事
+
+- **不進 `health_check.py`。** 這層是輔助讀數,不該有能力讓每日健檢變紅燈、
+  開 Issue。CNN 今天抽風不是「系統壞了」。過期由 PWA 自己在面板上標資料年齡。
+  這是「一年只該叫你幾次」的直接後果 —— 多一個會叫的東西,就少一分會被理會的機會。
+- **workflow 那步掛 `continue-on-error: true`**,同上。
+- **`signals.json` 不留在 `main`**(`.gitignore`),否則會是一份永遠停在某次執行的假現況。
+
+### PWA 那一段的不變量
+
+- **失敗即靜默**:抓不到就整塊 `display:none`。與心跳指示器同一條紀律,
+  已用 `test_regime_fetch_failure_is_silent` 釘住 catch 必須是空的。
+- **外部字串一律 `esc()`**:`signals.json` 帶有外部來源的值(國發會燈號、
+  錯誤訊息),直接進 `innerHTML` 等於把被入侵的資料源變成 XSS 入口。
+  對應四道防線的第 4 條。
+- **路徑由測試綁死**:`OPS_SIGNALS` 必須等於 `fetch_signals.SIGNALS_PATH`
+  相對 repo root 的路徑,且必須指向 `ops-data` 分支。心跳就踩過這個坑
+  (寫成 `data/manifest.json`,實際是 `ops/data/manifest.json`),
+  而路徑錯在「失敗即靜默」的設計下**完全沒有症狀**。
+
+---
+
 ## 黃金基準
 
 錨定的是 `tests/fixtures/` 的**凍結快照**,不是即時資料 —— 用即時資料當錨的話

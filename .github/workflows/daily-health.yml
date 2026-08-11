@@ -83,6 +83,18 @@ jobs:
           echo "code=$code" >> "$GITHUB_OUTPUT"
           echo "健檢結束,exit code = $code"
 
+      # 體制層(主體判定 + 早期警訊)。PWA 讀的是這一步產出的 signals.json。
+      #
+      # `continue-on-error`:這層是輔助讀數,不該有能力讓每日健檢變紅燈。
+      # CNN 或國發會今天抽風不是「系統壞了」——真正的資料源健康由上一步負責,
+      # 而 signals.json 若過期,PWA 自己會在面板上標出資料年齡。
+      - name: 產生體制訊號(輔助層,失敗不影響健檢結果)
+        continue-on-error: true
+        working-directory: ops
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python src/fetch_signals.py
+
       # 健檢全綠時 --markdown 不輸出內容,補一行說明,讓演練模式也有東西可讀
       - name: 補齊報告內容(健檢正常時)
         if: steps.check.outputs.code == '0'
@@ -151,6 +163,7 @@ jobs:
           tmp=$(mktemp -d)
           cp ops/data/manifest.json   "$tmp/" 2>/dev/null || true
           cp ops/data/health_log.csv  "$tmp/" 2>/dev/null || true
+          cp ops/data/signals.json    "$tmp/" 2>/dev/null || true
 
           git fetch origin ops-data 2>/dev/null \
             && git checkout -f -B ops-data origin/ops-data \
@@ -158,8 +171,12 @@ jobs:
           mkdir -p ops/data
           cp "$tmp"/manifest.json  ops/data/ 2>/dev/null || true
           cp "$tmp"/health_log.csv ops/data/ 2>/dev/null || true
+          # signals.json 產生失敗時上面那步不會有檔案,cp 失敗就沿用分支上的舊版 ——
+          # 舊資料好過沒資料,PWA 會自己把年齡標出來
+          cp "$tmp"/signals.json   ops/data/ 2>/dev/null || true
 
           git add -f ops/data/manifest.json ops/data/health_log.csv 2>/dev/null || true
+          git add -f ops/data/signals.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "資料無變化,跳過 commit"
           else
