@@ -83,32 +83,25 @@ num_turns: 1   total_cost_usd: 0   duration_ms: 486
 
 ---
 
-## 2. `FRED_API_KEY` — ⚠ 現在設了也沒用,先別浪費時間
+## 2. `FRED_API_KEY` — ✅ 已於 2026-08-12 拆除,**不用申請**
 
-**這一項原本的說明(「補齊年度健檢的信用利差」)是錯的,我寫錯了。** 實際盤點:
+這一項曾經寫著「補齊年度健檢的信用利差」,**那句是錯的**。實際盤點後發現:
+來源定義與抓取路徑都在,但 `refresh()` 預設排除需金鑰的來源、也沒有任何
+`load("hy_oas")` 呼叫、`annual_review.py` 更沒有對應章節 ——
+**設了金鑰,年度報告會一字不差地跟原本一樣。** 管線鋪好了但沒接上出海口。
 
-| 有的東西 | 位置 |
-|---|---|
-| `hy_oas` / `t10y3m` 的來源定義與 FRED JSON API 抓取路徑 | `src/fetch_data.py` |
-| workflow 有把 `FRED_API_KEY` 傳進環境變數 | 兩支 workflow 都有 |
+使用者於 2026-08-12 決定**拆掉**。已移除:
 
-| 沒有的東西 | 後果 |
-|---|---|
-| `refresh()` 預設**排除**所有需要金鑰的來源 | 每日流程根本不會去抓 |
-| 沒有任何 `refresh(["hy_oas"])` 或 `load("hy_oas")` 呼叫 | 抓了也沒人讀 |
-| `annual_review.py` 的六節裡**沒有信用利差那一節** | 報告本來就不含這個內容 |
+- `fetch_data.py` 的 `hy_oas` / `t10y3m` 兩個 Source、`_fred_key()`、
+  `needs_fred_key` / `fred_series` 欄位、`fetch_source()` 的 FRED 分支
+- 兩支 workflow 的 `FRED_API_KEY` 環境變數
 
-所以現在申請金鑰、設好 secret,年度報告會**一字不差地跟現在一樣**。
-管線鋪好了但沒接上出海口。
+**信用面沒有因此變成空白** —— 由 `fetch_signals.py` 的 CNN `junk_bond_demand`
+子指標涵蓋(每日、免金鑰、已上線,顯示在 PWA 的「早期警訊」面板)。
+FRED 唯一不可替代的是**長期歷史**(CNN 端點只給 250 天),而目前沒有章節需要它。
 
-**要真的有用,得先決定一件事(這是你的決定,不是我的):**
-
-- **接上** → 我在 `annual_review.py` 加一節「信用利差脈絡」,只陳述當前 HY-OAS
-  的絕對水準與歷史分位,不做判斷。之後金鑰才有意義。
-- **拆掉** → 把 `fetch_data.py` 裡兩個 FRED 來源與 workflow 的環境變數刪掉,
-  少兩段沒人走的路。
-
-在你決定之前,**不用去申請金鑰**。
+要加回來的話,技術限制仍然成立:`fredgraph.csv` 端點忽略 `cosd` 只回近三年、
+`/data/*.txt` 會轉址到 HTML,所以全段歷史確實需要免費 API key。
 
 ---
 

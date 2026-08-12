@@ -53,7 +53,6 @@ jobs:
         id: report
         working-directory: ops
         env:
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
           python src/annual_review.py

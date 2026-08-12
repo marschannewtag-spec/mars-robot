@@ -7,9 +7,19 @@
 --------------------------
 Shiller S&P  GitHub datasets,1871 起月頻,免金鑰,穩定
 VIX 日頻     GitHub datasets,1990 起,免金鑰,穩定
-HY-OAS       FRED,**需要免費 API key**。fredgraph.csv 端點只回近三年
-             且忽略 cosd 參數,/data/*.txt 會轉址到 HTML —— 兩者都拿不到全段
-T10Y3M       同上,需要 API key 才有全段(1982 起)
+
+2026-08-12 移除 FRED(HY-OAS / T10Y3M)
+--------------------------------------
+那兩個來源的抓取路徑存在了很久,但 `refresh()` 預設排除需金鑰的來源,
+`annual_review.py` 也沒有對應章節 —— **設了 `FRED_API_KEY` 不會改變任何輸出**。
+一段「文件宣稱有、實際沒接」的程式比沒有更糟:它讓人以為信用面已經被涵蓋了。
+
+信用面現在由 `fetch_signals.py` 的 CNN `junk_bond_demand` 子指標涵蓋
+(每日、免金鑰、已上線),那是即時訊號要的東西。FRED 唯一不可替代的是
+**長期歷史**(CNN 端點只給 250 天),而目前沒有任何章節需要它。
+
+要加回來的話:技術限制仍然成立 —— `fredgraph.csv` 端點忽略 `cosd` 只回近三年,
+`/data/*.txt` 會轉址到 HTML,所以全段歷史確實需要免費 API key。
 """
 
 from __future__ import annotations
@@ -17,7 +27,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,8 +40,6 @@ RAW_DIR = REPO_ROOT / "data" / "raw"
 MANIFEST_PATH = REPO_ROOT / "data" / "manifest.json"
 
 USER_AGENT = "cash-gauge-ops/1.0 (+https://github.com/marschannewtag-spec/mars-robot)"
-FRED_API = "https://api.stlouisfed.org/fred/series/observations"
-
 
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC"
 
@@ -42,9 +49,7 @@ class Source:
     key: str
     filename: str
     url: str
-    needs_fred_key: bool = False
-    fred_series: str = ""
-    kind: str = "csv"  # csv | fred | yahoo
+    kind: str = "csv"  # csv | yahoo
 
 
 SOURCES: dict[str, Source] = {
@@ -67,20 +72,6 @@ SOURCES: dict[str, Source] = {
         key="vix",
         filename="vix_daily.csv",
         url="https://raw.githubusercontent.com/datasets/finance-vix/main/data/vix-daily.csv",
-    ),
-    "hy_oas": Source(
-        key="hy_oas",
-        filename="hy_oas.csv",
-        url="",
-        needs_fred_key=True,
-        fred_series="BAMLH0A0HYM2",
-    ),
-    "t10y3m": Source(
-        key="t10y3m",
-        filename="t10y3m.csv",
-        url="",
-        needs_fred_key=True,
-        fred_series="T10Y3M",
     ),
 }
 
@@ -106,18 +97,6 @@ def _get(url: str, params: dict | None = None, retries: int = 3,
             if attempt < retries - 1:
                 time.sleep(2 ** attempt)
     raise FetchError(f"{url} 抓取失敗(重試 {retries} 次):{last}") from last
-
-
-def _fred_key() -> str:
-    key = os.environ.get("FRED_API_KEY", "").strip()
-    if not key:
-        raise FetchError(
-            "缺少 FRED_API_KEY。FRED 的免金鑰 CSV 端點只回近三年資料,"
-            "全段歷史必須用 API key。請到 "
-            "https://fred.stlouisfed.org/docs/api/api_key.html 免費申請,"
-            "再設成環境變數或 GitHub repo secret。"
-        )
-    return key
 
 
 def _fetch_yahoo_daily() -> str:
@@ -150,22 +129,7 @@ def fetch_source(name: str) -> str:
     src = SOURCES[name]
     if src.kind == "yahoo":
         return _fetch_yahoo_daily()
-    if not src.needs_fred_key:
-        return _get(src.url)
-
-    payload = _get(
-        FRED_API,
-        params={
-            "series_id": src.fred_series,
-            "api_key": _fred_key(),
-            "file_type": "json",
-            "observation_start": "1900-01-01",
-        },
-    )
-    obs = json.loads(payload).get("observations", [])
-    rows = [(o["date"], o["value"]) for o in obs if o.get("value") not in (".", None)]
-    df = pd.DataFrame(rows, columns=["observation_date", src.fred_series])
-    return df.to_csv(index=False)
+    return _get(src.url)
 
 
 def _sha256(text: str) -> str:
@@ -183,7 +147,7 @@ def save(name: str, text: str) -> dict:
     date_col = df.columns[0]
     return {
         "file": src.filename,
-        "url": src.url or f"{FRED_API}?series_id={src.fred_series}",
+        "url": src.url,
         "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rows": int(len(df)),
         "first_date": str(df[date_col].iloc[0]) if len(df) else None,
@@ -203,7 +167,7 @@ def write_manifest(manifest: dict) -> None:
 
 def refresh(names: list[str] | None = None) -> dict:
     """抓取指定資料源、落地、更新 manifest。回傳新的 manifest。"""
-    names = names or [n for n, s in SOURCES.items() if not s.needs_fred_key]
+    names = names or list(SOURCES)
     manifest = read_manifest()
     for name in names:
         manifest[name] = save(name, fetch_source(name))
@@ -230,6 +194,9 @@ def load(name: str, refresh_if_missing: bool = True) -> pd.DataFrame:
 if __name__ == "__main__":
     import sys
 
+    from console import force_utf8
+
+    force_utf8()
     which = sys.argv[1:] or None
     m = refresh(which)
     for k, v in m.items():

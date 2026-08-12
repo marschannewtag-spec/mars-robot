@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import backtest  # noqa: E402
 import engine  # noqa: E402
 import fetch_data  # noqa: E402
+from console import force_utf8  # noqa: E402
 
 KEY_MONTHS = ["2008-10", "2015-08", "2020-03", "2022-06"]
 # 股息只發布到 2023-06,績效窗口就切在那裡 —— 用不完整的輸入算出來的錨會漂
@@ -49,6 +50,7 @@ def total_return_perf(df: pd.DataFrame) -> tuple:
 
 
 def main() -> None:
+    force_utf8()
     sp_daily = fetch_data.load("sp_daily")
     vix = fetch_data.load("vix")
     shiller = fetch_data.load("shiller")

@@ -73,7 +73,6 @@ jobs:
         id: check
         working-directory: ops
         env:
-          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
           PYTHONIOENCODING: utf-8
         run: |
           set +e
