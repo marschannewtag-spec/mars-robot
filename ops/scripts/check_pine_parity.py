@@ -54,11 +54,21 @@ def find_column(df: pd.DataFrame, hints: list[str], what: str) -> str:
 
 
 def to_ym(series: pd.Series) -> pd.Series:
-    """TradingView 的時間欄可能是 ISO 字串或 unix 秒。"""
-    s = series.astype(str)
-    if s.str.fullmatch(r"\d{9,12}").all():
-        return pd.to_datetime(series.astype("int64"), unit="s", utc=True).dt.strftime("%Y-%m")
-    return pd.to_datetime(s, utc=True, format="mixed").dt.strftime("%Y-%m")
+    """TradingView 的時間欄可能是 ISO 字串或 unix 秒。
+
+    ⚠ unix 秒**會是負數**。SP:SPX 的月線可回溯到 1871,那是 epoch 之前,
+    匯出的第一列是 `-3121407238`。原本用 `\\d{9,12}` 判斷是不是數字,
+    負號不符合 → 落到字串解析 → 直接拋 ValueError。
+
+    這個 bug 只有在「照文件指示把歷史全部載入」時才會出現 —— 也就是
+    **越照著做越會踩到**。改用數值轉換 + 量級判斷,不再用正則猜格式。
+    """
+    nums = pd.to_numeric(series, errors="coerce")
+    # 量級門檻:1e8 秒約 1973 年,任何真實的 epoch 時間戳(含負的)都遠超過它,
+    # 而「2026」這種被誤當時間欄的年份數字則遠低於它
+    if nums.notna().all() and nums.abs().max() > 1e8:
+        return pd.to_datetime(nums.astype("int64"), unit="s", utc=True).dt.strftime("%Y-%m")
+    return pd.to_datetime(series.astype(str), utc=True, format="mixed").dt.strftime("%Y-%m")
 
 
 def main() -> int:

@@ -18,6 +18,8 @@ import math
 import pandas as pd
 import pytest
 
+from conftest import OPS_ROOT
+
 import engine
 import pine_sim
 
@@ -117,3 +119,60 @@ def test_pine_warmup_matches_engine(pine_result: pd.DataFrame,
         assert pine_result.loc[ym, "risk"] == pytest.approx(py.loc[ym, "risk"], abs=TOL), (
             f"{ym} 暖機期風險分數不一致"
         )
+
+
+# --------------------------------------------------------------------------
+# 執行層工具:check_pine_parity.py 的時間欄解析
+#
+# 2026-08-12 實測踩到:SP:SPX 的月線可回溯到 1871,匯出的第一列時間戳是
+# **負的** unix 秒(-3121407238)。原本用 `\d{9,12}` 判斷是不是數字,負號
+# 不符合 → 落到字串解析 → 整支腳本直接拋 ValueError。
+#
+# 這個 bug 只有在「照文件指示把歷史全部載入」時才會出現 ——
+# 也就是【越照著做越會踩到】,而文件正是那樣教的。
+# --------------------------------------------------------------------------
+
+
+def _to_ym():
+    import importlib.util
+
+    path = OPS_ROOT / "scripts" / "check_pine_parity.py"
+    spec = importlib.util.spec_from_file_location("check_pine_parity", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.to_ym
+
+
+def test_to_ym_handles_pre_epoch_timestamps() -> None:
+    """1871 年的月線 bar 是負的 epoch 秒,必須解析得出來。"""
+    to_ym = _to_ym()
+    out = to_ym(pd.Series([-3121407238, -3118728838, 1785763800]))
+    assert list(out) == ["1871-02", "1871-03", "2026-08"]
+
+
+def test_to_ym_handles_an_all_negative_export() -> None:
+    """整段都在 1970 之前(只匯出早期區間)時,量級判斷必須取絕對值。
+
+    少了 abs(),max() 會是負數、判斷失敗,整份 CSV 落到字串解析後爆掉。
+    上一條測試抓不到這個 —— 它的序列裡有一個正數把 max() 撐過門檻了。
+    """
+    to_ym = _to_ym()
+    out = to_ym(pd.Series([-3121407238, -3118728838, -3116050438]))
+    assert list(out) == ["1871-02", "1871-03", "1871-04"]
+
+
+def test_to_ym_still_handles_positive_epoch_and_iso() -> None:
+    to_ym = _to_ym()
+    assert list(to_ym(pd.Series([1785763800, 1783085400]))) == ["2026-08", "2026-07"]
+    assert list(to_ym(pd.Series(["2026-08-03", "2026-07-01"]))) == ["2026-08", "2026-07"]
+
+
+def test_to_ym_does_not_mistake_bare_years_for_timestamps() -> None:
+    """量級門檻:`2026` 這種**純數字**年份不可以被當成 epoch 秒。
+
+    少了門檻,to_numeric 會成功、notna().all() 為真,於是 2026 秒被解讀成
+    1970-01 —— 全表變成同一個月,對帳結果一片綠燈卻毫無意義。
+    刻意用不含連字號的輸入,否則 to_numeric 會回 NaN、根本走不到那個判斷。
+    """
+    to_ym = _to_ym()
+    assert list(to_ym(pd.Series([2026, 2025]))) == ["2026-01", "2025-01"]
