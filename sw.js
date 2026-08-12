@@ -3,7 +3,7 @@
 //  策略:HTML 網路優先(部署新版立即生效)· 靜態檔快取優先 · 資料 API 不快取
 //  ⚠ 每次改動 index.html 後,把下面版本號 +1(v4→v5),舊快取才會被清掉!
 // ============================================================================
-const CACHE = "cwgauge-v12";
+const CACHE = "cwgauge-v13";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -19,6 +19,14 @@ self.addEventListener("activate", (e) => {
   );
 });
 
+// 只有真正成功的回應才准進快取。
+// 少了這道判斷,一次 404 就會被當成正常內容存起來,而 ③ 是快取優先 ——
+// 之後就算檔案已經部署上去,SW 仍會一直回那個 404,直到版本號被 +1 為止。
+// 排除 206:Range 回應存進 Cache API 會直接拋例外。
+function cacheable(res) {
+  return res.status === 200;
+}
+
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
@@ -33,8 +41,10 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy));
+          if (cacheable(res)) {                           // 別把 404 頁面存成離線首頁
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(req, copy));
+          }
           return res;
         })
         .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
@@ -47,8 +57,10 @@ self.addEventListener("fetch", (e) => {
     caches.match(req).then((cached) =>
       cached ||
       fetch(req).then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy));
+        if (cacheable(res)) {                             // 快取優先 → 存錯了就一直錯
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(req, copy));
+        }
         return res;
       })
     )
