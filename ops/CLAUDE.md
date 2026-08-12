@@ -242,21 +242,40 @@ mom_cash」,字串比對會把那段說明本身判成違規,逼人刪掉最該�
 
 也涵蓋「圖表歷史比 VIX 長」的 na 對齊情境(SPX 從 1988、VIX 從 1990)。
 
-**第二段 · 執行層(必須人工,尚未完成)**
-邏輯對不代表 Pine 跑得起來。以下只有真的在 TradingView 上跑過才知道:
+**第二段 · 執行層(必須人工)—— 2026-08-12 部分完成**
 
-- `.pine` 是否編譯得過(語法、型別、Pine 版本差異)
-- `request.security` 的實際行為是否如假設
-- TradingView 的 VIX/SPX 資料是否與 Yahoo/GitHub 來源一致
+邏輯對不代表 Pine 跑得起來。三個只有真的在 TradingView 上跑過才知道的問題:
 
-**完整步驟見 [`pine/README.md`](pine/README.md)。** 摘要:月線 `SP:SPX` 圖套用指標 →
-往回捲到 1990 之前(TradingView 只匯出已載入的 bar)→ 匯出 CSV →
-`python ops/scripts/check_pine_parity.py <檔案>`。
+| # | 問題 | 狀態 |
+|---|---|---|
+| 1 | `.pine` 編譯得過嗎(語法、型別、版本差異) | ✅ **已驗證** |
+| 2 | `request.security` 的行為如假設嗎 | ✅ **部分驗證**(符號有解析) |
+| 3 | TradingView 的 VIX/SPX 資料與 Yahoo/GitHub 一致嗎 | ❌ **仍未驗證** |
 
-**在第二段完成前,Pine 的狀態是「邏輯已驗證、執行未驗證」。**
+**2026-08-12 實測紀錄**(Premium 帳號、`SP:SPX` 月線、Chrome):
 
-已知盲點:一份邏輯完全正確但編譯不過的 `.pine`,CI 會給綠燈。
-這是離線驗證無法消除的,只能靠上面那個手動步驟補。
+- Pine Editor 主控台輸出 `Compiled.` → `Added to chart.`,**零錯誤、零警告**
+- 編輯器辨識為 `Pine Script© v5`(TradingView 現行預設是 v6,v5 仍受支援)
+- 物件樹出現 `CWG (VIX · CBOE)` —— `request.security` 的 VIX 符號**有解析成功**,
+  且沒有執行期錯誤徽章(有的話 TradingView 會在圖例上標紅驚嘆號)
+- Data window 露出三條 plot:`建議現金比重%` / `趨勢動能腿%` / `VIX領先腿%`,
+  名稱與 `.pine` 一致
+- **預先加的 `max_bars_back=500` 沒有觸發任何錯誤** —— 那個「Pine cannot determine
+  the referencing length of series」的執行期風險沒有發生
+
+⚠ **`pine/README.md` 裡預寫的三個候選修法一個都沒用到** —— 保留著,但要知道
+它們是針對「沒有發生的問題」的推測,不是實測結論。
+
+**第 3 項為什麼還沒做:** 需要匯出圖表 CSV 再跑
+`python ops/scripts/check_pine_parity.py <檔案>`。當天在自動化瀏覽器裡
+**canvas 停止繪製**(使用者自己的 GK Trend Ribbon 同樣不繪,所以與本腳本無關),
+匯不出資料。**這不是腳本的問題,別把它記成腳本的缺陷。**
+
+**目前狀態:「邏輯已驗證、編譯已驗證、數值對帳未驗證」。**
+
+已知盲點已縮小但沒消失:編譯過 ≠ 數字對。TradingView 的資料源與我們的
+(Yahoo `^GSPC` + GitHub `finance-vix`)是不同供應商,月收盤定義、除權調整、
+歷史修正都可能有差 —— 那正是第 3 項要量的東西。
 
 ---
 
