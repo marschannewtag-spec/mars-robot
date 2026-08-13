@@ -6,6 +6,7 @@ data/raw/*.csv
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
 node_modules/
 
 # 這兩個檔由每日健檢維護,住在 ops-data 分支(見 .github/workflows/daily-health.yml)。

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import sys
 import time
 import urllib.parse
@@ -171,8 +172,10 @@ def fetch_ndc() -> dict:
             break
 
     def num(s: str) -> float | None:
+        # float("nan") / float("inf") 都不會拋 —— 一個含 "inf" 的儲存格會原樣
+        # 進到 JSON 裡,結果和 margin 那條路一樣:JS 解析不了,面板消失。
         try:
-            return float(s)
+            return jsonable(float(s))
         except (TypeError, ValueError):
             return None
 
@@ -201,6 +204,26 @@ def fetch_market(symbol: str) -> dict[int, float]:
 
 
 # ── 組裝 ─────────────────────────────────────────────────────────────────
+
+def jsonable(x: float | None) -> float | None:
+    """非有限的浮點數不能進 JSON —— 回 None。
+
+    ⚠ 這不是防禦性程式碼,是修一個實際存在的 bug。原本只寫 `x != x`(擋 NaN),
+    **`inf` 溜得過去**:`inf != inf` 是 False。而 `dominance()` 在第二名總分為 0
+    時就是回 `float("inf")`(「領先到沒有可比性」),那是它正確的語意。
+
+    出事的地方在序列化:Python 的 `json.dumps` 會寫出裸的 `Infinity`,
+    那不是合法 JSON(RFC 8259 沒有這個字面值)。瀏覽器的 `JSON.parse` 直接拋,
+    而 PWA 的 `checkRegime()` catch 是空的 —— **整塊體制面板無聲消失**,
+    症狀和「檔案不存在」一模一樣。
+
+    Python 的 `json.loads` **接受** Infinity,所以原本那條 round-trip 測試
+    一路綠燈:它在 Python 裡來回,而真正的消費端是 JS。
+    """
+    if x is None:
+        return None
+    return x if isinstance(x, (int, float)) and math.isfinite(x) else None
+
 
 def _try(name: str, fn):
     """回傳 (值, 記錄)。失敗記成 ok:false,不往外拋 —— 理由見模組 docstring。"""
@@ -235,10 +258,11 @@ def build_signals() -> dict:
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "dominance": {
             "leader": dom.leader,
-            "scores": {k: round(v, 4) for k, v in dom.scores.items()},
-            "matrix": {f: {l: round(v, 4) for l, v in row.items()}
+            "scores": {k: jsonable(round(v, 4)) for k, v in dom.scores.items()},
+            "matrix": {f: {l: jsonable(round(v, 4)) for l, v in row.items()}
                        for f, row in dom.matrix.items()},
-            "margin": None if dom.margin != dom.margin else round(dom.margin, 2),
+            "margin": jsonable(round(dom.margin, 2) if math.isfinite(dom.margin)
+                               else dom.margin),
             "n_markets": dom.n_markets,
             "window": DOMINANCE_RANGE,
         },
@@ -260,9 +284,16 @@ def build_signals() -> dict:
 
 
 def write_signals(payload: dict) -> Path:
+    """寫出 signals.json。
+
+    `allow_nan=False` 是第二道防線:上面的 `jsonable()` 若哪天漏了一條路徑,
+    這裡會**直接拋 ValueError**,而不是安靜寫出一份 JS 讀不了的檔案。
+    寫不出來時 workflow 會沿用分支上的舊版(那一步是 continue-on-error)——
+    **舊資料好過一份會讓面板消失的新資料。**
+    """
     SIGNALS_PATH.parent.mkdir(parents=True, exist_ok=True)
     SIGNALS_PATH.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False) + "\n",
         encoding="utf-8", newline="\n",
     )
     return SIGNALS_PATH

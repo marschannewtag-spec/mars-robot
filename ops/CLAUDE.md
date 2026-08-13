@@ -547,6 +547,57 @@ fetch(req).then((res) => {
 改成 `true`、改成 `res.ok`、完全不快取、SHELL 列不存在的檔、跨網域不放行、
 版本號倒退),全部抓得到。
 
+### 健檢會把壞掉的來源存下來,蓋掉最後一份好資料(2026-08-13)
+
+`check_sources_reachable()` 原本長這樣:
+
+```python
+if len(df) < floor:
+    out.append(Result(..., FAIL, f"只回了 {len(df)} 列,低於下限 {floor}"))
+else:
+    out.append(Result(..., OK, ...))
+manifest[name] = fetch_data.save(name, text)   # ← 在 if/else 外面
+```
+
+判定「這份資料壞了」之後,**照樣把它落地**。實測:601 列的好檔被 5 列的壞檔
+蓋掉,`manifest` 記上 `rows=5` 與全新的 `fetched_at`。於是稽核軌跡與心跳
+同時宣稱「剛剛更新成功」,而檢查本身正在說它壞了 —— 兩個訊號互相矛盾,
+而看得到的那個(心跳)是錯的那個。
+
+模組開頭第 2 條原則寫的就是「**只檢查、不修復、不改資料**」。
+
+**順帶修掉的第二件事:**來源清單原本寫死成 `["sp_daily", "vix", "shiller"]`,
+改成 `sorted(fetch_data.SOURCES)`。加第四個來源時,舊寫法會安靜地不檢查它 ——
+和 FRED 死管線同一個形狀。沒訂 `min_rows` 下限的來源現在會直接紅燈,
+不會靜靜略過。
+
+### `Infinity` 寫進 signals.json,整塊體制面板無聲消失(2026-08-13)
+
+`dominance()` 在第二名總分為 0 時回 `float("inf")`(「領先到沒有可比性」,
+語意是對的)。序列化那一行的守門式是:
+
+```python
+"margin": None if dom.margin != dom.margin else round(dom.margin, 2),
+```
+
+`x != x` 只擋 NaN。**`inf != inf` 是 `False`**,所以 inf 一路溜到
+`json.dumps`,寫出裸的 `Infinity` —— 那不是合法 JSON(RFC 8259 沒有這個
+字面值)。瀏覽器的 `JSON.parse` 直接拋,而 `checkRegime()` 的 catch 是空的,
+於是**整塊面板消失,症狀和「檔案不存在」一模一樣**。
+
+**為什麼既有測試抓不到:`json.loads` 接受 `Infinity`。**
+`test_payload_survives_json_roundtrip` 在 Python 裡來回一趟,永遠綠燈 ——
+但真正的消費端是 JS。**用錯的尺量,量得再勤也沒用。**
+
+修法兩層:`jsonable()` 用 `math.isfinite()` 取代 `x != x`(涵蓋 NaN、
+±inf),以及 `write_signals()` 加 `allow_nan=False` —— 哪天漏了一條路徑就
+直接拋,而不是安靜寫出一份會讓面板消失的檔案。寫不出來時 workflow 沿用
+ops-data 上的舊版:**舊資料好過一份會讓面板消失的新資料。**
+
+新測試一律用 `json.loads(..., parse_constant=<拋>)`,並且有一條真的丟給
+Node 的 `JSON.parse`。另外 `num()`(國發會的儲存格轉數字)也一併修掉 ——
+`float("nan")` / `float("inf")` 都不會拋。
+
 ### 推論
 
 **只在 CI 上跑過的東西,等於只在一種作業系統上驗過。** 凡是文件叫使用者
@@ -555,6 +606,38 @@ fetch(req).then((res) => {
 **沒有測試載入過的檔案,不管它多短,都算沒驗過。** `sw.js` 只有 56 行、
 邏輯「顯而易見」,所以三輪 debug 都跳過了它 —— 而它是使用者每次開啟
 PWA 的第一段程式。短不等於對。
+
+**用消費端的尺量,不要用產生端的尺。** Python 的 json 比 JS 寬鬆,
+Python 的 `float()` 接受 `"inf"`,Windows 的 stdout 比 Linux 窄。
+每一次踩到的坑都在同一個位置:**兩端對同一份東西的定義不一樣,
+而測試只站在其中一端。**
+
+### 覆蓋率:核心很紮實,監控層曾經是 0%
+
+2026-08-13 第一次量:
+
+| | 之前 | 之後 |
+|---|---|---|
+| `engine.py` / `regime.py` / `backtest.py` | 96–99% | 不變 |
+| **`health_check.py`** | **0%** | 57% |
+| `fetch_data.py` | 39% | 58% |
+| `fetch_signals.py` | 23% | 39% |
+| `annual_review.py` | 39% | 39% |
+| `scripts/compute_golden.py` | 0% | 0%(人工一次性腳本,可接受) |
+
+`health_check.py` 是 227 行、整套「沒消息就是好消息」的偵測器,**而沒有任何
+測試載入過它。** 也就是沒人驗證過它報得出警 —— 它一旦壞掉,症狀就是一切安靜,
+和系統健康時完全一樣。
+
+`tests/test_health_check.py` 補的是**判斷**,不是網路:給它壞資料,看它認不認得出來。
+每一條 FAIL 測試都配一條對照組(好資料必須是 OK),否則一個「什麼都報 FAIL」
+的偵測器也會全綠。已用 10 種突變驗證。
+
+量測指令:
+
+```bash
+cd ops && python -m pytest tests -q --cov=src --cov=scripts --cov-report=term-missing
+```
 
 ---
 

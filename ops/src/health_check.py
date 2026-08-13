@@ -93,18 +93,33 @@ def check_sources_reachable(cfg: dict) -> list[Result]:
     """
     out: list[Result] = []
     manifest = fetch_data.read_manifest()
-    for name in ["sp_daily", "vix", "shiller"]:
+    floors = cfg["sanity"]["min_rows"]
+    for name in sorted(fetch_data.SOURCES):
+        floor = floors.get(name)
+        if floor is None:
+            # 新來源沒訂下限就靜靜略過的話,它等於永遠沒被檢查過 ——
+            # FRED 死管線就是這樣活了很久。寧可紅燈也不要無聲的空窗。
+            out.append(Result(
+                f"來源可達性 · {name}", FAIL,
+                f"config.yml 的 sanity.min_rows 沒有 {name} 的下限,無法判斷回應是否完整",
+            ))
+            continue
         try:
             text = fetch_data.fetch_source(name)
             df = pd.read_csv(io.StringIO(text))
-            floor = cfg["sanity"]["min_rows"][name]
             if len(df) < floor:
+                # ⚠ 不落地。這一列曾經寫在 if/else 外面,於是一個被截斷的回應會
+                # **蓋掉本機最後一份好資料**,並在 manifest 記上 rows=5 + 全新的
+                # fetched_at —— 稽核軌跡與心跳於是宣稱「剛剛更新成功」,而檢查
+                # 本身正在說它壞了。實測:601 列的好檔被 5 列的壞檔蓋掉。
+                # 模組開頭寫的是「只檢查、不修復、**不改資料**」,這裡是它的例外。
                 out.append(Result(
                     f"來源可達性 · {name}", FAIL,
-                    f"只回了 {len(df)} 列,低於下限 {floor} —— 來源可能改了格式或被截斷",
+                    f"只回了 {len(df)} 列,低於下限 {floor} —— 來源可能改了格式或被截斷。"
+                    f"本機既有資料保持不動",
                 ))
-            else:
-                out.append(Result(f"來源可達性 · {name}", OK, f"{len(df)} 列"))
+                continue
+            out.append(Result(f"來源可達性 · {name}", OK, f"{len(df)} 列"))
             manifest[name] = fetch_data.save(name, text)
         except Exception as exc:  # noqa: BLE001
             out.append(Result(f"來源可達性 · {name}", FAIL, f"抓取失敗:{exc}"))

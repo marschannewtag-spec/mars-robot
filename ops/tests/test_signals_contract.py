@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -109,6 +111,124 @@ def test_pwa_reads_only_fields_the_writer_emits(html: str, payload: dict) -> Non
 
 def test_payload_survives_json_roundtrip(payload: dict) -> None:
     assert json.loads(json.dumps(payload, ensure_ascii=False)) == payload
+
+
+# ── 產出的必須是【JS 讀得懂的】JSON ──────────────────────────────────────
+#
+# 2026-08-13 實測到的 bug:`dominance()` 在第二名總分為 0 時回 `float("inf")`
+# (「領先到沒有可比性」,語意正確)。build_signals 的守門式寫的是 `x != x`,
+# 那只擋 NaN —— `inf != inf` 是 False,所以 inf 一路溜到 json.dumps,
+# 寫出裸的 `Infinity`。那不是合法 JSON(RFC 8259 沒這個字面值),
+# 瀏覽器的 JSON.parse 直接拋,而 checkRegime 的 catch 是空的
+# => **整塊體制面板無聲消失**,症狀和「檔案不存在」一模一樣。
+#
+# 上面那條 round-trip 測試永遠抓不到它:**Python 的 json 接受 Infinity。**
+# 真正的消費端是 JS,所以判準必須用 JS 的。
+
+
+def _reject_constant(name: str):
+    raise AssertionError(
+        f"signals.json 出現了 `{name}` —— 那不是合法 JSON,"
+        f"瀏覽器的 JSON.parse 會拋,體制面板會無聲消失"
+    )
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan")])
+def test_non_finite_numbers_never_reach_the_json(bad: float) -> None:
+    assert fetch_signals.jsonable(bad) is None, (
+        f"{bad} 沒有被擋下。注意 `x != x` 只擋 NaN,擋不住 inf"
+    )
+
+
+def test_jsonable_keeps_real_numbers() -> None:
+    """對照組 —— 不能是靠「什麼都回 None」達成的。"""
+    for good in (0.0, -1.5, 4.79, 1e9):
+        assert fetch_signals.jsonable(good) == good
+    assert fetch_signals.jsonable(None) is None
+
+
+def test_dominance_really_can_produce_an_infinite_margin() -> None:
+    """先證明這個情境存在,否則下面那條只是在測一個不會發生的事。
+
+    兩個市場、其中一個的報酬是常數 -> 它當領先者時 R² 全是 NaN
+    -> 第二名總分 0 -> `margin = top / 0` 被寫成 `float("inf")`。
+    """
+    a = {d: (0.01 if d % 2 else -0.01) for d in range(1, 200)}
+    b = {d: 0.0 for d in range(1, 200)}
+    assert regime.dominance({"甲": a, "乙": b}).margin == float("inf")
+
+
+def test_build_signals_output_is_strict_json_when_margin_is_infinite(
+        monkeypatch) -> None:
+    """走**真正的組裝路徑**,不是只測 jsonable() 這個小工具。
+
+    這一條是 S2 突變(把守門式改回 `x != x`)唯一抓得到的地方 ——
+    只測工具函式的話,呼叫點改壞了也沒人知道。
+    """
+    prices_alt = {1_900_000 + i: (100.0 if i % 2 else 101.0) for i in range(200)}
+    prices_flat = {1_900_000 + i: 100.0 for i in range(200)}
+    live = list(fetch_signals.MARKETS)[:2]
+
+    def fake_market(symbol: str) -> dict[int, float]:
+        syms = [fetch_signals.MARKETS[n] for n in live]
+        if symbol == syms[0]:
+            return prices_alt
+        if symbol == syms[1]:
+            return prices_flat
+        raise RuntimeError("這個市場今天抓不到")   # 其餘四個市場失敗
+
+    def boom() -> dict:
+        raise RuntimeError("來源掛了")
+
+    monkeypatch.setattr(fetch_signals, "fetch_market", fake_market)
+    monkeypatch.setattr(fetch_signals, "fetch_cnn", boom)
+    monkeypatch.setattr(fetch_signals, "fetch_ndc", boom)
+
+    payload = fetch_signals.build_signals()
+    assert payload["dominance"]["margin"] is None, (
+        f"margin 應該被擋成 None,實際是 {payload['dominance']['margin']!r}"
+    )
+    # 用 JS 的尺量:Python 的 json 接受 Infinity,拿它當判準等於量錯了
+    json.loads(json.dumps(payload, ensure_ascii=False, allow_nan=True),
+               parse_constant=_reject_constant)
+
+
+def test_write_signals_refuses_to_emit_invalid_json(tmp_path, monkeypatch) -> None:
+    """第二道防線:jsonable() 若哪天漏了一條路徑,寫檔要**拋**而不是安靜寫壞。
+
+    寫不出來時 workflow 會沿用 ops-data 上的舊版 ——
+    舊資料好過一份會讓面板消失的新資料。
+    """
+    monkeypatch.setattr(fetch_signals, "SIGNALS_PATH", tmp_path / "signals.json")
+    with pytest.raises(ValueError):
+        fetch_signals.write_signals({"margin": float("inf")})
+
+
+def test_the_committed_signals_file_is_strict_json() -> None:
+    """實際產出的那份檔案(若在本機存在)也要通過同一把尺。"""
+    path = fetch_signals.SIGNALS_PATH
+    if not path.exists():
+        pytest.skip("本機還沒有 signals.json(CI 上由 workflow 產生)")
+    json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="需要 node 才能用真正的 JSON.parse")
+def test_javascript_can_parse_what_python_wrote(payload: dict, tmp_path) -> None:
+    """最終判準:交給**真正的** JSON.parse。
+
+    Python 的 json 對 Infinity/NaN 太寬容,拿它當判準等於用錯的尺量。
+    """
+    p = tmp_path / "signals.json"
+    p.write_text(json.dumps({**payload, "dominance": {**payload["dominance"],
+                                                      "margin": None}},
+                            ensure_ascii=False), encoding="utf-8")
+    r = subprocess.run(
+        ["node", "-e",
+         "const fs=require('fs');JSON.parse(fs.readFileSync(process.argv[1],'utf8'));"
+         "console.log('ok')", str(p)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert r.returncode == 0, f"JS 解析不了 Python 寫出的 JSON:\n{r.stderr}"
 
 
 def test_everything_missing_still_produces_a_valid_payload(payload: dict) -> None:
