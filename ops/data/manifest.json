@@ -2,25 +2,25 @@
   "sp_daily": {
     "file": "sp500_daily.csv",
     "url": "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC",
-    "fetched_at": "2026-09-07T23:51:49+00:00",
-    "rows": 14291,
+    "fetched_at": "2026-09-08T23:45:26+00:00",
+    "rows": 14292,
     "first_date": "1970-01-02",
-    "last_date": "2026-09-04",
-    "sha256": "262914751cb6869dfc02ca22bc65930830b87a954c4cd1dc488bde26f0e447ea"
+    "last_date": "2026-09-08",
+    "sha256": "427ce42fc939cb32c26b64adfb02c2a5bc59d10f9df91822b9681b1a08ee001e"
   },
   "vix": {
     "file": "vix_daily.csv",
     "url": "https://raw.githubusercontent.com/datasets/finance-vix/main/data/vix-daily.csv",
-    "fetched_at": "2026-09-07T23:51:49+00:00",
-    "rows": 9266,
+    "fetched_at": "2026-09-08T23:45:26+00:00",
+    "rows": 9267,
     "first_date": "1990-01-02",
-    "last_date": "2026-09-04",
-    "sha256": "8e376f64a1d4a0b5b197e472802d9b9f6c7b724f62a90c0b6c5ffc869b21299c"
+    "last_date": "2026-09-07",
+    "sha256": "5f1776fb9513ec086faad558214851b4e44c47e720042b4f6ed510ff2b2d72b7"
   },
   "shiller": {
     "file": "shiller_sp500.csv",
     "url": "https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv",
-    "fetched_at": "2026-09-07T23:51:49+00:00",
+    "fetched_at": "2026-09-08T23:45:26+00:00",
     "rows": 1868,
     "first_date": "1871-01-01",
     "last_date": "2026-08-01",
