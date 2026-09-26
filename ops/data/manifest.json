@@ -2,16 +2,16 @@
   "sp_daily": {
     "file": "sp500_daily.csv",
     "url": "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC",
-    "fetched_at": "2026-09-25T00:09:27+00:00",
-    "rows": 14303,
+    "fetched_at": "2026-09-26T00:15:53+00:00",
+    "rows": 14305,
     "first_date": "1970-01-02",
-    "last_date": "2026-09-24",
-    "sha256": "fe9d9748fb662cc5c032d550abce249fef501972d991074cf796aa37adea80a6"
+    "last_date": "2026-09-25",
+    "sha256": "50a7010d9fcf885cc933451c3fe59070928cf96d4c768ab85db2624fd3200ac7"
   },
   "vix": {
     "file": "vix_daily.csv",
     "url": "https://raw.githubusercontent.com/datasets/finance-vix/main/data/vix-daily.csv",
-    "fetched_at": "2026-09-25T00:09:28+00:00",
+    "fetched_at": "2026-09-26T00:15:53+00:00",
     "rows": 9278,
     "first_date": "1990-01-02",
     "last_date": "2026-09-22",
@@ -20,7 +20,7 @@
   "shiller": {
     "file": "shiller_sp500.csv",
     "url": "https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv",
-    "fetched_at": "2026-09-25T00:09:27+00:00",
+    "fetched_at": "2026-09-26T00:15:52+00:00",
     "rows": 1868,
     "first_date": "1871-01-01",
     "last_date": "2026-08-01",
