@@ -93,7 +93,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "年度健檢報告已產出:[\`${{ steps.report.outputs.path }}\`](../blob/main/${{ steps.report.outputs.path }})"
+            # ⚠ 連結必須指向 ops-data,不是 main。報告只推 ops-data
+            # (reports/ 在 ops/.gitignore 裡,main 上根本沒有這個檔案),
+            # 原本寫成 main 的那個連結是死的 404。2026-10-14 修。
+            echo "年度健檢報告已產出:[\`${{ steps.report.outputs.path }}\`](../blob/ops-data/${{ steps.report.outputs.path }})"
             echo
             echo "請花 15 分鐘讀完。重點看兩件事:"
             echo

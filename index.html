@@ -199,6 +199,7 @@
     <div class="big" id="bigpct"><span class="skel">··</span><small>%</small></div>
     <div class="verdict" id="verdict">讀取資料中…</div>
     <div class="defnote" id="defnote"></div>
+    <div class="defnote" id="lagnote"></div>
     <div class="asof" id="asof"></div>
     <div class="defnote" id="opsnote"></div>
   </div>
@@ -296,7 +297,7 @@
   <summary><span>⚙ 資料來源(預設每日 · 免金鑰 · 自動退回)</span><span>＋</span></summary>
   <div class="fine">
     <p>趨勢腿資料來源,由新鮮到穩定<b>自動逐層退回</b>,不會斷線:</p>
-    <p style="margin-top:8px">① <b>每日 · 自有 Worker</b>(選填網址)— 自架 Cloudflare Worker,最優先、最穩定。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>③ <b>每日 · Yahoo ^GSPC</b>(<b>預設、免金鑰</b>)— 經 CORS 代理抓 Yahoo 指數,讓趨勢腿反映到昨收。會依序試 <code>query1/query2</code> 兩個主機 × <code>corsproxy.io/allorigins</code> 兩個代理。<br>④ <b>月頻 · Shiller</b>(最終退回)— 全部失敗時的保底,永遠可用。</p>
+    <p style="margin-top:8px">① <b>每日 · 自有 Worker</b>(選填網址)— 自架 Cloudflare Worker,最優先、最穩定。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>③ <b>每日 · Yahoo ^GSPC</b>(<b>預設、免金鑰</b>)— 經 CORS 代理抓 Yahoo 指數,讓趨勢腿反映到昨收。會依序試 <code>query1/query2</code> 兩個主機 × <code>corsproxy.io</code> 代理。<b>2026-10 實測:免費代理已全部失效</b>(corsproxy.io 轉為需 API key、allorigins 持續逾時已移除),③ 目前實質上不會成功,會直接退到 ④。要恢復每日新鮮度請填 ① 或 ②。<br>④ <b>月頻 · Shiller</b>(最終退回)— 全部失敗時的保底,永遠可用。</p>
     <p style="margin-top:9px;color:var(--faint)">目前實際來源顯示在上方「資料更新」欄。③為跨網域抓取,若你的瀏覽器/代理擋下會自動往下退,功能不會壞,只是少了每日新鮮度。每個請求都有逾時(單次 7 秒、整段 12 秒上限),死掉的來源不會拖住頁面。免費代理偶有不穩;要最穩定就填①或②。</p>
     <div style="display:flex;gap:8px;margin-top:13px">
       <input id="workerurl" type="text" autocomplete="off" spellcheck="false" placeholder="(推薦)你的 Cloudflare Worker 網址 — 最長久穩定" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
@@ -326,10 +327,20 @@ function fetchT(url,opt,ms){
   const ac=new AbortController(), tid=setTimeout(()=>ac.abort(),ms||8000);
   return fetch(url,Object.assign({},opt,{signal:ac.signal})).finally(()=>clearTimeout(tid));
 }
-// 免金鑰 CORS 代理,依實測可用度排序;逐個試,單個逾時 7 秒
+// 免金鑰 CORS 代理,依實測可用度排序;逐個試,單個逾時 7 秒。
+//
+// ⚠ 這份清單必須與 ops/config.yml 的 `proxies` 一致 —— 由
+//    test_proxy_chain.py::test_pwa_proxy_list_matches_config 綁住。
+//    健檢探測的是 config 那一份,PWA 跑的是這一份;兩邊漂移的話,
+//    健檢會天天探測一個 PWA 根本沒在用的代理,而 PWA 在用的那個沒人看著。
+//
+// 2026-10-14 移除 allorigins:實測 4/4 次都是【完整 7 秒逾時】,不是間歇。
+//   它從 2026-08 起就列在 config.yml 的 known_dead_proxies 裡,但 PWA 不知道,
+//   於是每次冷啟動白花 7s × 2 個主機 = 把 12 秒總預算整個燒掉才退回 Shiller。
+//   留著一個「宣稱是備援、實際只是在拖時間」的分支比沒有更糟 —— 和當初拆掉
+//   FRED 死管線是同一個理由。它哪天復活了,加回兩邊即可(測試會要求你加兩邊)。
 const PROXIES=[
-  {name:"corsproxy.io", wrap:u=>"https://corsproxy.io/?url="+encodeURIComponent(u)},
-  {name:"allorigins",   wrap:u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u)}
+  {name:"corsproxy.io", wrap:u=>"https://corsproxy.io/?url="+encodeURIComponent(u)}
 ];
 
 const $=id=>document.getElementById(id);
@@ -351,6 +362,18 @@ function paintFromCache(o){
   catch(e){ dropCache(); return false; }
 }
 const ym=d=>d.slice(0,7);
+// 判「整份讀數落後日曆」之前的寬限:要到當月這一天之後才算。
+// 月初 1-2 天可能還沒有任何交易日(1 號遇上週六就是),加上來源本身 1-2 天落後。
+// 訂寬是刻意的 —— 寧可漏報也不能狼來了(同 OPS_STALE_DAYS 的理由)。
+const CAL_LAG_GRACE_DAY=6;
+// 'YYYY-MM' 差幾個月(b − a)。a 比 b 新或同月回 0。
+// 刻意不用 Date:'2026-01' 丟給 new Date() 各引擎的時區解讀不一致,
+// 而這裡只需要年月的整數算術。解析不出來也回 0 —— 寧可漏報也不要亂叫。
+function monthsBetween(a,b){
+  const pa=/^(\d{4})-(\d{2})$/.exec(a||""), pb=/^(\d{4})-(\d{2})$/.exec(b||"");
+  if(!pa||!pb) return 0;
+  return Math.max(0,(pb[1]-pa[1])*12+(pb[2]-pa[2]));
+}
 function parseCSV(t){const L=t.trim().split(/\r?\n/);const H=L[0].split(",");return L.slice(1).map(r=>{const c=r.split(",");const o={};H.forEach((h,i)=>o[h.trim()]=c[i]);return o;});}
 
 // ---- validated 100%-cap union logic (mirrors Python exactly) ----
@@ -627,6 +650,48 @@ function render(data,fetchedAt,fromCache){
   $("defnote").innerHTML = data.altDef
     ? "⚠ 目前用的是 <b>Shiller 月均價</b>,與回測基準的<b>月收盤</b>定義不同 —— 歷史上約 17% 的月份兩者會給出不同水位。每日來源恢復後會自動切回。"
     : "";
+  // 資料落後 → 必須說出來。兩種落後,兩種危險,都要講。
+  //
+  // 為什麼這條不能靜默:VIX 腿是【領先】腿,它存在的唯一理由是搶在均線跌破之前
+  // 反應,而它的「月內飆升」項吃的是【當月的日內最高】。資料停在舊月份的意思就是
+  // 「這段期間若發生 VIX 飆升,畫面上看不到」—— 那正好是這個工具最該發揮作用的
+  // 時候,而它會顯示 0%。
+  //
+  // ① 相對落後:VIX 腿落後趨勢腿。2026-09-22 起 GitHub finance-vix 停更就是這個。
+  //    只對【落後】報警,不對【超前】報警 —— vLast 比 sLast 新是刻意的設計
+  //    (VIX 腿允許用進行中的當月),那不是故障。
+  //
+  // ② 絕對落後:兩條腿一起落後【日曆】。實測漏掉過 ——
+  //    代理鏈全死退回 Shiller 時,趨勢腿也掉到 2026-09,於是兩條腿月份一致、
+  //    ① 完全靜默,而實際上整個讀數都是上個月的。這是更危險的那一種,
+  //    因為畫面上兩個月份看起來「一致」,反而更像正常。
+  //
+  // 寬限到當月 6 號才判絕對落後:月初 1-2 天可能還沒有交易日(例如 1 號是週六),
+  // 加上來源本身 1-2 天的落後。寬限日數刻意訂寬 —— 寧可漏報也不能狼來了,
+  // 一個會亂叫的警示列幾天後就會被無視,那等於沒有。(同 OPS_STALE_DAYS 的理由。)
+  //
+  // 這和「失敗即靜默」不衝突:靜默是對【抓不到】。這裡是抓到了、而且知道它舊了,
+  // 那是資訊不是噪音 —— 對應「缺資料與沒觸發必須長得不一樣」那條原則。
+  const legLag = monthsBetween(vLast.ym, sLast.ym);
+  const newest = vLast.ym > sLast.ym ? vLast.ym : sLast.ym;
+  const now = new Date();
+  // UTC 分月,和 spFromYahoo() 一致 —— 用本地時區會在 UTC+11 以東跨月
+  const calLag = now.getUTCDate() >= CAL_LAG_GRACE_DAY
+    ? monthsBetween(newest, now.toISOString().slice(0,7)) : 0;
+
+  const parts=[];
+  if(legLag>=1) parts.push(
+    "<b>VIX 腿的資料落後趨勢腿 "+legLag+" 個月</b>(VIX "+esc(vLast.ym)+" vs S&P "+esc(sLast.ym)+")。"
+    +"VIX 腿是<b>領先</b>腿,它卡在舊月份代表<b>這段期間若發生 VIX 飆升,上面的數字反映不出來</b>。");
+  if(calLag>=1) parts.push(
+    "<b>整份讀數落後日曆 "+calLag+" 個月</b>(最新資料 "+esc(newest)+",現在是 "
+    +now.toISOString().slice(0,7)+")。<b>兩條腿都沒有本月的資料</b> —— "
+    +"月份看起來一致,但它不是現況。");
+  $("lagnote").classList.toggle("on", parts.length>0);
+  $("lagnote").innerHTML = parts.length
+    ? "⚠ "+parts.join("<br>⚠ ")+"<br>來源恢復後會自動更新。"
+    : "";
+
   $("allin").classList.toggle("on", uni===0);
   renderTemp(uni,momC,vixC);
 

@@ -32,11 +32,17 @@ pwa:
 # 這是整套健檢最有價值的一項 —— allorigins 就是這樣無聲死掉、
 # 導致趨勢腿默默退回月頻長達不知多久,而畫面上完全看不出來。
 proxy_probe_target: "https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC?interval=1d&range=1mo"
+#
+# ⚠ 這份清單必須與 index.html 的 `PROXIES` 一致 —— 由
+#   tests/test_proxy_chain.py::test_pwa_proxy_list_matches_config 綁住。
+#   漂移的後果是:健檢天天探測一個 PWA 沒在用的代理,而 PWA 在用的那個沒人看著。
+#
+# 2026-10-14 移除 allorigins。它從 2026-08 就列在下面的 known_dead_proxies 裡,
+# 但 PWA 完全不知道,於是每次冷啟動對它白等 7s × 2 個主機 = 把 12 秒總預算燒光。
+# 實測 4/4 次都是完整逾時,不是間歇。留著等於多一個只會拖時間的假備援。
 proxies:
   - name: "corsproxy.io"
     template: "https://corsproxy.io/?url={url}"
-  - name: "allorigins"
-    template: "https://api.allorigins.win/raw?url={url}"
 
 # 已知且已接受的劣化 —— 列在這裡就不會每天報警。
 # 新增項目時務必在 commit 訊息寫清楚為什麼可以接受,否則這裡會變成垃圾桶。
@@ -47,10 +53,17 @@ accepted:
 
   # 已知失效、但仍留在退回鏈裡的代理。列在這裡就不會每天報警,
   # 但若「剩下還活著的」也掛掉,PWA 代理鏈那一項仍然會失敗。
-  # allorigins:2026-08 實測回 HTTP 408 / 讀取逾時,連抓 example.com 都失敗。
-  #            留著是因為它若哪天復活就是免費的備援,且有逾時保護(單次 7 秒)。
-  known_dead_proxies:
-    - "allorigins"
+  #
+  # 2026-10-14 清空:唯一的項目 allorigins 已從 proxies 清單整個移除,
+  # 留一個指向不存在的代理的條目就是另一條「宣稱有、實際沒接」的死設定
+  # (FRED 那個形狀)。要再加回來的話,proxies 與 index.html 的 PROXIES
+  # 兩邊都要加 —— 測試會要求你加兩邊。
+  #
+  # ⚠ 現況:corsproxy.io 也已於 2026-08-28 起失效(轉為需 API key,回 HTTP 401),
+  #   所以「PWA 代理鏈」這一項目前是【真的】紅燈,不是誤報。
+  #   不要為了讓它變綠而把 corsproxy.io 加進這份清單 —— 那等於把警報關掉。
+  #   正解是填 config 的 worker_url / PWA 的自架 Worker 欄位。
+  known_dead_proxies: []
 
 # 選填:自架 Cloudflare Worker 端點。留空則跳過該項檢查。
 worker_url: ""

@@ -117,26 +117,68 @@ jobs:
             --description "每日健檢偵測到的異常" 2>/dev/null || true
 
       # 去重:資料源掛掉是【持續性狀態】不是單次事件。每天開新 Issue 等於一年 365 個,
-      # 而使用者會直接關掉通知 —— 那整層就白做了。有開放的就留言,沒有才新建。
+      # 而使用者會直接關掉通知 —— 那整層就白做了。所以永遠只有一個 Issue。
+      #
+      # ⚠ 2026-10-14 修掉一個把這個設計整個抵銷掉的缺陷。
+      #
+      # 原本的去重 key 是「有沒有開放的 health-fail Issue」,不是「哪幾項在失敗」。
+      # 實測後果:Issue #2 從 2026-08-21 連紅 54 天、52 則留言,而這段期間
+      # 失敗項目換過 6 次 —— 包含兩個真正影響使用者看到的數字的新故障
+      # (代理鏈全部失效、VIX 來源停更)。它們以「第 N 則留言」的形式出現在一個
+      # 已經 52 則的討論串裡,而標題仍然凍結在第一個、而且早就自己好了的原因。
+      #
+      # 「狼來了比漏報更致命」(config.yml 開頭)。連紅 54 天的 Issue 就是那個
+      # 狼來了:它每天都正確地報告了事實,而資訊傳達完全失敗。
+      #
+      # 修法【不動】只有一個 Issue 這條不變量,改的是報告層:
+      #   1. 內文每次都換成當前報告(而不是永遠停在第一天那一份)
+      #   2. 標題寫出【目前】在失敗的是什麼
+      #   3. 只在失敗集合【變動】時留言,並明確列出新增/恢復
+      # 逐日軌跡本來就有 health_log.csv 當 append-only 稽核軌跡,不靠留言。
+      #
+      # 判斷邏輯放在 src/health_check.py(有測試),這裡只負責編排 ——
+      # 寫在 workflow 的 heredoc 裡就沒辦法測。
       - name: 異常 → 開或更新 Issue
         if: steps.check.outputs.code != '0'
         env:
           GH_TOKEN: ${{ github.token }}
+          PYTHONIOENCODING: utf-8
         run: |
           existing=$(gh issue list --label health-fail --state open --limit 1 \
                        --json number --jq '.[0].number // empty')
+
+          # 既有 Issue 的內文裡藏著上次的失敗集合(failset 標記)。
+          # 舊格式的 Issue 沒有那個標記 → 視為「不知道」→ 會留一次言說明現況。
+          : > old_body.md
           if [ -n "$existing" ]; then
-            echo "已有開放的 Issue #$existing,改為留言更新"
-            {
-              echo "### 仍未恢復 — $(date -u '+%Y-%m-%d %H:%M UTC')"
-              echo
-              cat "$GITHUB_WORKSPACE/health_report.md"
-            } | gh issue comment "$existing" --body-file -
-          else
-            gh issue create \
-              --title "健檢異常 · $(date -u '+%Y-%m-%d')" \
-              --label health-fail \
+            gh issue view "$existing" --json body --jq .body > old_body.md
+          fi
+
+          plan=$(python ops/src/health_check.py --issue-plan \
+                   "$GITHUB_WORKSPACE/health_report.md" old_body.md)
+          changed=$(printf '%s' "$plan" | jq -r .changed)
+          title=$(printf '%s' "$plan" | jq -r .title)
+          printf '%s' "$plan" | jq -r .comment > change_comment.md
+
+          if [ -z "$existing" ]; then
+            echo "沒有開放的 Issue,新建:$title"
+            gh issue create --title "$title" --label health-fail \
               --body-file "$GITHUB_WORKSPACE/health_report.md"
+            exit 0
+          fi
+
+          # 內文每次都換成最新狀態。少了這一步,Issue 內文會永遠停在第一天那一份,
+          # 而使用者點進來看到的是一份早就不成立的報告。
+          gh issue edit "$existing" --title "$title" \
+            --body-file "$GITHUB_WORKSPACE/health_report.md"
+
+          if [ "$changed" = "true" ]; then
+            echo "失敗項目有變動 → 留言並更新標題"
+            gh issue comment "$existing" --body-file change_comment.md
+          else
+            echo "失敗項目與上次相同 → 只更新內文,不留言"
+            echo "(每天留一則「仍未恢復」會把 Issue 洗成沒人看的討論串,"
+            echo " 那等於把整層監控關掉 —— 逐日軌跡看 health_log.csv)"
           fi
 
       - name: 恢復正常 → 關閉 Issue

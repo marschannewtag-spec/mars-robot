@@ -68,10 +68,30 @@ class Result:
     name: str
     status: str
     detail: str
+    # 這一項是在講哪個資料源。用欄位而不是從 name 反解字串 —— 下游要靠它判斷
+    # 「這個來源這次沒抓成功」,而從顯示名稱反解會在改文案時無聲壞掉。
+    source: str | None = None
 
     @property
     def failed(self) -> bool:
         return self.status == FAIL
+
+
+def unreachable_sources(results: list[Result]) -> set[str]:
+    """這次執行裡沒有通過可達性檢查的來源。
+
+    為什麼需要這個:`data/raw/*.csv` 不進版控,workflow 也只從 ops-data 取回
+    manifest 與 health_log。所以在乾淨的 runner 上,新鮮度與合理性能不能跑
+    **完全取決於** `check_sources_reachable()` 在同一次執行裡有沒有把檔案存下來。
+
+    2026-08-13 修掉「壞資料會蓋掉好資料」之後,壞掉的來源就【不落地】了 ——
+    正確,但二階效應是後面兩項檢查改報「檔案不存在」。實測一個被截斷的 sp_daily
+    會產生 4 條訊息,其中 2 條在說錯的事(真正的原因只在第一行)。
+
+    對一個以「不要狼來了」為核心的系統,那是在製造噪音。所以上游已經紅的來源,
+    下游一律標 SKIP —— 語意是「這一項沒得判斷」,不是「這一項也壞了」。
+    """
+    return {r.source for r in results if r.failed and r.source}
 
 
 def load_config() -> dict:
@@ -102,6 +122,7 @@ def check_sources_reachable(cfg: dict) -> list[Result]:
             out.append(Result(
                 f"來源可達性 · {name}", FAIL,
                 f"config.yml 的 sanity.min_rows 沒有 {name} 的下限,無法判斷回應是否完整",
+                source=name,
             ))
             continue
         try:
@@ -117,21 +138,38 @@ def check_sources_reachable(cfg: dict) -> list[Result]:
                     f"來源可達性 · {name}", FAIL,
                     f"只回了 {len(df)} 列,低於下限 {floor} —— 來源可能改了格式或被截斷。"
                     f"本機既有資料保持不動",
+                    source=name,
                 ))
                 continue
-            out.append(Result(f"來源可達性 · {name}", OK, f"{len(df)} 列"))
+            out.append(Result(f"來源可達性 · {name}", OK, f"{len(df)} 列", source=name))
             manifest[name] = fetch_data.save(name, text)
         except Exception as exc:  # noqa: BLE001
-            out.append(Result(f"來源可達性 · {name}", FAIL, f"抓取失敗:{exc}"))
+            out.append(Result(f"來源可達性 · {name}", FAIL,
+                              f"抓取失敗:{exc}", source=name))
     fetch_data.write_manifest(manifest)
     return out
 
 
-def check_freshness(cfg: dict) -> list[Result]:
-    """最新一筆距今多久。停更是最常見的無聲故障。"""
+def check_freshness(cfg: dict, unavailable: set[str] | None = None) -> list[Result]:
+    """最新一筆距今多久。停更是最常見的無聲故障。
+
+    `unavailable`:本次可達性已失敗的來源(見 `unreachable_sources()`)。
+    那些來源的本機檔案這一輪不會更新、在乾淨 runner 上甚至根本不存在,
+    所以這裡標 SKIP 而不是再報一次 FAIL —— 同一個故障報兩次就是噪音。
+    """
     out: list[Result] = []
+    unavailable = unavailable or set()
     today = datetime.now(timezone.utc).date()
     for name, limit in cfg["freshness_days"].items():
+        if name in unavailable:
+            # 刻意不帶 source:那個欄位的語意是「這是可達性檢查的結果」,
+            # 只有 check_sources_reachable() 會設。別處也設的話,
+            # unreachable_sources() 哪天被餵錯清單就會把新鮮度失敗誤判成抓不到。
+            out.append(Result(
+                f"資料新鮮度 · {name}", SKIP,
+                "跳過 —— 本次可達性檢查已失敗(見上方),無法判斷新鮮度",
+            ))
+            continue
         try:
             df = fetch_data.load(name, refresh_if_missing=False)
             last = pd.to_datetime(df[df.columns[0]]).max().date()
@@ -148,11 +186,10 @@ def check_freshness(cfg: dict) -> list[Result]:
     return out
 
 
-def check_sanity(cfg: dict) -> list[Result]:
-    """數值合理性 —— 抓得到不代表資料是對的。"""
+def _sanity_vix(cfg: dict) -> list[Result]:
+    """VIX 的數值合理性與日期完整性。"""
     out: list[Result] = []
     s = cfg["sanity"]
-
     try:
         vix = fetch_data.load("vix", refresh_if_missing=False)
         close = pd.to_numeric(vix["CLOSE"], errors="coerce").dropna()
@@ -173,7 +210,13 @@ def check_sanity(cfg: dict) -> list[Result]:
                           f"{dup} 筆重複日期" if dup else "無重複"))
     except Exception as exc:  # noqa: BLE001
         out.append(Result("數值合理性 · VIX", FAIL, f"檢查失敗:{exc}"))
+    return out
 
+
+def _sanity_sp(cfg: dict) -> list[Result]:
+    """S&P 的數值合理性、日期完整性、以及月對月跳空。"""
+    out: list[Result] = []
+    s = cfg["sanity"]
     try:
         spd = fetch_data.load("sp_daily", refresh_if_missing=False)
         px = pd.to_numeric(spd["close"], errors="coerce")
@@ -197,17 +240,39 @@ def check_sanity(cfg: dict) -> list[Result]:
         gap = (monthly["price"].pct_change().abs() * 100).dropna()
         worst = gap.max()
         if worst > s["max_monthly_gap_pct"]:
+            # `.loc` 而不是 `.iloc`:idxmax() 回的是【標籤】。sp_monthly() 目前
+            # reset_index 過,標籤恰好等於位置,所以兩者行為相同 —— 但那是上游的
+            # 巧合,不是這裡的保證。用 .loc 才和 idxmax() 自洽。
+            # (2026-08-13 我曾懷疑這裡有 label/position bug,建了對照資料去驗:
+            #  它是對的,錯的是我的假設。已由 test_monthly_gap_names_the_right_month 釘住。)
             idx = gap.idxmax()
             out.append(Result(
                 "數值合理性 · S&P 月跳空", FAIL,
-                f"{monthly['ym'].iloc[idx]} 單月變動 {worst:.1f}%,"
+                f"{monthly['ym'].loc[idx]} 單月變動 {worst:.1f}%,"
                 f"超過 {s['max_monthly_gap_pct']}% —— 可能是資料錯誤或真的崩盤,請人工確認",
             ))
         else:
             out.append(Result("數值合理性 · S&P 月跳空", OK, f"最大 {worst:.1f}%"))
     except Exception as exc:  # noqa: BLE001
         out.append(Result("數值合理性 · S&P", FAIL, f"檢查失敗:{exc}"))
+    return out
 
+
+def check_sanity(cfg: dict, unavailable: set[str] | None = None) -> list[Result]:
+    """數值合理性 —— 抓得到不代表資料是對的。
+
+    `unavailable` 的理由同 `check_freshness()`:上游紅了就沒得判斷,標 SKIP
+    而不是再報一次 FAIL。同一個故障報兩次就是噪音,而噪音會訓練使用者無視通知。
+    """
+    out: list[Result] = []
+    unavailable = unavailable or set()
+    for name, label, fn in (("vix", "VIX", _sanity_vix),
+                            ("sp_daily", "S&P", _sanity_sp)):
+        if name in unavailable:
+            out.append(Result(f"數值合理性 · {label}", SKIP,
+                              "跳過 —— 本次可達性檢查已失敗(見上方)"))
+            continue
+        out += fn(cfg)
     return out
 
 
@@ -355,9 +420,20 @@ def check_worker(cfg: dict) -> list[Result]:
 def run_all() -> list[Result]:
     cfg = load_config()
     results: list[Result] = []
-    results += check_sources_reachable(cfg)
-    results += check_freshness(cfg)
-    results += check_sanity(cfg)
+
+    # ⚠ 這個順序是【承重】的,不是風格。`data/raw/*.csv` 不進版控,workflow 也
+    # 只從 ops-data 取回 manifest 與 health_log —— 所以在乾淨的 runner 上,
+    # 底下三項能不能跑完全取決於 check_sources_reachable() 有沒有先把檔案存下來。
+    #
+    # 這條依賴在本機【看不出來】(本機 raw 檔一直在)。重排順序的話:
+    # 本機測試照樣全綠,線上會冒出一整排「檔案不存在」的假紅燈。
+    # 由 test_health_check.py::test_check_order_is_load_bearing 釘住。
+    reachable = check_sources_reachable(cfg)
+    results += reachable
+    down = unreachable_sources(reachable)
+
+    results += check_freshness(cfg, down)
+    results += check_sanity(cfg, down)
     results += check_column_degradation(cfg)
     results += check_proxies(cfg)
     results += check_pwa_deploy(cfg)
@@ -389,6 +465,108 @@ def append_log(results: list[Result]) -> None:
         fh.write(f"{row['date']},{row['ok']},{row['n_checks']},{row['failed']}\n")
 
 
+# --------------------------------------------------------------------------
+# Issue 同步 —— 讓標題與內文反映【目前】的狀態(2026-10-14)
+#
+# 去重規則原本的 key 是「有沒有開放的 health-fail Issue」,不是「哪幾項在失敗」。
+# 實測後果:Issue #2 從 2026-08-21 連紅 54 天、52 則留言,而這段期間失敗項目
+# 換過 6 次 —— 包含兩個真正影響使用者看到的數字的新故障(代理鏈全死、VIX 停更)。
+# 它們以「第 N 則留言」的形式出現在一個已經 52 則的討論串裡,標題仍凍結在
+# 第一個、而且早就自己好了的原因。
+#
+# `config.yml` 開頭自己寫的:「狼來了比漏報更致命 —— 一旦你開始無視通知,
+# 整層就等於不存在。」連紅 54 天的 Issue 就是那個狼來了。它每天都正確地
+# 報告了事實,而資訊傳達完全失敗。
+#
+# 修法刻意【不動】去重的核心(仍然只有一個 Issue —— 那條不變量是為了避免
+# 一年 365 個 Issue,它是對的),改的是報告層:
+#   1. 內文每次都換成當前報告(而不是留在第一天那一份)
+#   2. 標題寫出【目前】在失敗的是什麼
+#   3. 只在失敗集合【變動】時留言,而且把新增/恢復明確列出來
+# 逐日軌跡本來就有 health_log.csv 當 append-only 稽核軌跡,不需要靠留言。
+# --------------------------------------------------------------------------
+
+_MARKER_PREFIX = "<!-- failset: "
+_MARKER_SUFFIX = " -->"
+
+
+def failset(results: list[Result]) -> list[str]:
+    """目前失敗的檢查項名稱,排序後。這是去重與變動判斷的真正 key。"""
+    return sorted(r.name for r in results if r.failed)
+
+
+def failset_marker(results: list[Result]) -> str:
+    """把失敗集合編碼成一行 HTML 註解,藏在 Issue 內文裡當狀態。
+
+    為什麼不去解析內文的散文:文案改一次,解析就無聲壞掉 ——
+    而它壞掉的症狀是「永遠判定沒有變動」,也就是這個修法完全失效且沒有症狀。
+    """
+    return _MARKER_PREFIX + "|".join(failset(results)) + _MARKER_SUFFIX
+
+
+def parse_failset(body: str | None) -> list[str] | None:
+    """從既有 Issue 內文讀回上次的失敗集合。沒有標記回 None(=「不知道」)。
+
+    None 與空列表必須分得開:None 是「這個 Issue 是舊格式或剛建立」,
+    空列表是「上次沒有任何失敗」。前者不該被當成「全部都是新增的」。
+    """
+    if not body or _MARKER_PREFIX not in body:
+        return None
+    tail = body.split(_MARKER_PREFIX, 1)[1]
+    if _MARKER_SUFFIX not in tail:
+        return None
+    raw = tail.split(_MARKER_SUFFIX, 1)[0]
+    return sorted(n for n in raw.split("|") if n)
+
+
+def issue_title(results: list[Result]) -> str:
+    """標題必須說出【目前】在失敗的是什麼。
+
+    原本是 `健檢異常 · <第一次失敗的日期>`,於是 54 天後標題講的還是
+    那個早就恢復了的 shiller,而真正在燒的兩件事只能在第 52 則留言裡看到。
+    """
+    names = failset(results)
+    if not names:
+        return "健檢異常"
+    short = "、".join(n.replace(" · ", " ") for n in names)
+    if len(short) > 60:
+        short = short[:59] + "…"
+    return f"健檢異常({len(names)} 項)· {short}"
+
+
+def change_summary(previous: list[str] | None, results: list[Result]) -> str | None:
+    """失敗集合有變動時的留言內文;沒變動回 None。
+
+    回 None 就是「不要留言」—— 那正是避免 52 則留言的關鍵。
+    """
+    now = failset(results)
+    if previous is not None and previous == now:
+        return None
+
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [f"### 失敗項目有變動 — {stamp}", ""]
+    if previous is None:
+        lines += ["(這個 Issue 先前沒有記錄失敗項目,以下是目前的狀態。)", ""]
+    else:
+        added = [n for n in now if n not in previous]
+        gone = [n for n in previous if n not in now]
+        if added:
+            lines += ["**新增失敗:**", ""]
+            lines += [f"- ❌ {n}" for n in added] + [""]
+        if gone:
+            lines += ["**已恢復:**", ""]
+            lines += [f"- ✅ {n}" for n in gone] + [""]
+
+    detail = {r.name: r.detail for r in results}
+    lines += ["**目前失敗的全部項目:**", ""]
+    lines += [f"- **{n}** — {detail.get(n, '')}" for n in now] or ["- (無)"]
+    lines += ["", "---",
+              "逐日軌跡在 `ops-data` 分支的 `ops/data/health_log.csv`(append-only)。",
+              "本留言只在**失敗項目有變動**時出現 —— 「仍未恢復」不會每天洗一則,",
+              "那會讓這個 Issue 變成沒人看的討論串,而那等於把整層監控關掉。"]
+    return "\n".join(lines)
+
+
 def render_markdown(results: list[Result]) -> str:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     failed = [r for r in results if r.failed]
@@ -409,11 +587,46 @@ def render_markdown(results: list[Result]) -> str:
         "</details>",
         "",
         "---",
-        "本 Issue 由 `ops/src/health_check.py` 自動建立。修好之後下一次健檢會自動關閉它。",
+        "本 Issue 由 `ops/src/health_check.py` 自動建立,**內文每天換成最新狀態**。",
+        "逐日軌跡在 `ops-data` 分支的 `ops/data/health_log.csv`。修好之後下一次健檢會自動關閉它。",
         "診斷方式:把這個 Issue 丟給 Claude Code,或本機執行 "
         "`python ops/src/health_check.py --verbose`。",
+        "",
+        failset_marker(results),   # 下一次執行靠這一行判斷失敗項目有沒有變動
     ]
     return "\n".join(lines)
+
+
+def issue_plan(report: str, old_body: str | None) -> dict:
+    """給 workflow 用的決策:標題要改成什麼、要不要留言、留什麼。
+
+    吃的是**已經產生好的報告文字**,不重跑檢查 —— 重跑會多打一輪網路,
+    而且兩次結果可能不一樣,那會讓標題和內文講不同的事。
+
+    注意這裡只從報告裡取失敗項目名稱,不需要 Result 物件:報告本身就是
+    那次執行的事實,workflow 已經把它存成檔案了。
+    """
+    # 名稱從【標記】讀,不是去解析散文 —— 文案改一次,散文解析就無聲壞掉,
+    # 而它壞掉的症狀是「永遠判定沒有變動」,也就是這個修法完全失效且沒有症狀。
+    names = parse_failset(report) or []
+
+    # 細節只能從散文取,所以是 best-effort:取不到就留空字串,
+    # 名稱仍然是對的,留言仍然有用。細節是附加價值,不是判斷依據。
+    detail: dict[str, str] = {}
+    for line in report.splitlines():
+        if line.startswith("- **") and "—" in line:
+            head, _, tail = line.partition("—")
+            detail[head.split("**", 2)[1]] = tail.strip()
+
+    current = [Result(n, FAIL, detail.get(n, "")) for n in names]
+    previous = parse_failset(old_body)
+    comment = change_summary(previous, current)
+    return {
+        "changed": comment is not None,
+        "title": issue_title(current),
+        "comment": comment or "",
+        "failed": names,
+    }
 
 
 def main() -> int:
@@ -422,7 +635,21 @@ def main() -> int:
     ap.add_argument("--verbose", action="store_true", help="一律列出每一項")
     ap.add_argument("--markdown", action="store_true", help="輸出 markdown 給 Issue 用")
     ap.add_argument("--no-log", action="store_true", help="不要追加 health_log.csv")
+    ap.add_argument(
+        "--issue-plan", nargs=2, metavar=("REPORT", "OLD_BODY"),
+        help="不跑檢查。讀報告與既有 Issue 內文,輸出 JSON 決策給 workflow 用 "
+             "(OLD_BODY 可以是不存在的路徑,代表還沒有 Issue)",
+    )
     args = ap.parse_args()
+
+    if args.issue_plan:
+        import json
+
+        report_path, old_path = (Path(p) for p in args.issue_plan)
+        old = old_path.read_text(encoding="utf-8") if old_path.exists() else None
+        print(json.dumps(issue_plan(report_path.read_text(encoding="utf-8"), old),
+                         ensure_ascii=False))
+        return 0
 
     results = run_all()
     failed = [r for r in results if r.failed]

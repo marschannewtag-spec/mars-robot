@@ -1,5 +1,23 @@
-pandas>=2.2
-numpy>=1.26
-requests>=2.31
-pytest>=8.0
-PyYAML>=6.0
+# 上界釘到下一個 major 是刻意的。
+#
+# 黃金基準用 1e-9 精確比對 440 個月,而 CLAUDE.md 明文寫「基準漂移若沒有理由,
+# 那就是 bug」。原本全部是無上界的 `>=`,意思是某天 pip 裝到 pandas 3.0、
+# rolling/pct_change/groupby 的任一邊界行為改了,基準就會漂 ——
+# 而漂移的真正原因會是「裝到新版」,那是最難歸因的一類紅燈,
+# 而且它會偽裝成「程式被改壞了」。
+#
+# 不做完整 lock(pip-compile)的理由:完整 lock 需要有人定期維護,
+# 而這個專案的前提就是沒有人定期維護它。釘到 major 是「自動拿到修補、
+# 但不會在 major 換版的早上突然變紅」的折衷。
+# Node 側已經有 package-lock.json(CI 用 npm ci),Python 側原本沒有等價物。
+pandas>=2.2,<3
+numpy>=1.26,<3
+requests>=2.31,<3
+PyYAML>=6.0,<7
+
+pytest>=8.0,<9
+# pytest-cov 原本【不在】這裡,但 CLAUDE.md 的覆蓋率指令要用它 ——
+# 乾淨 clone 照文件跑那行會得到 `error: unrecognized arguments: --cov`。
+# 這和 cp950 那次是完全同一類:文件叫使用者跑的指令,在乾淨環境跑不起來。
+# 規則:凡是寫進文件要人執行的指令,它需要的東西就必須在這個檔案裡。
+pytest-cov>=5.0,<8

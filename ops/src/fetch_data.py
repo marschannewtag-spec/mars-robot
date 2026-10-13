@@ -186,7 +186,12 @@ def load(name: str, refresh_if_missing: bool = True) -> pd.DataFrame:
     path = RAW_DIR / SOURCES[name].filename
     if not path.exists():
         if not refresh_if_missing:
-            raise FileNotFoundError(f"{path} 不存在,且未允許重新抓取")
+            # 刻意只給 repo 相對路徑,不給絕對路徑:這個訊息會經由健檢
+            # 變成【公開 repo 的 Issue 內文】,而絕對路徑裡沒有任何診斷價值
+            # (它永遠是 ops/data/raw/),只會把 runner 或開發機的目錄結構貼出去。
+            raise FileNotFoundError(
+                f"data/raw/{SOURCES[name].filename} 不存在,且未允許重新抓取"
+            )
         refresh([name])
     return pd.read_csv(path)
 

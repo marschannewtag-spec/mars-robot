@@ -272,3 +272,97 @@ def test_empty_log_does_not_divide_by_zero(tmp_path: Path, monkeypatch) -> None:
 
     body = annual_review.section_data_health().body  # 不得拋例外
     assert "沒有可判讀的紀錄" in body
+
+
+# --------------------------------------------------------------------------
+# Bug 3 — 文件叫使用者跑的指令,在乾淨環境跑不起來(2026-10-14)
+#
+# `CLAUDE.md` 的覆蓋率指令用 `--cov`,而 `pytest-cov` 原本【不在】
+# requirements.txt 裡。乾淨 clone 照文件跑那行會得到
+# `error: unrecognized arguments: --cov`。
+#
+# 這和 Bug 1 是完全同一類,只是換了個缺口:cp950 那次缺的是 force_utf8(),
+# 這次缺的是一個依賴。歸納出來的規則都一樣 ——
+# **凡是文件叫使用者執行的指令,都要真的在乾淨環境跑一次再寫進文件。**
+#
+# 這條測試【不是】檢查「pytest-cov 在不在 requirements.txt」(那只會釘住這一個
+# 實例),而是把文件裡每一條 pytest 指令真的拿去 `--collect-only` 跑一次,
+# 看它會不會以 usage error 收場。任何未來新增的旗標都自動納入。
+# --------------------------------------------------------------------------
+
+PYTEST_USAGE_ERROR = 4  # pytest 的 ExitCode.USAGE_ERROR(無法辨識的參數)
+
+
+def _documented_pytest_commands() -> list[tuple[str, str]]:
+    """從 CLAUDE.md / SETUP.md 的 ```bash 區塊撈出所有 pytest 指令。"""
+    import re
+
+    out: list[tuple[str, str]] = []
+    for doc in ("CLAUDE.md", "SETUP.md"):
+        path = OPS_ROOT / doc
+        if not path.exists():
+            continue
+        for block in re.findall(r"```bash\n(.*?)```", path.read_text(encoding="utf-8"), re.S):
+            for line in block.splitlines():
+                if "pytest" not in line:
+                    continue
+                # 去掉 `cd ops && ` 這種前綴,只留 pytest 本身那一段
+                cmd = line.split("&&")[-1].strip()
+                if cmd.startswith(("python -m pytest", "pytest")):
+                    out.append((doc, cmd))
+    return out
+
+
+def test_documentation_contains_pytest_commands() -> None:
+    """掃描式測試要先證明它掃得到東西,否則下一條可能只是恆真。"""
+    assert _documented_pytest_commands(), (
+        "在 CLAUDE.md / SETUP.md 的 bash 區塊裡找不到任何 pytest 指令 —— "
+        "下一條測試會變成恆真"
+    )
+
+
+def _declared_pytest_plugins() -> list[str]:
+    """requirements.txt 裡宣告的 pytest 外掛,轉成模組名(pytest-cov -> pytest_cov)。"""
+    import re
+
+    text = (OPS_ROOT / "requirements.txt").read_text(encoding="utf-8")
+    out = []
+    for line in text.splitlines():
+        line = line.split("#")[0].strip()
+        name = re.split(r"[<>=!~\[]", line)[0].strip()
+        if name.startswith("pytest-"):
+            out.append(name.replace("-", "_"))
+    return out
+
+
+@pytest.mark.parametrize("doc,cmd", _documented_pytest_commands(),
+                         ids=lambda v: v if isinstance(v, str) else str(v))
+def test_documented_pytest_flags_work_with_only_declared_deps(doc: str, cmd: str) -> None:
+    """文件裡的每條 pytest 指令,都必須只靠 requirements.txt 宣告的東西就跑得起來。
+
+    ⚠ 判準刻意**不是**「在我這台機器上跑得起來」。第一版就是那樣寫的,
+    而它驗不出任何東西 —— 我本機早就手動裝了 pytest-cov,所以就算
+    requirements.txt 漏掉它也一樣綠燈。**那是用錯的環境在量。**
+
+    做法:`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` 關掉所有自動載入的第三方外掛,
+    再用 `-p` 明確只載入 requirements.txt 宣告的那幾個。於是這條測試問的是
+    「乾淨 clone 照文件做會不會成功」,和本機裝了什麼無關。
+
+    用 `--collect-only` 是因為我們只要知道參數解析過不過,不需要再跑一輪測試。
+    """
+    args = cmd.replace("python -m pytest", "", 1).replace("pytest", "", 1).split()
+    plugin_args: list[str] = []
+    for mod in _declared_pytest_plugins():
+        plugin_args += ["-p", mod]
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q",
+         "-p", "no:cacheprovider", *plugin_args, *args],
+        cwd=OPS_ROOT, capture_output=True, text=True, encoding="utf-8",
+        env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+    )
+    assert proc.returncode != PYTEST_USAGE_ERROR, (
+        f"{doc} 裡的這條指令,在只有 requirements.txt 宣告的依賴時無法執行:\n"
+        f"  {cmd}\n"
+        f"pytest 回報參數錯誤:\n{(proc.stderr or proc.stdout)[-400:]}\n"
+        "→ 把它需要的套件加進 ops/requirements.txt,或修掉文件裡的指令。"
+    )

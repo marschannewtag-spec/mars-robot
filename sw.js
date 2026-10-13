@@ -3,7 +3,7 @@
 //  策略:HTML 網路優先(部署新版立即生效)· 靜態檔快取優先 · 資料 API 不快取
 //  ⚠ 每次改動 index.html 後,把下面版本號 +1(v4→v5),舊快取才會被清掉!
 // ============================================================================
-const CACHE = "cwgauge-v13";
+const CACHE = "cwgauge-v14";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -27,6 +27,17 @@ function cacheable(res) {
   return res.status === 200;
 }
 
+// 寫快取失敗就放棄,不要變成沒人看得到的 unhandled rejection。
+// `cacheable()` 已經擋掉 206(Cache.put 對 206 會拋),但配額超限、
+// 使用者清掉 storage、私密模式都還是會讓 put reject。
+//
+// 這個 catch 吞得起:快取【寫】失敗的後果只是「下次還要走網路」,
+// 不會產生錯誤資料。這和「別把失敗存進快取」是兩件不同的事。
+function store(req, res) {
+  const copy = res.clone();
+  caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+}
+
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
@@ -41,10 +52,7 @@ self.addEventListener("fetch", (e) => {
     e.respondWith(
       fetch(req)
         .then((res) => {
-          if (cacheable(res)) {                           // 別把 404 頁面存成離線首頁
-            const copy = res.clone();
-            caches.open(CACHE).then((c) => c.put(req, copy));
-          }
+          if (cacheable(res)) store(req, res);             // 別把 404 頁面存成離線首頁
           return res;
         })
         .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
@@ -56,13 +64,14 @@ self.addEventListener("fetch", (e) => {
   e.respondWith(
     caches.match(req).then((cached) =>
       cached ||
-      fetch(req).then((res) => {
-        if (cacheable(res)) {                             // 快取優先 → 存錯了就一直錯
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy));
-        }
-        return res;
-      })
+      fetch(req)
+        .then((res) => {
+          if (cacheable(res)) store(req, res);             // 快取優先 → 存錯了就一直錯
+          return res;
+        })
+        // 離線且這個檔案不在快取裡(例如 SHELL 漏了它)→ 至少別讓整個
+        // respondWith 以 reject 收場,那會變成瀏覽器的網路錯誤頁。
+        .catch(() => caches.match(req).then((r) => r || Response.error()))
     )
   );
 });
