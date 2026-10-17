@@ -1,66 +1,66 @@
 {
   "schema": 1,
-  "generated_at": "2026-10-15T23:58:33+00:00",
+  "generated_at": "2026-10-17T00:03:31+00:00",
   "dominance": {
     "leader": "美國",
     "scores": {
-      "美國": 0.805,
-      "歐洲": 0.158,
-      "日本": 0.0443,
-      "香港": 0.0338,
-      "中國": 0.0367,
-      "台灣": 0.0324
+      "美國": 0.8162,
+      "歐洲": 0.1536,
+      "日本": 0.0459,
+      "香港": 0.0341,
+      "中國": 0.037,
+      "台灣": 0.0337
     },
     "matrix": {
       "美國": {
-        "歐洲": 0.0125,
-        "日本": 0.0192,
-        "香港": 0.0179,
-        "中國": 0.0059,
-        "台灣": 0.0016
+        "歐洲": 0.0126,
+        "日本": 0.0208,
+        "香港": 0.0183,
+        "中國": 0.0065,
+        "台灣": 0.002
       },
       "歐洲": {
-        "美國": 0.102,
-        "日本": 0.0151,
+        "美國": 0.1025,
+        "日本": 0.0147,
         "香港": 0.0003,
-        "中國": 0.0042,
-        "台灣": 0.0047
+        "中國": 0.0041,
+        "台灣": 0.0046
       },
       "日本": {
-        "美國": 0.2459,
-        "歐洲": 0.0322,
-        "香港": 0.0011,
-        "中國": 0.0045,
-        "台灣": 0.0087
+        "美國": 0.2478,
+        "歐洲": 0.0305,
+        "香港": 0.001,
+        "中國": 0.0035,
+        "台灣": 0.0091
       },
       "香港": {
-        "美國": 0.0906,
-        "歐洲": 0.0282,
-        "日本": 0.0062,
-        "中國": 0.006,
-        "台灣": 0.0163
+        "美國": 0.0928,
+        "歐洲": 0.0277,
+        "日本": 0.0065,
+        "中國": 0.0058,
+        "台灣": 0.0167
       },
       "中國": {
-        "美國": 0.0827,
-        "歐洲": 0.0241,
+        "美國": 0.0864,
+        "歐洲": 0.0231,
         "日本": 0.0003,
-        "香港": 0.0001,
-        "台灣": 0.001
+        "香港": 0.0,
+        "台灣": 0.0013
       },
       "台灣": {
-        "美國": 0.2838,
-        "歐洲": 0.061,
-        "日本": 0.0035,
+        "美國": 0.2868,
+        "歐洲": 0.0597,
+        "日本": 0.0036,
         "香港": 0.0144,
-        "中國": 0.0161
+        "中國": 0.0171
       }
     },
-    "margin": 5.1,
+    "margin": 5.31,
     "n_markets": 6,
     "window": "2y"
   },
   "warning": {
-    "n_triggered": 1,
+    "n_triggered": 2,
     "n_usable": 6,
     "band": "留意",
     "flags": [
@@ -68,7 +68,7 @@
         "key": "greed",
         "label": "情緒極端貪婪",
         "triggered": false,
-        "detail": "綜合 32",
+        "detail": "綜合 18",
         "rule": "綜合分數 ≥ 75",
         "source": "CNN Fear & Greed",
         "ok": true,
@@ -78,7 +78,7 @@
         "key": "breadth",
         "label": "廣度背離",
         "triggered": false,
-        "detail": "綜合 32 · 廣度 10",
+        "detail": "綜合 18 · 廣度 12",
         "rule": "綜合 ≥ 60 且 廣度 ≤ 35",
         "source": "CNN · stock_price_breadth",
         "ok": true,
@@ -88,7 +88,7 @@
         "key": "strength",
         "label": "強度背離",
         "triggered": false,
-        "detail": "綜合 32 · 強度 10",
+        "detail": "綜合 18 · 強度 12",
         "rule": "綜合 ≥ 60 且 強度 ≤ 35",
         "source": "CNN · stock_price_strength",
         "ok": true,
@@ -98,7 +98,7 @@
         "key": "credit",
         "label": "信用需求轉弱",
         "triggered": false,
-        "detail": "垃圾債需求 51 · 20 日 -0.0",
+        "detail": "垃圾債需求 43 · 20 日 -0.0",
         "rule": "20 個交易日內下滑 ≥ 25 分",
         "source": "CNN · junk_bond_demand",
         "ok": true,
@@ -107,8 +107,8 @@
       {
         "key": "haven",
         "label": "避險需求上升",
-        "triggered": false,
-        "detail": "避險需求 33",
+        "triggered": true,
+        "detail": "避險需求 15",
         "rule": "避險需求子分數 ≤ 30",
         "source": "CNN · safe_haven_demand",
         "ok": true,
@@ -128,39 +128,33 @@
   },
   "cnn": {
     "fear_and_greed": {
-      "score": 31.5428571428571,
-      "rating": "fear"
+      "score": 17.9383219954649,
+      "rating": "extreme fear"
     },
     "market_momentum_sp500": {
-      "score": 42.6,
-      "rating": "fear"
+      "score": 23.6,
+      "rating": "extreme fear"
     },
     "stock_price_strength": {
-      "score": 10.4,
+      "score": 12,
       "rating": "extreme fear"
     },
     "stock_price_breadth": {
-      "score": 10.4,
+      "score": 12,
       "rating": "extreme fear"
     },
     "put_call_options": {
-      "score": 23.4,
+      "score": 16.4,
       "rating": "extreme fear"
     },
     "market_volatility_vix": {
-      "score": 50,
-      "rating": "neutral"
+      "score": 3.96825396825397,
+      "rating": "extreme fear"
     },
     "junk_bond_demand": {
-      "score": 50.6,
-      "rating": "neutral",
+      "score": 42.6,
+      "rating": "fear",
       "data": [
-        {
-          "y": 1.24928230249995
-        },
-        {
-          "y": 1.24288864280388
-        },
         {
           "y": 1.24916515623208
         },
@@ -217,14 +211,20 @@
         },
         {
           "y": 1.21392236483858
+        },
+        {
+          "y": 1.23060507209722
+        },
+        {
+          "y": 1.23060507209722
         }
       ]
     },
     "safe_haven_demand": {
-      "score": 33.4,
-      "rating": "fear"
+      "score": 15,
+      "rating": "extreme fear"
     },
-    "as_of": "2026-10-15T23:39:59+00:00"
+    "as_of": "2026-10-16T23:47:11+00:00"
   },
   "ndc": {
     "month": "2026-08",
