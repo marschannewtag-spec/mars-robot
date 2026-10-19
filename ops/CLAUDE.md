@@ -2356,10 +2356,16 @@ checkout + 裝相依 + 跑 pytest,沒有任何一步會產生它。
 三條路。既有的斷言只檢查入口內文含有 `python -m pytest tests/` ——
 **擋不住縮窄**:
 
-```bash
-python -m pytest tests/test_golden.py     # 仍然含有那個片段
-python -m pytest tests/ -k "golden"       # 同上
+```text
+python -m pytest tests/test_golden.py     ← 仍然含有那個片段
+python -m pytest tests/ -k "golden"       ← 同上
 ```
+
+⚠ 上面刻意標 `text` 而不是 `bash`:`test_documented_pytest_flags_work_with_only_declared_deps`
+會把文件裡每個 ```bash 區塊中的 pytest 指令抓出來**真的執行**,確認它只靠
+宣告的相依就跑得起來。反例的本意是「不要跑這個」,放進 bash 區塊會讓那條
+測試去跑它 —— 寫這段的時候就踩到了,整組紅了兩條。
+**文件裡的程式碼區塊不是裝飾,它是會被執行的輸入。**
 
 縮窄之後所有掃描都還「存在」,只是不再被執行,而 CI 是綠的。
 和 jsdom 消失同一個形狀,只是更上游:**整組測試裡有多少條真的跑,
@@ -2383,6 +2389,61 @@ python -m pytest tests/ -k "golden"       # 同上
 判準改成:`shutil.which(...)` 出現在 skip 裡(結構訊號,與工具無關),
 或理由字串提到 `_TOOL_WORDS` 清單裡的任何一個。清單是**清單不是通則**,
 新工具要自己加 —— 這件事寫在那份清單旁邊。
+
+### 三條紅線裡,有一條只存在於文字裡(2026-10-20)
+
+「不要修改 `tests/fixtures/` 的黃金基準讓測試過」是這份專案三條紅線之一。
+在今天之前,它的**唯一**執行力是 `daily-health.yml` 給 autofix 的提示詞
+第 570 行 —— 一句話,不是強制力。
+
+`實測`,先確認哪些路徑已經被堵住:
+
+| 做法 | 結果 |
+|---|---|
+| 只改 `golden_metrics.json` 裡一個值 ×1.5 | **3 failed** —— 堵住了 |
+| 只改 `golden_signals.csv` 一列現金水位 | **2 failed** —— 堵住了 |
+
+堵不住的是**協同修改**:
+
+- 改 `engine.py` 產生錯的數字,再重產基準讓它對上
+- 改輸入快照(`sp500_daily.csv` / `vix_daily.csv` / `shiller_sp500.csv`),
+  再重產基準
+
+兩者跑完整組都是綠的。那是**定義上必然**的 —— 比對型測試拿「現在算的」
+對「基準」,兩邊一起動就沒有任何結果能透露這件事。
+
+**所以能做的只有一件事:讓那個動作在 diff 裡看得見。**
+
+`tests/fixtures/CHECKSUMS.txt`(六個檔案的 sha256)+ 一條測試。
+一個 20000 列的 CSV 改幾列,在 review 裡看起來像雜訊;一行 hash 變了,
+看起來不像。
+
+⚠ 這條測試**不是在禁止重產**。Shiller 修訂歷史、CBOE 補回缺漏交易日,
+都是真的會發生而且應該被接受的事。被禁止的是**讓它看起來沒發生過**。
+`scripts/refresh_fixture_checksums.py` 預設**不寫檔**,只印出哪些 hash 會變
+(要加 `--write`)—— 一支預設就會覆蓋基準的腳本,等於把紅線變成
+一個打字錯誤的距離。
+
+這也給了 autofix 真正的約束:它的 PR 若動到 fixtures,CI 會紅,merge 不了。
+從「提示詞裡的一句話」變成「分支保護擋得住的東西」。
+
+#### 寫這一段時,被兩條既有測試抓到
+
+值得記,因為兩條都在做它們該做的事:
+
+1. **`test_every_entrypoint_that_prints_non_ascii_calls_force_utf8`** ——
+   新寫的 `refresh_fixture_checksums.py` 印中文卻沒呼叫 `force_utf8()`。
+   那在 cp950 終端機上會 `UnicodeEncodeError`。**這正是這份專案第一個
+   實測到的 bug 的形狀,而三個月後我又犯了一次** —— 差別是這次 12 秒就
+   被抓到,不是使用者回報。
+
+2. **`test_documented_pytest_flags_work_with_only_declared_deps`** ——
+   我在上面那段用 ```bash 區塊寫了兩條**反例**指令(「這樣寫會繞過掃描」),
+   而那條測試會把文件裡每個 bash 區塊中的 pytest 指令抓出來**真的執行**,
+   確認它只靠宣告的相依就跑得起來。於是它去跑了我的反例,整組紅了兩條。
+
+   > **文件裡的程式碼區塊不是裝飾,它是會被執行的輸入。**
+   > 反例要標 ```text。
 
 ### 突變測試結果 —— 資料鏡像那一輪(2026-10-19)
 
@@ -2517,6 +2578,9 @@ python -m pytest tests/ -k "golden"       # 同上
 | M115 | bash 關口退回 `skipif` | `test_annual_ops_data.py` | **先逃掉**(判準太窄),清單補 bash 後抓到 |
 | M116 | `require_shell` 改成 `skip` | `conftest.py` | **抓到** |
 | M117 | `require_shell` 永遠放行 | `conftest.py` | **抓到**(2 條) |
+| M118 | 悄悄改輸入快照(`vix_daily.csv` 多一列) | `tests/fixtures/` | **抓到** |
+| M119 | 悄悄改黃金訊號(`golden_signals.csv` 一個現金水位) | `tests/fixtures/` | **抓到**(2 條) |
+| M120 | `CHECKSUMS.txt` 整個被刪掉 | `tests/fixtures/` | **抓到**(2 條) |
 
 M29 與 M40 最重要:前者是「空字串替判準做決定」那個洞本身,
 後者會讓安裝失敗退回成「只有一封紅燈信」。
@@ -2740,15 +2804,15 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 (宣告拆分 · 鎖定檔契約 · L1 失敗路徑 · canary 獨立性 · 失敗 shell 的真實執行) /
 設定區文案與退回鏈對帳 / 來源狀態與 dominance 同一個門檻 /
 年度健檢對 ops-data 的兩步真實執行 + 三條 workflow git 用法掃描)
-→ **440**(鏡像兩條腿各自量年齡 + detail 自洽 + 全 repo 單一時鐘
+→ **442**(鏡像兩條腿各自量年齡 + detail 自洽 + 全 repo 單一時鐘
 + 跨區塊變數串台的 AST 掃描 + 健檢軌跡自己的新鮮度與兩個分母
 + **體制訊號的發布狀態**(用瀏覽器的 JSON 判準)
 + 通知裡「起點 observed vs assumed」(含來歷欄)
 + pine tooltip 對帳 + **外部工具缺席一律失敗、八個關口都要說出失去什麼**
-+ 測試入口不得被縮窄)。
++ 測試入口不得被縮窄 + **黃金基準與輸入快照的 sha256**)。
 **整組只剩一個 skip**(`signals.json` 不在版控,訊息已改成實話)。
 
-10-19/10-20 那幾輪共 117 個突變:**112 個被抓到**,5 個逃掉 ——
+10-19/10-20 那幾輪共 120 個突變:**115 個被抓到**,5 個逃掉 ——
 一個是等價突變(有保存期限,見上),三個是我的測試太弱
 (M72 窗口、M91 判準對準字而非宣稱,均已補強)。
 

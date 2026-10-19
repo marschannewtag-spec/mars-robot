@@ -151,3 +151,104 @@ def test_strategy_reduces_drawdown(perf) -> None:
     """
     strategy, buyhold = perf
     assert strategy.max_drawdown > buyhold.max_drawdown
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 黃金基準不得被悄悄移動(2026-10-20)
+#
+# 這份專案三條紅線之一就是「不要修改 tests/fixtures/ 的黃金基準讓測試過」。
+# 在今天之前,那條規則**只存在於文字裡** —— `daily-health.yml` 給 autofix
+# 的提示詞第 570 行寫著它,而提示詞不是強制力。
+#
+# 上面那些測試比的是「現在算出來的」對「黃金基準」。
+# `實測`:單獨把 `golden_metrics.json` 裡一個值乘 1.5 → **3 failed**。
+# 所以「只改基準」這條路是堵住的。
+#
+# 堵不住的是**協同修改**:
+#
+#   · 改 engine.py 產生錯的數字,再重產基準讓它對上
+#   · 改輸入快照(sp500_daily.csv / vix_daily.csv / shiller_sp500.csv),
+#     再重產基準
+#
+# 兩者跑完整組都是綠的 —— 那是**定義上必然**的,沒有任何比對型測試能從
+# 結果看出來。能做的只有一件事:讓那個動作在 diff 裡看得見。
+#
+# 一個 20000 列的 CSV 改幾列,在 review 裡看起來像雜訊;
+# `CHECKSUMS.txt` 裡一行 hash 變了,看起來不像。
+#
+# ⚠ 這條測試**不是**在禁止重產。Shiller 修訂歷史、CBOE 補回缺漏交易日,
+#    都是真的會發生而且應該被接受的事。被禁止的是讓它看起來沒發生過。
+#    真的要改就跑 `scripts/refresh_fixture_checksums.py --write`,
+#    那支腳本會逼你看見哪些 hash 動了。
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_the_frozen_fixtures_have_not_moved() -> None:
+    import hashlib
+
+    fixtures = FIXTURES
+    checksums = fixtures / "CHECKSUMS.txt"
+    assert checksums.exists(), (
+        "CHECKSUMS.txt 不見了 —— 黃金基準就回到了「可以被悄悄改掉」的狀態。"
+        "跑 `python scripts/refresh_fixture_checksums.py --write` 重建。")
+
+    expected = {}
+    for line in checksums.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        h, _, name = line.partition("  ")
+        expected[name] = h
+    assert len(expected) >= 5, f"CHECKSUMS.txt 只列了 {len(expected)} 個檔案"
+
+    on_disk = {f.name for f in fixtures.iterdir()
+               if f.is_file() and f.name != "CHECKSUMS.txt"}
+    assert on_disk == set(expected), (
+        f"fixtures 目錄與 CHECKSUMS.txt 對不上。\n"
+        f"  只在磁碟上:{sorted(on_disk - set(expected))}\n"
+        f"  只在清單裡:{sorted(set(expected) - on_disk)}")
+
+    moved = []
+    for name, want in sorted(expected.items()):
+        got = hashlib.sha256((fixtures / name).read_bytes()).hexdigest()
+        if got != want:
+            moved.append(f"{name}: {want[:12]} -> {got[:12]}")
+
+    assert not moved, (
+        "黃金基準或輸入快照被改動了:\n  " + "\n  ".join(moved)
+        + "\n\n這是這份專案三條紅線之一。這條測試不是在禁止重產 ——"
+          "\n資料源真的修訂過歷史時,重產是對的。被禁止的是**讓它看起來沒發生過**。"
+          "\n\n如果這是刻意的:"
+          "\n  1. 跑 `python scripts/refresh_fixture_checksums.py --write`"
+          "\n  2. commit 訊息寫清楚:為什麼重產、哪些數字動了、"
+          "\n     **訊號層有沒有動**(訊號層任何差異都是 bug,不是資料修訂)"
+          "\n\n如果你不知道為什麼它變了 —— 那就是這條測試存在的理由,先去查。"
+    )
+
+
+def test_the_refresh_script_exists_and_refuses_to_write_by_default() -> None:
+    """重產腳本必須存在,而且預設**不寫檔**。
+
+    一支預設就會覆蓋黃金基準的腳本,等於把紅線變成一個打字錯誤的距離。
+    """
+    import subprocess
+    import sys
+
+    script = FIXTURES.parents[1] / "scripts" / "refresh_fixture_checksums.py"
+    assert script.exists(), "重產腳本不見了 —— 那會讓上面那條測試變成死路"
+
+    r = subprocess.run(
+        [sys.executable, "-X", "utf8", str(script)],
+        cwd=FIXTURES.parents[1], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=120,
+    )
+    assert "--write" in r.stdout or r.returncode == 0, (
+        f"腳本沒有說明要怎麼真的寫入:\n{r.stdout}\n{r.stderr}")
+    # 沒加 --write 不該動到檔案
+    import hashlib
+    before = hashlib.sha256(
+        (FIXTURES / "CHECKSUMS.txt").read_bytes()).hexdigest()
+    subprocess.run([sys.executable, "-X", "utf8", str(script)],
+                   cwd=FIXTURES.parents[1], capture_output=True, timeout=120)
+    after = hashlib.sha256(
+        (FIXTURES / "CHECKSUMS.txt").read_bytes()).hexdigest()
+    assert before == after, "不加 --write 也把檔案改掉了"

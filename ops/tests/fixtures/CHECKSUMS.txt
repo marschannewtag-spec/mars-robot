@@ -1,0 +1,23 @@
+# 黃金基準與輸入快照的 sha256。
+#
+# ⚠ 這個檔案【不是】防止修改,是讓修改**無法悄悄發生**。
+#
+# 為什麼需要它:test_golden.py 比的是「現在算出來的」對「黃金基準」。
+# 單獨改基準會紅(實測:改一個值 -> 3 failed)。但**同時**改程式與基準,
+# 或改輸入快照再重產基準,整組是綠的 —— 那是定義上必然的,沒有任何
+# 測試能從結果看出來。
+#
+# 一個 20000 列的 CSV 在 diff 裡看起來像雜訊;這裡一行 hash 變了不會。
+# 這就是全部的價值:把一個看不見的動作變成一個看得見的動作。
+#
+# 真的要改(例如 Shiller 修訂了歷史資料)就更新這裡,並在 commit 訊息
+# 寫清楚為什麼、以及重產之後哪些數字動了。
+#
+# 產生方式:python scripts/refresh_fixture_checksums.py
+
+a7bce22ce9afb03d669abe5dc0af0a744001f3f8e97f246d2942ecbe7c0bae09  cboe_vix_history.csv
+0a249215411f94d2a697bbf26191228d5fd57e7487d1eb08563af57179ab1f4f  golden_metrics.json
+0ed98728f52c63f58421d52881029f6ee9b16346266fd4c4caa8f2225bb91c08  golden_signals.csv
+589392f1f0ded6eb30fdfbfcb783e3f68c5b1f47a0f95df5d96493a6d372117d  shiller_sp500.csv
+7d4b31ff2dfed7e16db67c70f2cd77e382b90c048b012921fc4f75f5be2a4205  sp500_daily.csv
+7886eca5c8641136723af2f3a305e7c47bb07c43885c81c97dbb2fd4a7cfe521  vix_daily.csv
