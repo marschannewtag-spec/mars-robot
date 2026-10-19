@@ -88,3 +88,55 @@ def test_jsdom_is_required_by_default(monkeypatch, tmp_path) -> None:
 
     # 明確說不需要的,就不該被 jsdom 擋下來
     require_js_bridge(_WHAT, needs_jsdom=False)
+
+
+# --------------------------------------------------------------------------
+# `require_shell()` —— 同一條規則,工具不同(2026-10-20)
+#
+# `test_annual_ops_data.py` 與 `test_l1_failure_harness.py` 原本用
+# `skipif(shutil.which("bash") is None)`,理由寫「CI 的 ubuntu runner 一定有」。
+#
+# 那句話是對的,而那**正好是讓 skip 變危險的原因**:在一定有的地方跳過不會
+# 發生,所以沒有人會注意到那個 skip 還在 —— 直到它真的在某個環境生效,
+# 而那時它會安靜地把整組測試變成綠的。
+#
+# 這兩個檔案守的是「把 workflow 的那段 shell 從 YAML 抽出來真的執行」,
+# 也就是 L1 失敗路徑與 L3 的 ops-data 兩步**唯一**的證據。
+# --------------------------------------------------------------------------
+
+def test_require_shell_fails_rather_than_skips(monkeypatch) -> None:
+    from conftest import require_shell
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(BaseException) as ei:
+        require_shell(_WHAT, "bash", "git")
+    assert ei.typename == "Failed", (
+        f"守門員用了 {ei.typename} —— 必須是 Failed。"
+        "skip 和 pass 在 exit code 上是同一件事。")
+    msg = str(ei.value)
+    assert "bash" in msg and "git" in msg, f"沒講出缺哪個工具:{msg!r}"
+    assert _WHAT[:20] in msg, f"沒講出失去什麼:{msg!r}"
+
+
+def test_require_shell_only_complains_about_what_is_actually_missing(
+    monkeypatch
+) -> None:
+    """只缺一個就只講那一個 —— 訊息說錯話的檢查會被當成雜訊關掉。"""
+    from conftest import require_shell
+
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "git" else "/x")
+    with pytest.raises(BaseException) as ei:
+        require_shell(_WHAT, "bash", "git")
+    msg = str(ei.value)
+    assert "git" in msg, msg
+    assert "找不到 bash" not in msg, f"bash 明明在,訊息卻說它不在:{msg!r}"
+
+
+def test_require_shell_passes_when_the_tools_are_there() -> None:
+    """控制組:工具都在就什麼都不做。
+
+    少了這一條,「永遠失敗」會讓上面兩條全綠,而整組測試在所有機器上都紅。
+    """
+    from conftest import require_shell
+
+    require_shell(_WHAT, "bash", "git")

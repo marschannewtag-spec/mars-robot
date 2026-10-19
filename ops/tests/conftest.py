@@ -78,6 +78,36 @@ def index_html() -> Path:
 JS_BRIDGE_SETUP = "npm ci --prefix ops   (需要 Node.js 22+)"
 
 
+def require_shell(what: str, *tools: str) -> None:
+    """`bash` / `git` 這類系統工具不在就讓這條測試【失敗】。
+
+    和 `require_js_bridge()` 同一條規則,只是工具不同。這些關口守的是
+    **把 workflow 的那段 shell 從 YAML 抽出來真的執行**的那些測試 ——
+    也就是「那條路徑到底跑不跑得起來」唯一的證據。
+
+    原本用 `skipif`,理由寫「CI 的 ubuntu runner 一定有」。那句話是對的,
+    但它**正好是讓 skip 變危險的原因**:在一定有的地方跳過不會發生,
+    所以沒有人會注意到那個 skip 還在 —— 直到它真的在某個環境生效,
+    而那時它會安靜地把整組測試變成綠的。
+
+    Windows 上 `bash` 與 `git` 由 Git for Windows 提供,而你需要 git
+    才能 clone 這個 repo,所以這不是一個額外的安裝需求。
+    """
+    import shutil
+
+    missing = [t for t in tools if shutil.which(t) is None]
+    if not missing:
+        return
+
+    pytest.fail(
+        f"找不到 {' / '.join(missing)}。\n"
+        f"  失去的驗證:{what}\n"
+        f"  修法:安裝 Git for Windows(已內含 bash 與 git),或在 PATH 上補齊\n"
+        f"\n"
+        f"  這裡刻意【不】跳過 —— skip 和 pass 在 exit code 上是同一件事。"
+    )
+
+
 def require_js_bridge(what: str, *, needs_jsdom: bool = True) -> None:
     """node(視情況還有 jsdom)不在就讓這條測試【失敗】。
 

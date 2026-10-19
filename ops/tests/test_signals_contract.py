@@ -204,11 +204,34 @@ def test_write_signals_refuses_to_emit_invalid_json(tmp_path, monkeypatch) -> No
         fetch_signals.write_signals({"margin": float("inf")})
 
 
-def test_the_committed_signals_file_is_strict_json() -> None:
-    """實際產出的那份檔案(若在本機存在)也要通過同一把尺。"""
+def test_the_locally_produced_signals_file_is_strict_json() -> None:
+    """跑過 `fetch_signals.py` 的機器上,那份真的檔案也要通過同一把尺。
+
+    ⚠ 2026-10-20 更正一句假話。原本的 skip 訊息寫
+    「本機還沒有 signals.json(**CI 上由 workflow 產生**)」—— 那是錯的:
+    `ops/data/signals.json` 在 `.gitignore` 裡,而 L2 的 CI job 只做
+    checkout + 裝相依 + 跑 pytest,**沒有任何一步會產生它**。
+    `實測`:`git ls-files ops/data/signals.json` → 0 筆。
+
+    也就是說這條測試在 CI 上**永遠**跳過,而它的訊息讓人以為它在那邊跑。
+    一條永遠跳過、又宣稱自己會在別處跑的測試,比沒有這條測試更糟。
+
+    那為什麼不刪掉它?因為它在**有真檔案的機器**上(開發機、
+    每日健檢的 runner)確實有價值 —— 它量的是真的被寫出來的那一份,
+    不是合成的 payload。
+
+    CI 那一側的覆蓋由另外兩個地方頂住,兩者都不依賴這個檔案存在:
+      · `test_write_signals_rejects_non_finite`(上面)—— 寫出端的防線
+      · `test_signals_mirror.py::test_a_payload_javascript_cannot_parse_is_a_failure`
+        —— 健檢用瀏覽器的判準讀**線上那一份**,每天跑
+
+    所以這裡維持「有就驗」,但不再假裝它在 CI 上跑。
+    """
     path = fetch_signals.SIGNALS_PATH
     if not path.exists():
-        pytest.skip("本機還沒有 signals.json(CI 上由 workflow 產生)")
+        pytest.skip(
+            "這台機器上沒有 data/signals.json —— 它不進版控,CI 上也不會有。"
+            "跑過 `python src/fetch_signals.py` 之後這條才會真的執行。")
     json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
 
 

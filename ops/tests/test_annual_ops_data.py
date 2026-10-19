@@ -48,21 +48,18 @@ git show origin/ops-data:…  > f  → 失敗,而 f 已經是 0 bytes
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from conftest import require_shell  # noqa: E402
 import yaml
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = OPS_ROOT.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "annual-review.yml"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None or shutil.which("git") is None,
-    reason="需要 bash 與 git 才能真的執行那段 workflow shell",
-)
 
 
 def _step_shell(needle: str) -> str:
@@ -75,6 +72,11 @@ def _step_shell(needle: str) -> str:
 
 
 def _run(shell: str, cwd: Path, env_extra: dict[str, str]) -> subprocess.CompletedProcess:
+    require_shell(
+        "把 annual-review.yml 的「取回健檢軌跡」與 commit 兩段 shell 從 YAML "
+        "抽出來、對著一個真的 bare repo 執行 —— L3 從來沒有在 GitHub 上跑過"
+        "一次,這是那兩段到底跑不跑得起來的唯一證據。",
+        "bash", "git")
     # GitHub 預設的 shell 是 `bash --noprofile --norc -eo pipefail`。
     # 少了 -e,失敗的指令不會中斷後面 —— 那會讓斷言跑在一個從未產生過的狀態上。
     return subprocess.run(

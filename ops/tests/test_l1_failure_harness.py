@@ -25,21 +25,18 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from conftest import require_shell  # noqa: E402
 import yaml
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = OPS_ROOT.parent
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "daily-health.yml"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("bash") is None,
-    reason="需要 bash 才能真的執行那段 workflow shell(CI 的 ubuntu runner 一定有)",
-)
 
 
 def _absolutise(shell: str) -> str:
@@ -85,6 +82,12 @@ def harness(tmp_path: Path):
         "ERROR: ResolutionImpossible\n",
         encoding="utf-8", newline="\n",
     )
+
+    require_shell(
+        "把 daily-health.yml 的失敗路徑那段 shell 從 YAML 抽出來、用假 gh "
+        "真的執行 —— 「相依裝不起來時會不會開 Issue、會不會洩漏 token」"
+        "這兩件事的唯一證據。",
+        "bash")
 
     def run(shell: str) -> subprocess.CompletedProcess:
         env = dict(os.environ)

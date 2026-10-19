@@ -1264,15 +1264,40 @@ def _module_str_consts(tree) -> dict:
     return out
 
 
-def test_no_test_skips_itself_when_the_javascript_bridge_is_missing() -> None:
-    """沒有任何測試可以因為 node/jsdom 不在而**跳過**。
+# 已知會被用來當「跳過」理由的外部工具。
+#
+# ⚠ 這是一份**清單**,不是通則 —— 新工具要自己加進來。
+#   2026-10-20 實測到它的極限:判準原本只認 node/jsdom,於是突變 M115
+#   (把 bash 關口改回 `pytest.skip("需要 bash")`)**逃掉了**。
+#   同一輪裡第五次踩到「判準對準的範圍不對」:這次是太窄。
+_TOOL_WORDS = ("node", "jsdom", "npm", "bash", "git", "docker")
+
+
+def _is_tool_skip(call, consts: dict) -> str | None:
+    """這個 skip 是不是在處理「某個外部工具不在」?回傳可讀描述或 None。"""
+    import ast
+
+    blob = " ".join(_strings_in(call, consts))
+    for n in ast.walk(call):
+        if isinstance(n, ast.Call) and _dotted(n.func).endswith("which"):
+            return f"用 shutil.which 判斷工具是否存在({blob[:40]})"
+    hit = [w for w in _TOOL_WORDS if w in blob]
+    return f"理由提到 {hit}({blob[:40]})" if hit else None
+
+
+def test_no_test_skips_itself_when_a_required_tool_is_missing() -> None:
+    """沒有任何測試可以因為外部工具不在而**跳過**。
 
     2026-10-20 的決定:缺席是失敗,不是跳過
-    (`conftest.require_js_bridge()`)。理由在 conftest 裡。
+    (`conftest.require_js_bridge()` / `conftest.require_shell()`)。
+    理由在 conftest 裡。
 
     ⚠ 這條原本寫成「只在 CI 上硬失敗」—— 它自己在本機會 skip,
       於是**驗證這條規則的測試,本身就是一個沒有人看的 skip**。
       一個只在別處生效的守門員,在這裡看不出它還活著。
+
+    ⚠ 第二次修正:原本只認 node/jsdom,於是把 bash 關口改回
+      `pytest.skip("需要 bash")` 的突變逃掉了。工具清單見 `_TOOL_WORDS`。
     """
     import ast
 
@@ -1283,18 +1308,18 @@ def test_no_test_skips_itself_when_the_javascript_bridge_is_missing() -> None:
             if not isinstance(n, ast.Call):
                 continue
             name = _dotted(n.func)
-            if name not in ("pytest.skip", "pytest.mark.skipif"):
+            if not (name.endswith("skip") or name.endswith("skipif")):
                 continue
-            blob = " ".join(_strings_in(n, consts))
-            if "jsdom" in blob or "node" in blob:
-                offenders.append(f"{f.name}:{n.lineno}  {name}(…{blob[:50]}…)")
+            why = _is_tool_skip(n, consts)
+            if why:
+                offenders.append(f"{f.name}:{n.lineno}  {name} —— {why}")
 
     assert not offenders, (
-        "這些地方還在用「跳過」處理 node/jsdom 缺席:\n  "
+        "這些地方還在用「跳過」處理外部工具缺席:\n  "
         + "\n  ".join(offenders)
         + "\n\n實測:jsdom 不在時整組會得到「392 passed, 32 skipped」——"
           "\nexit 0、CI 綠燈,而整層 PWA JavaScript 驗證不存在。"
-          "\n請改用 conftest 的那個守門員。"
+          "\n請改用 conftest 的 require_js_bridge() / require_shell()。"
     )
 
 
@@ -1321,3 +1346,58 @@ def test_every_bridge_gate_says_what_is_lost() -> None:
     assert calls >= 5, f"只找到 {calls} 個關口 —— 預期至少 5 個"
     assert not thin, (
         "這些關口的說明太短,沒講出失去的是什麼驗證:\n  " + "\n  ".join(thin))
+
+
+# --------------------------------------------------------------------------
+# CI 的測試入口不得被縮窄(2026-10-20)
+#
+# 那些 AST/靜態掃描全都住在 pytest 裡,靠 `ops/scripts/ci_checks.sh` 被帶進
+# CI、canary 與 autofix 三條路。`實測`:`pytest tests/` 會收集到
+# `test_reporting.py` 的 40 條,三個 workflow 都走這個入口。
+#
+# 既有的 `test_the_shared_entrypoint_is_what_both_sides_call` 只斷言
+# 入口內文含有 `python -m pytest tests/`。那個判準**擋不住縮窄**:
+#
+#     python -m pytest tests/test_golden.py     ← 仍然含有那個片段
+#     python -m pytest tests/ -k "golden"       ← 同上
+#
+# 縮窄之後所有掃描都還「存在」,只是不再被執行 —— 而 CI 會是綠的。
+# 和 jsdom 消失同一個形狀,只是發生在更上游:整組測試裡有多少條真的跑,
+# 由一行 shell 決定,而沒有人在看那一行。
+# --------------------------------------------------------------------------
+
+def test_the_ci_entrypoint_runs_the_whole_test_directory() -> None:
+    import re as _re
+
+    entry = OPS_ROOT / "scripts" / "ci_checks.sh"
+    body = entry.read_text(encoding="utf-8")
+    lines = [ln.strip() for ln in _uncommented(body) if "pytest" in ln]
+    assert len(lines) == 1, f"入口裡跑 pytest 的行有 {len(lines)} 條:{lines}"
+    cmd = lines[0]
+
+    assert _re.fullmatch(r'python -m pytest tests/ "\$@"', cmd), (
+        f"測試入口被改成 {cmd!r} —— 它必須原封不動地跑整個 tests/ 目錄。\n"
+        "縮窄成單一檔案或加上 -k,會讓所有靜態掃描『還在但不再執行』,\n"
+        "而 CI 仍然是綠的(與 jsdom 消失同一個形狀,只是更上游)。"
+    )
+
+
+def test_no_workflow_narrows_the_test_run() -> None:
+    """workflow 傳給入口的參數只能影響輸出格式,不能挑測試。"""
+    import re as _re
+
+    narrowing = ("-k", "--ignore", "--deselect", "-m ", "--lf", "--ff", "-x")
+    problems: list[str] = []
+    for where, info in _jobs_that_run_tests().items():
+        for run in info["runs"]:
+            for line in _uncommented(run):
+                if "ci_checks.sh" not in line:
+                    continue
+                args = line.split("ci_checks.sh", 1)[1]
+                for n in narrowing:
+                    if _re.search(r"(^|\s)" + _re.escape(n.strip()) + r"(\s|=|$)", args):
+                        problems.append(f"{where}: {line.strip()[:70]}  ←含 {n.strip()}")
+    assert not problems, (
+        "這些地方在呼叫測試入口時挑掉了一部分測試:\n  " + "\n  ".join(problems)
+        + "\n\n參數只能影響輸出格式(-q / -v / --tb)。"
+    )
