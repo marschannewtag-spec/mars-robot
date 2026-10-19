@@ -547,8 +547,20 @@ def check_published_mirror(cfg: dict) -> list[Result]:
             else:
                 months = df["DATE"].astype(str).str.slice(0, 7).nunique()
                 last = str(df["DATE"].iloc[-1]) if len(df) else ""
-                age = _days_between(last, date.today())
-                if months < mcfg["min_vix_months"]:
+                # ⚠ 先確認最後一筆【真的是一個日期】。
+                #    `_days_between` 對解析不出來的輸入回 0(那是為了通知路徑
+                #    設計的),所以一份 DATE 欄全是垃圾、但剛好有 132 個不同
+                #    前七碼的檔案,會得到 age=0 而被判成 OK —— 檢查看起來在把關,
+                #    實際上放行了一份 PWA 根本算不出東西的鏡像。
+                #    S&P 那一邊靠 `_mirror_last_day()` 回 None 已經擋住了,
+                #    這一邊少了對應的那一道。(與 CLAUDE.md 的推論同一個形狀:
+                #    「失敗時回安全值」在量測路徑上是陷阱。)
+                if _as_date(last) is None:
+                    out.append(Result(
+                        "PWA 資料鏡像 · VIX", FAIL,
+                        f"最後一筆的 DATE 不是日期({last!r})—— "
+                        f"檔案格式壞了,buildVixMonthly 會算出空的 VIX 腿"))
+                elif months < mcfg["min_vix_months"]:
                     out.append(Result(
                         "PWA 資料鏡像 · VIX", FAIL,
                         f"只有 {months} 個月,低於下限 {mcfg['min_vix_months']}"

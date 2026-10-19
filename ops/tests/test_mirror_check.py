@@ -265,3 +265,34 @@ def test_the_vix_floor_matches_what_the_chart_actually_needs(cfg: dict) -> None:
 def test_the_sp_floor_matches_the_sma_window(cfg: dict) -> None:
     """`min_sp_months` 必須 >= 13 —— SMA12 要 13 個月才算得出第一個訊號。"""
     assert cfg["pwa"]["mirror"]["min_sp_months"] >= 13
+
+
+def test_a_vix_mirror_with_an_unparseable_date_is_caught(cfg: dict, monkeypatch) -> None:
+    """DATE 欄不是日期 → FAIL,不能因為「算不出年齡」就放行。
+
+    `_days_between` 對解析不出來的輸入回 0 —— 那是為了通知路徑設計的
+    (Issue 內文的標記是外部狀態,不該讓通知流程掛掉)。但在**量測**路徑上
+    它變成陷阱:一份 DATE 全是垃圾、但剛好有 132 個不同前七碼的檔案,
+    會得到 age=0 而被判成 OK,而 PWA 拿到它會算出一條空的 VIX 腿。
+
+    S&P 那一邊靠 `_mirror_last_day()` 回 None 已經擋住了,這一邊原本沒有。
+    """
+    sp, _ = _ok_pair(cfg)
+    rows = ["DATE,HIGH,CLOSE"]
+    for i in range(200):                       # 200 個不同的前七碼,衝過月數下限
+        rows.append("junk-%03d-xx,20.0,18.0" % i)
+    res = _run(monkeypatch, cfg, sp=sp, vix=_Resp(200, "\n".join(rows) + "\n"))
+    r = res["PWA 資料鏡像 · VIX"]
+    assert r.failed, "垃圾日期被放行了:%s" % r.detail
+    assert "不是日期" in r.detail
+
+
+def test_an_empty_vix_mirror_is_caught(cfg: dict, monkeypatch) -> None:
+    """只有表頭、一列資料都沒有 → FAIL。
+
+    `df["DATE"].iloc[-1]` 在空表上會 IndexError;那條路徑有 `len(df)` 擋著,
+    結果是空字串 —— 空字串也必須是 FAIL,不是「年齡 0 天」。
+    """
+    sp, _ = _ok_pair(cfg)
+    res = _run(monkeypatch, cfg, sp=sp, vix=_Resp(200, "DATE,HIGH,CLOSE\n"))
+    assert res["PWA 資料鏡像 · VIX"].failed
