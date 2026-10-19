@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import io
 import sys
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import re
@@ -472,6 +473,46 @@ def _mirror_last_day(sp_json: dict) -> str | None:
     return datetime.fromtimestamp(int(ts[-1]), timezone.utc).strftime("%Y-%m-%d")
 
 
+# 讀線上鏡像的重試參數。`fetch_data._get()` 從一開始就是 3 次指數退避,
+# 而這個新檢查原本是**整個 repo 唯一沒有重試的網路讀取** —— 偏偏它讀的是
+# PWA 的第一順位來源,而且它失敗時會連帶把「PWA 代理鏈」也推成 FAIL
+# (`mirror_is_serving()` 回 False),於是一次 20 秒的網路抽風會被報成
+# 兩項故障 + 改標題 + 留一則言。那正是這個專案最怕的狼來了。
+_MIRROR_RETRIES = 3
+_MIRROR_BACKOFF = 1.0  # 秒,指數退避。測試把它設成 0
+
+
+def _get_mirror(url: str, timeout: int = 20):
+    """讀鏡像,只對「問不到」重試;「伺服器明確回答了」不重試。
+
+    | 情況 | 重試 | 理由 |
+    |---|---|---|
+    | 連線錯誤 / 逾時 | 是 | 我們沒能問到 —— 這不是鏡像壞了的證據 |
+    | 5xx | 是 | CDN 自己的暫時性故障 |
+    | 4xx(含 404) | **否** | 伺服器明確說「沒有這個檔案」,那是定論 |
+
+    ⚠ **這不是放寬閾值。** 沒有任何判準移動:404 仍然 FAIL、過期仍然 FAIL、
+    格式不符仍然 FAIL、連續三次失敗仍然 FAIL。改的只有「問一次」變成
+    「問三次才算問不到」。用本檔那條分辨法檢查:原本那件壞事(鏡像真的
+    不見了/凍結了),現在還會紅嗎?**會。**
+    """
+    last_exc: Exception | None = None
+    resp = None
+    for attempt in range(_MIRROR_RETRIES):
+        try:
+            resp = requests.get(url, headers=UA, timeout=timeout)
+            if resp.status_code < 500:
+                return resp
+            last_exc = None
+        except Exception as exc:  # noqa: BLE001 — 任何「問不到」都值得重試
+            resp, last_exc = None, exc
+        if attempt < _MIRROR_RETRIES - 1 and _MIRROR_BACKOFF:
+            time.sleep(_MIRROR_BACKOFF * (2 ** attempt))
+    if resp is not None:
+        return resp  # 連續 5xx —— 交給呼叫端照常報 HTTP 狀態碼
+    raise last_exc  # type: ignore[misc]
+
+
 def check_published_mirror(cfg: dict) -> list[Result]:
     """PWA 真的讀得到的那兩個檔,現在是什麼狀態。
 
@@ -498,7 +539,7 @@ def check_published_mirror(cfg: dict) -> list[Result]:
 
     # --- S&P 月序列 ---
     try:
-        r = requests.get(mcfg["sp_url"], headers=UA, timeout=20)
+        r = _get_mirror(mcfg["sp_url"])
         if r.status_code != 200:
             out.append(Result("PWA 資料鏡像 · S&P", FAIL,
                               f"HTTP {r.status_code} —— PWA 會退到代理鏈/月頻"))
@@ -531,7 +572,7 @@ def check_published_mirror(cfg: dict) -> list[Result]:
 
     # --- VIX 日序列 ---
     try:
-        r = requests.get(mcfg["vix_url"], headers=UA, timeout=20)
+        r = _get_mirror(mcfg["vix_url"])
         if r.status_code != 200:
             out.append(Result("PWA 資料鏡像 · VIX", FAIL,
                               f"HTTP {r.status_code} —— PWA 會完全沒有 VIX 腿"))

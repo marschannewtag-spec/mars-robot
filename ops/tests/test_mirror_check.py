@@ -28,6 +28,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import requests
 import yaml
 
 import health_check as hc
@@ -296,3 +297,102 @@ def test_an_empty_vix_mirror_is_caught(cfg: dict, monkeypatch) -> None:
     sp, _ = _ok_pair(cfg)
     res = _run(monkeypatch, cfg, sp=sp, vix=_Resp(200, "DATE,HIGH,CLOSE\n"))
     assert res["PWA 資料鏡像 · VIX"].failed
+
+
+# --------------------------------------------------------------------------
+# 重試:「我們問不到」與「鏡像壞了」不是同一件事(2026-10-19)
+#
+# `fetch_data._get()` 一開始就是 3 次指數退避,而這個新檢查原本是整個 repo
+# 唯一沒有重試的網路讀取 —— 偏偏它讀的是 PWA 的第一順位來源,而且它失敗時
+# `mirror_is_serving()` 會回 False,連帶把「PWA 代理鏈」也推成 FAIL。
+# 一次 20 秒的網路抽風 = 兩項故障 + 改標題 + 留一則言。
+#
+# ⚠ 這幾條測試同時釘住**重試不得變成放寬**:4xx 不重試、連續失敗仍然 FAIL。
+# --------------------------------------------------------------------------
+
+def _seq_run(monkeypatch, cfg: dict, *, sp_seq: list, vix_seq: list):
+    """依序回應每個網址的第 n 次請求,並數出各自被請求幾次。
+
+    序列元素是 `_Resp` 或 `Exception` 實例;用完之後固定重複最後一個
+    (所以「只有一個元素」就代表「持續如此」)。
+    """
+    monkeypatch.setattr(hc, "_MIRROR_BACKOFF", 0)  # 測試不要真的睡
+    sp_url = cfg["pwa"]["mirror"]["sp_url"]
+    calls = {"sp": 0, "vix": 0}
+
+    def fake_get(url, **kw):
+        which = "sp" if url == sp_url else "vix"
+        seq = sp_seq if which == "sp" else vix_seq
+        item = seq[min(calls[which], len(seq) - 1)]
+        calls[which] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(hc.requests, "get", fake_get)
+    return {r.name: r for r in hc.check_published_mirror(cfg)}, calls
+
+
+def test_one_transient_connection_error_is_not_a_failure(cfg: dict, monkeypatch) -> None:
+    """抽一次風之後讀到了,就不該報警 —— 使用者的瀏覽器此刻讀得到。"""
+    sp, vix = _ok_pair(cfg)
+    res, calls = _seq_run(monkeypatch, cfg,
+                          sp_seq=[requests.ConnectionError("boom"), sp],
+                          vix_seq=[vix])
+    assert res["PWA 資料鏡像 · S&P"].status == hc.OK, res["PWA 資料鏡像 · S&P"].detail
+    assert calls["sp"] == 2, f"沒有重試,只請求了 {calls['sp']} 次"
+    assert hc.mirror_is_serving(list(res.values()))
+
+
+def test_a_persistently_unreachable_mirror_is_still_a_failure(
+    cfg: dict, monkeypatch
+) -> None:
+    """安全網:重試用完仍然失敗,必須 FAIL。
+
+    少了這一條,「重試」就只是「永遠不報警」的另一種寫法。
+    """
+    _, vix = _ok_pair(cfg)
+    res, calls = _seq_run(monkeypatch, cfg,
+                          sp_seq=[requests.ConnectionError("boom")],
+                          vix_seq=[vix])
+    r = res["PWA 資料鏡像 · S&P"]
+    assert r.status == hc.FAIL and r.failed, r.detail
+    assert calls["sp"] == 3, f"重試次數應為 3,實際 {calls['sp']}"
+    assert not hc.mirror_is_serving(list(res.values())), \
+        "鏡像真的讀不到時,代理鏈必須失去它的安全網豁免"
+
+
+def test_a_404_is_not_retried(cfg: dict, monkeypatch) -> None:
+    """4xx 是**定論**,不重試。
+
+    伺服器明確回答了「沒有這個檔案」。把它也塞進重試只會讓每次健檢多等
+    兩輪退避,而且會讓「問不到」與「明確沒有」在程式裡糊成一件事 ——
+    而這兩件事該有的反應不同(這份專案在 SKIP/FAIL 上反覆踩過同一條線)。
+    """
+    _, vix = _ok_pair(cfg)
+    res, calls = _seq_run(monkeypatch, cfg,
+                          sp_seq=[_Resp(404, "Not Found")], vix_seq=[vix])
+    assert res["PWA 資料鏡像 · S&P"].status == hc.FAIL
+    assert calls["sp"] == 1, f"404 被重試了 {calls['sp']} 次"
+
+
+def test_a_transient_5xx_is_retried(cfg: dict, monkeypatch) -> None:
+    """5xx 是 CDN 自己的暫時性故障,重試。"""
+    sp, vix = _ok_pair(cfg)
+    res, calls = _seq_run(monkeypatch, cfg,
+                          sp_seq=[_Resp(503, "Service Unavailable"), sp],
+                          vix_seq=[vix])
+    assert res["PWA 資料鏡像 · S&P"].status == hc.OK, res["PWA 資料鏡像 · S&P"].detail
+    assert calls["sp"] == 2
+
+
+def test_a_persistent_5xx_is_reported_with_its_status_code(
+    cfg: dict, monkeypatch
+) -> None:
+    """一直 5xx 仍然 FAIL,而且要把狀態碼講出來(診斷用)。"""
+    sp, _ = _ok_pair(cfg)
+    res, calls = _seq_run(monkeypatch, cfg,
+                          sp_seq=[sp], vix_seq=[_Resp(503, "nope")])
+    r = res["PWA 資料鏡像 · VIX"]
+    assert r.status == hc.FAIL and "503" in r.detail, r.detail
+    assert calls["vix"] == 3
