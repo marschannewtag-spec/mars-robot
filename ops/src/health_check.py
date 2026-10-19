@@ -674,7 +674,19 @@ def append_log(results: list[Result]) -> None:
         "failed": "|".join(failed),
     }
     HEALTH_LOG.parent.mkdir(parents=True, exist_ok=True)
-    header = not HEALTH_LOG.exists()
+    # ⚠ 判準是「檔案裡有沒有東西」,不是「檔案存不存在」。
+    #
+    #   workflow 第 5 步用 `git show origin/ops-data:...  > ops/data/health_log.csv`
+    #   取回既有軌跡。shell 的重導向**在 git show 執行之前就把檔案截斷成 0 bytes**,
+    #   所以那一步失敗時留下的是一個【存在但空的】檔案。
+    #   只看 exists() 的話,這裡會判定「已經有表頭」→ 直接追加一列資料,
+    #   於是檔案變成沒有表頭的 CSV。下一次 `pd.read_csv` 會把那一列當成欄位名:
+    #       欄位 = ['2026-10-19', '1', '1.1', 'Unnamed: 3']   列數 = 0
+    #   —— 稽核軌跡靜靜變成一張空表,而年度健檢的「資料源穩定度」會說沒有紀錄。
+    #
+    #   workflow 那一邊也修了(不成功就不覆蓋目的檔),但這一道留著:
+    #   表頭的正確性是這個函式自己的責任,不該依賴呼叫它的那段 shell 寫對。
+    header = not HEALTH_LOG.exists() or HEALTH_LOG.stat().st_size == 0
     with HEALTH_LOG.open("a", encoding="utf-8", newline="\n") as fh:
         if header:
             fh.write("date,ok,n_checks,failed\n")

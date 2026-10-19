@@ -919,3 +919,56 @@ def test_issue_plan_body_round_trips_every_marker() -> None:
     since = hc._parse_kv(body, hc._SINCE_PREFIX)
     assert "PWA 代理鏈" in since and "," in since["PWA 代理鏈"], f"failsince 讀不回來:{since}"
     assert hc._parse_kv(body, hc._NOTICE_PREFIX).get("at"), "lastnotice 讀不回來"
+
+
+def test_an_empty_log_file_still_gets_a_header(sandbox: Path) -> None:
+    """既存但【空】的 health_log.csv,仍然要寫表頭。
+
+    ## 這不是假想的情況
+
+    workflow 第 5 步用這一行取回既有軌跡:
+
+        git show origin/ops-data:ops/data/health_log.csv > ops/data/health_log.csv
+
+    shell 的重導向**在 git show 執行之前就把目的檔截斷成 0 bytes**,
+    所以那一步只要失敗(分支還不存在、fetch 沒建出 remote-tracking ref、
+    網路抽風),留下的就是一個存在但空的檔案。
+
+    判準若是 `not exists()`,這裡會認定「表頭已經有了」→ 直接追加一列資料。
+    於是檔案變成沒有表頭的 CSV,而下一次 `pd.read_csv` 會把那一列當欄位名:
+
+        欄位 = ['2026-10-19', '1', '1.1', 'Unnamed: 3']   列數 = 0
+
+    稽核軌跡靜靜變成一張空表,年度健檢的「資料源穩定度」會說沒有紀錄,
+    而沒有任何東西會紅。
+    """
+    import pandas as pd
+
+    hc.HEALTH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    hc.HEALTH_LOG.write_text("", encoding="utf-8")       # 重導向留下的 0 bytes
+    hc.append_log([hc.Result("來源可達性 · vix", hc.OK, "ok")])
+
+    text = hc.HEALTH_LOG.read_text(encoding="utf-8")
+    assert text.startswith("date,ok,n_checks,failed"), (
+        "空檔案被當成「已經有表頭」:%r" % text)
+    df = pd.read_csv(hc.HEALTH_LOG)
+    assert list(df.columns) == ["date", "ok", "n_checks", "failed"]
+    assert len(df) == 1
+
+
+def test_an_existing_log_does_not_get_a_second_header(sandbox: Path) -> None:
+    """控制組:已經有內容的軌跡檔不可以再被插一行表頭。
+
+    少了這一條,「空檔案要補表頭」可以用「每次都寫表頭」來作弊,
+    而那會讓軌跡裡散落一堆表頭列。
+    """
+    import pandas as pd
+
+    hc.HEALTH_LOG.parent.mkdir(parents=True, exist_ok=True)
+    hc.append_log([hc.Result("來源可達性 · vix", hc.OK, "ok")])
+    hc.append_log([hc.Result("來源可達性 · vix", hc.FAIL, "bad")])
+
+    text = hc.HEALTH_LOG.read_text(encoding="utf-8")
+    assert text.count("date,ok,n_checks,failed") == 1
+    df = pd.read_csv(hc.HEALTH_LOG)
+    assert len(df) == 2 and list(df["ok"]) == [1, 0]

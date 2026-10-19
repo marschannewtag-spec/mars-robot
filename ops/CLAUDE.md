@@ -1155,6 +1155,79 @@ cwgauge_v2    113,429 chars = 222 KB (UTF-16)
 **推論:一個掛了很久的「可能有問題」項目,最便宜的處理方式通常是去量它。**
 猜測會一直留在清單上消耗注意力;一個數字可以讓它結案或升級成真的工作。
 
+### shell 的重導向會在命令失敗【之前】就把檔案清空(2026-10-19)
+
+workflow 第 5 步取回既有的健檢軌跡:
+
+```bash
+git show origin/ops-data:ops/data/health_log.csv > ops/data/health_log.csv
+```
+
+重導向是 shell 在 fork 之前做的 —— **目的檔在 `git show` 開始執行之前就被
+截斷成 0 bytes**。所以那一行只要失敗(分支還不存在、remote-tracking ref 沒建出來、
+網路抽風),留下的就是一個**存在但空的**軌跡檔。
+
+接著 `append_log()` 判斷要不要寫表頭:
+
+```python
+header = not HEALTH_LOG.exists()     # <- 檔案「存在」,所以判定表頭已經有了
+```
+
+於是它直接追加一列資料,整份 CSV 從此沒有表頭。實測下一次 `pd.read_csv`:
+
+```
+欄位 = ['2026-10-19', '1', '1.1', 'Unnamed: 3']
+列數 = 0
+```
+
+**稽核軌跡靜靜變成一張空表**,年度健檢的「資料源穩定度」會說沒有紀錄,
+而沒有任何東西會紅 —— 因為每一步都「成功」了。
+
+兩邊各補一道,刻意不共用:
+
+| 層 | 修法 |
+|---|---|
+| shell | 先寫暫存檔,`[ -s ... ]` 確認非空才 `mv` 過去 —— 不成功就不碰目的檔 |
+| Python | `header = not exists() or st_size == 0` —— 判準是**有沒有內容**,不是存不存在 |
+
+Python 那一道留著不是重複:**表頭的正確性是 `append_log()` 自己的責任,
+不該依賴呼叫它的那段 shell 寫對。**
+
+### `A && B || C` 不是 if/else(2026-10-19)
+
+心跳步驟原本是:
+
+```bash
+git fetch origin ops-data 2>/dev/null   && git checkout -f -B ops-data origin/ops-data   || git checkout -f -B ops-data
+```
+
+讀起來像「fetch 成功就 checkout 遠端那條,否則開新的」。實際語意是
+**B 失敗時 C 也會跑** —— 而 C 是「從目前的 HEAD(也就是 main)開一條新的
+ops-data」,接下來的 `git push` 會是非快轉而被拒。
+
+這不是假想的:`git fetch origin ops-data` 只保證寫 `FETCH_HEAD`,
+**remote-tracking ref 要不要順手建出來,取決於 `remote.origin.fetch` 有沒有
+涵蓋它** —— 而 `actions/checkout` 會把它縮窄成只有當前分支。
+
+實測(`git clone --depth 1`,refspec 就是 `+refs/heads/main:refs/remotes/origin/main`):
+
+```
+舊版:commit 的 parent = main 的 HEAD    -> push 會被拒
+新版:commit 的 parent = 7a06d59         -> 真正的 ops-data,快轉成功
+```
+
+⚠ **誠實說明:線上那一版一直是好的**(workflow log 裡看得到
+`c5d532f..8da2230` 推送成功),所以這是把一個潛在脆弱點拿掉,不是修一個
+正在發作的故障。真實 runner 的 refspec 顯然涵蓋得到,但那是**賭別人的預設值**。
+
+改成 `if/else` + 明確 refspec `+refs/heads/ops-data:refs/remotes/origin/ops-data`,
+兩種環境都成立。
+
+**推論:workflow 的 shell 沒有測試,所以它要寫成「讀起來就是它的語意」。**
+`A && B || C` 在這一點上失格 —— 它讀起來像 if/else,但不是。
+而驗證它的方法也不用靠想:**把那段 shell 從 YAML 抽出來,在一個更嚴苛的
+環境裡真的跑一次**(我就是這樣發現它的)。
+
 ### 突變測試結果 —— 資料鏡像那一輪(2026-10-19)
 
 新寫的程式碼一律要問一次「如果我把它改錯,有沒有測試會紅」。
@@ -1378,8 +1451,8 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 
 測試數:129 → 140(SW)→ 161(健檢 + 契約)→ 195(通知 / 代理鏈 / 資料落後)
 → 228(離線 SW / 月頻契約 / 嚴重程度 / DOM 契約 / 快取污染)
-→ **280**(資料鏡像 / CBOE 來源 / 代理嚴重程度 / 執行環境符合宣告 /
-來源退回鏈 / 鏡像各自獨立發布 / 鏡像日期合法性)。
+→ **282**(資料鏡像 / CBOE 來源 / 代理嚴重程度 / 執行環境符合宣告 /
+來源退回鏈 / 鏡像各自獨立發布 / 鏡像日期合法性 / 軌跡表頭)。
 
 10-19 那一輪的 16 個突變:**14 個被抓到**,2 個逃掉 ——
 一個是等價突變(有保存期限,見上),一個是我的測試太弱(已補強)。

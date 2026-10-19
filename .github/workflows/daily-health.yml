@@ -58,15 +58,41 @@ jobs:
           pip install -r ops/requirements.txt
 
       # 健檢軌跡累積在 ops-data 分支上,先取回來再追加,否則每天都會從零開始
+      # ⚠ 兩個細節都是踩過的:
+      #
+      # 1. fetch 要用【明確的 refspec】。`git fetch origin ops-data` 只保證寫
+      #    FETCH_HEAD;remote-tracking ref 要不要順手建出來,取決於
+      #    remote.origin.fetch 有沒有涵蓋它 —— 而 actions/checkout 會把它縮窄成
+      #    只有當前分支。明確寫成 +refs/heads/ops-data:refs/remotes/origin/ops-data
+      #    就不用賭。
+      #
+      # 2. **不成功就不要碰目的檔。** 原本是
+      #    `git show ... > ops/data/health_log.csv`,而 shell 的重導向是在
+      #    git show 執行【之前】就把目的檔截斷成 0 bytes。所以那一行只要失敗,
+      #    留下的就是一個存在但空的軌跡檔;append_log 接著判定「表頭已經有了」
+      #    而直接追加一列,整份 CSV 從此沒有表頭,下一次 pd.read_csv 會把那一列
+      #    當成欄位名 —— 稽核軌跡靜靜變成一張空表,而沒有任何東西會紅。
+      #    改成先寫暫存檔、確認非空才搬過去。
+      #    (append_log 那一邊也補了同一道防線,兩邊獨立,見
+      #     test_an_empty_log_file_still_gets_a_header。)
       - name: 取回既有的健檢軌跡
         run: |
           mkdir -p ops/data
-          if git fetch origin ops-data 2>/dev/null; then
-            git show origin/ops-data:ops/data/health_log.csv > ops/data/health_log.csv 2>/dev/null \
-              && echo "已取回 $(wc -l < ops/data/health_log.csv) 行軌跡" || echo "分支上尚無軌跡檔"
-            git show origin/ops-data:ops/data/manifest.json > ops/data/manifest.json 2>/dev/null || true
-          else
+          if ! git fetch origin +refs/heads/ops-data:refs/remotes/origin/ops-data 2>/dev/null; then
             echo "ops-data 分支尚不存在,將由本次建立"
+            exit 0
+          fi
+          keep=$(mktemp -d)
+          if git show origin/ops-data:ops/data/health_log.csv > "$keep/health_log.csv" 2>/dev/null \
+             && [ -s "$keep/health_log.csv" ]; then
+            mv "$keep/health_log.csv" ops/data/health_log.csv
+            echo "已取回 $(wc -l < ops/data/health_log.csv) 行軌跡"
+          else
+            echo "分支上尚無軌跡檔(或取回失敗)—— 保持本機原狀,不覆蓋"
+          fi
+          if git show origin/ops-data:ops/data/manifest.json > "$keep/manifest.json" 2>/dev/null \
+             && [ -s "$keep/manifest.json" ]; then
+            mv "$keep/manifest.json" ops/data/manifest.json
           fi
 
       - name: 執行健檢
@@ -230,9 +256,16 @@ jobs:
           mkdir -p "$tmp/pwa"
           cp ops/data/pwa/*            "$tmp/pwa/" 2>/dev/null || true
 
-          git fetch origin ops-data 2>/dev/null \
-            && git checkout -f -B ops-data origin/ops-data \
-            || git checkout -f -B ops-data
+          # `A && B || C` 的陷阱:B 失敗時 C 也會跑。這裡 C 是「從目前的 HEAD
+          #(也就是 main)開一條新的 ops-data」—— 那會讓接下來的 push 變成非快轉
+          # 而被拒,整個步驟紅掉。寫成 if/else,並且 fetch 用明確 refspec,
+          # 讓「分支不存在」和「fetch 失敗」不要長得一樣。
+          if git fetch origin +refs/heads/ops-data:refs/remotes/origin/ops-data 2>/dev/null; then
+            git checkout -f -B ops-data origin/ops-data
+          else
+            echo "ops-data 尚不存在,由本次建立"
+            git checkout -f -B ops-data
+          fi
           mkdir -p ops/data
           cp "$tmp"/manifest.json  ops/data/ 2>/dev/null || true
           cp "$tmp"/health_log.csv ops/data/ 2>/dev/null || true
