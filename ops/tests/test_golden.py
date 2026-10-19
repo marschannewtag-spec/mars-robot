@@ -182,8 +182,23 @@ def test_strategy_reduces_drawdown(perf) -> None:
 #    那支腳本會逼你看見哪些 hash 動了。
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_the_frozen_fixtures_have_not_moved() -> None:
+def _content_hash(path: Path) -> str:
+    """行尾正規化之後的 sha256 —— 與 scripts/refresh_fixture_checksums.py 一致。
+
+    ⚠ 不可以直接 hash 原始位元組。第一版就是那樣,結果**本機全綠、CI 紅**:
+    `golden_metrics.json` 在 Windows 工作副本是 CRLF,git 存的是 LF,
+    Linux runner 檢出來自然不一樣。
+
+    一個用來守護黃金基準的檢查,自己踩了這個 repo 最早那條教訓 ——
+    本機與 CI 的環境差異。行尾不是內容,不該讓它決定紅綠。
+    由 `test_the_checksum_is_the_same_on_windows_and_linux` 釘住。
+    """
     import hashlib
+
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def test_the_frozen_fixtures_have_not_moved() -> None:
 
     fixtures = FIXTURES
     checksums = fixtures / "CHECKSUMS.txt"
@@ -209,7 +224,7 @@ def test_the_frozen_fixtures_have_not_moved() -> None:
 
     moved = []
     for name, want in sorted(expected.items()):
-        got = hashlib.sha256((fixtures / name).read_bytes()).hexdigest()
+        got = _content_hash(fixtures / name)
         if got != want:
             moved.append(f"{name}: {want[:12]} -> {got[:12]}")
 
@@ -252,3 +267,40 @@ def test_the_refresh_script_exists_and_refuses_to_write_by_default() -> None:
     after = hashlib.sha256(
         (FIXTURES / "CHECKSUMS.txt").read_bytes()).hexdigest()
     assert before == after, "不加 --write 也把檔案改掉了"
+
+
+def test_the_checksum_is_the_same_on_windows_and_linux() -> None:
+    """同一份內容,CRLF 與 LF 兩種檢出必須得到同一個 hash。
+
+    這條是為了一個**已經發生過的**失敗寫的:第一版的 checksum 直接 hash
+    磁碟位元組,於是 `golden_metrics.json`(Windows 工作副本 CRLF、
+    git 存 LF)在本機全綠、在 CI 紅。
+
+    `實測`還原方式:`git -c core.autocrlf=false clone` 出一份 LF 檢出,
+    整組只有那一條紅 —— 確認原因,而不是用猜的。
+
+    ⚠ 這是這個 repo 最早那條教訓的第 N 次:**本機與 CI 不是同一個環境**。
+       而這次踩到它的,正好是一個用來守護黃金基準的檢查。
+    """
+    fixtures = FIXTURES
+    for f in sorted(fixtures.iterdir()):
+        if not f.is_file() or f.name == "CHECKSUMS.txt":
+            continue
+        raw = f.read_bytes()
+        lf = raw.replace(b"\r\n", b"\n")
+        crlf = lf.replace(b"\n", b"\r\n")
+        assert crlf != lf or b"\n" not in lf, f"{f.name} 沒有換行,這條測不到東西"
+
+        import hashlib
+        h_lf = hashlib.sha256(lf.replace(b"\r\n", b"\n")).hexdigest()
+        h_crlf = hashlib.sha256(crlf.replace(b"\r\n", b"\n")).hexdigest()
+        assert h_lf == h_crlf, (
+            f"{f.name} 的 checksum 會因為行尾而改變 —— "
+            "那會讓本機與 CI 給出不同答案(已經發生過一次)")
+
+    # 正規化不得變成「什麼都一樣」:真的改內容必須算出不同的 hash
+    import hashlib
+    probe = (fixtures / "golden_metrics.json").read_bytes()
+    assert _content_hash(fixtures / "golden_metrics.json") != hashlib.sha256(
+        probe.replace(b"\r\n", b"\n") + b"x").hexdigest(), \
+        "正規化把內容差異也吃掉了"

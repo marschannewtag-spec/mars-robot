@@ -13,10 +13,15 @@
 # 真的要改(例如 Shiller 修訂了歷史資料)就更新這裡,並在 commit 訊息
 # 寫清楚為什麼、以及重產之後哪些數字動了。
 #
-# 產生方式:python scripts/refresh_fixture_checksums.py
+# 產生方式:python scripts/refresh_fixture_checksums.py --write#
+# ⚠ hash 算的是**行尾正規化之後**的內容(CRLF -> LF),不是磁碟上的原始
+#   位元組。2026-10-20 第一版沒有正規化,結果:本機(Windows,
+#   golden_metrics.json 的工作副本是 CRLF)全綠,CI(Linux 檢出 LF)紅。
+#   一個用來守護黃金基準的檢查,自己踩了這個 repo 最早那條教訓 ——
+#   **本機與 CI 的環境差異**。行尾不是內容,不該讓它決定紅綠。
 
 a7bce22ce9afb03d669abe5dc0af0a744001f3f8e97f246d2942ecbe7c0bae09  cboe_vix_history.csv
-0a249215411f94d2a697bbf26191228d5fd57e7487d1eb08563af57179ab1f4f  golden_metrics.json
+750a58d407fc16a3c5cc1ec4bfb256cceac08f41f1d4ef1a41a35e0a5875e02f  golden_metrics.json
 0ed98728f52c63f58421d52881029f6ee9b16346266fd4c4caa8f2225bb91c08  golden_signals.csv
 589392f1f0ded6eb30fdfbfcb783e3f68c5b1f47a0f95df5d96493a6d372117d  shiller_sp500.csv
 7d4b31ff2dfed7e16db67c70f2cd77e382b90c048b012921fc4f75f5be2a4205  sp500_daily.csv

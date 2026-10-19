@@ -46,8 +46,23 @@ HEADER = """\
 # 真的要改(例如 Shiller 修訂了歷史資料)就更新這裡,並在 commit 訊息
 # 寫清楚為什麼、以及重產之後哪些數字動了。
 #
-# 產生方式:python scripts/refresh_fixture_checksums.py --write
+# 產生方式:python scripts/refresh_fixture_checksums.py --write#
+# ⚠ hash 算的是**行尾正規化之後**的內容(CRLF -> LF),不是磁碟上的原始
+#   位元組。2026-10-20 第一版沒有正規化,結果:本機(Windows,
+#   golden_metrics.json 的工作副本是 CRLF)全綠,CI(Linux 檢出 LF)紅。
+#   一個用來守護黃金基準的檢查,自己踩了這個 repo 最早那條教訓 ——
+#   **本機與 CI 的環境差異**。行尾不是內容,不該讓它決定紅綠。
 """
+
+
+def content_hash(path: Path) -> str:
+    """行尾正規化之後的 sha256。
+
+    ⚠ 不要改成直接 hash 原始位元組。第一版就是那樣,結果本機全綠、CI 紅:
+    `golden_metrics.json` 的 Windows 工作副本是 CRLF,而 git 存的是 LF。
+    行尾不是內容 —— 讓它決定紅綠,等於把一個環境差異偽裝成基準漂移。
+    """
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def current() -> list[tuple[str, str]]:
@@ -55,7 +70,7 @@ def current() -> list[tuple[str, str]]:
     for f in sorted(FIXTURES.iterdir()):
         if f.name == CHECKSUMS.name or not f.is_file():
             continue
-        out.append((hashlib.sha256(f.read_bytes()).hexdigest(), f.name))
+        out.append((content_hash(f), f.name))
     return out
 
 
