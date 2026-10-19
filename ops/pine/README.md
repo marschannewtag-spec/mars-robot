@@ -78,7 +78,9 @@ Pine 的驗證分兩段,強度差很多:
 ## 前置需求
 
 - TradingView 帳號(免費方案就夠 —— 月線自 1990 年起約 440 根 bar,遠低於任何方案的上限)
-- 本機能跑 `ops/` 的 Python 環境:`pip install -r ops/requirements.txt`
+- 本機能跑 `ops/` 的 Python 環境:
+  `pip install -r ops/requirements.txt -r ops/requirements-test.txt`
+  (兩份都要 —— 2026-10-19 起執行期與測試工具的宣告是分開的,見 `ops/DEPENDENCIES.md`)
 - **需要網路** —— 比對腳本會抓當前的 Yahoo/GitHub 資料當基準
 
 ---

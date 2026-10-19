@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: ops/requirements.txt
+          cache-dependency-path: ops/requirements-ci.lock
 
       # jsdom 用來載入線上真的在跑的 index.html,取出它自己的函式做逐月比對
       - uses: actions/setup-node@v4
@@ -45,15 +45,29 @@ jobs:
           cache: npm
           cache-dependency-path: ops/package-lock.json
 
-      - name: 安裝相依
+      # L2 用【精確鎖定 + hash 驗證】,L1 用版本範圍。兩邊不同是刻意的:
+      #
+      #   L2 的工作是回答「邏輯有沒有被改壞」。它必須是一個不會自己變動的量尺 ——
+      #   否則某天 pip 裝到新版、黃金基準漂了 1e-9,紅燈的真正原因是「裝到新版」,
+      #   而它會偽裝成「程式被改壞了」。那是最難歸因的一類紅燈。
+      #
+      #   L1 的工作是每天把資料生出來。把精確鎖定放在它的關鍵路徑上,會讓
+      #   lockfile 過期、檔案被刪除、未來平台沒有對應 wheel 這些事變成
+      #   **每日資料供應故障**。那條路徑要的是「裝得起來」,不是「逐位元一致」。
+      #
+      # 鎖定檔由 requirements.txt + requirements-test.txt 一起解析產生,
+      # 生成工具與指令釘死在 ops/DEPENDENCIES.md 與 dependency-canary.yml。
+      - name: 安裝相依(精確鎖定 + hash 驗證)
         run: |
           python -m pip install --upgrade pip
-          pip install -r ops/requirements.txt
+          pip install --require-hashes -r ops/requirements-ci.lock
           npm ci --prefix ops
 
+      # 入口與 dependency canary 共用(ops/scripts/ci_checks.sh)。
+      # 兩邊各寫一套 pytest 指令的話,canary 遲早會在測一組與這裡不同的檢查 ——
+      # 那是一個看起來在把關、實際上在量別的東西的閘門。
       - name: 跑測試
-        working-directory: ops
-        run: python -m pytest tests/ -v --tb=short
+        run: bash ops/scripts/ci_checks.sh -v --tb=short
 
       # 提醒而非強制:漏 bump 不會讓 CI 失敗(有時 index.html 的改動確實不需要),
       # 但會在 summary 留下明顯的提示。強制的話會讓人養成盲目 bump 的習慣。

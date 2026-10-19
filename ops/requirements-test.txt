@@ -1,0 +1,37 @@
+# 只有測試會用到的工具 —— L1 的執行路徑【不安裝這個檔案】。
+#
+# 為什麼要分開(2026-10-19):`daily-health.yml` 的安裝步驟失敗會停掉每日資料
+# 供應,而測試工具對那條路徑毫無貢獻。混在一份檔案裡,等於讓 pytest 的
+# 一次解析失敗有能力讓資料管線停擺 —— 兩者的故障範圍必須切開。
+# 詳見 requirements.txt 開頭與 ops/DEPENDENCIES.md。
+#
+# 這份清單同樣是量出來的:`packaging` 只被 tests/test_reporting.py import,
+# `pytest-cov` 不被任何檔案 import(它是 pytest 外掛,由 `--cov` 指令觸發),
+# 其餘測試需要的 pandas / numpy / requests / PyYAML 都已在 runtime 那份裡。
+
+# 2026-10-19 從 `<9` 放寬到 `<10`。
+# 理由是**宣告原本就與事實不符**,不是為了讓某個檢查過:
+#   開發機實際裝的是 pytest 9.1.1,而宣告寫 <9 —— 於是
+#   「我在本機跑的 252 passed」和「CI 跑的 252 passed」用的是不同 major,
+#   整個專案期間都沒有任何東西發現這件事。
+# 實測:測試在 8.x(CI)與 9.1.1(本機)**都全綠**。
+# 測試框架的版本不改變輸出數字,只改變**測試能不能跑** —— 而「測試能不能跑」
+# 正是 F1 那個病,所以寬鬆的代價必須由下面那條環境符合性測試頂住:
+# tests/test_reporting.py::test_the_running_environment_matches_requirements。
+pytest>=8.0,<10
+# pytest-cov 原本【不在】任何 requirements 裡,但 CLAUDE.md 的覆蓋率指令要用它 ——
+# 乾淨 clone 照文件跑那行會得到 `error: unrecognized arguments: --cov`。
+# 這和 cp950 那次是完全同一類:文件叫使用者跑的指令,在乾淨環境跑不起來。
+# 規則:凡是寫進文件要人執行的指令,它需要的東西就必須被宣告。
+#
+# 2026-10-19 從 `>=5.0,<8` 收到 `>=7,<8`:5 / 6 / 7 是三個 major,而實測過的
+# 只有 7.1.0。⚠ 不要把 pytest 的跨 major 實測挪用到這裡 —— 證據不能轉讓。
+pytest-cov>=7,<8
+# 直接相依,不是間接:tests/test_reporting.py 用它比對「執行環境 vs 宣告」。
+# pytest 本來就會帶進來,但靠別人的相依樹拿到自己要用的東西,
+# 正是 pytest-cov 那次的形狀 —— 要用就自己宣告。
+#
+# 2026-10-19 從 `>=23,<27` 收到 `>=26,<27`:packaging 的版號 23/24/25/26
+# 各自是一個 major,所以那是**跨四個 major**的宣告,而實測過的只有 26.2。
+# 兩次第二意見都沒抓到這一條(審的人都盯著 numpy)。
+packaging>=26,<27

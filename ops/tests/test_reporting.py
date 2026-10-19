@@ -321,14 +321,32 @@ def test_documentation_contains_pytest_commands() -> None:
     )
 
 
+# 2026-10-19:宣告拆成兩份(runtime / test-only),所以凡是「掃宣告」的測試
+# 都必須掃**兩份**。只掃一份的話,它會在套件搬家的那天安靜地少看一個地方 ——
+# 而這條測試存在的理由正是「宣告與事實不符」。
+DECLARATION_FILES = ("requirements.txt", "requirements-test.txt")
+
+
+def _declared_requirement_lines() -> list[str]:
+    """兩份宣告檔裡的所有需求行(去註解、去空行)。"""
+    out: list[str] = []
+    for name in DECLARATION_FILES:
+        path = OPS_ROOT / name
+        assert path.exists(), f"宣告檔不見了:{name}"
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.split("#")[0].strip()
+            if line:
+                out.append(line)
+    assert out, "兩份宣告檔都解析不出任何需求 —— 掃描式測試會變成恆真"
+    return out
+
+
 def _declared_pytest_plugins() -> list[str]:
-    """requirements.txt 裡宣告的 pytest 外掛,轉成模組名(pytest-cov -> pytest_cov)。"""
+    """宣告檔裡的 pytest 外掛,轉成模組名(pytest-cov -> pytest_cov)。"""
     import re
 
-    text = (OPS_ROOT / "requirements.txt").read_text(encoding="utf-8")
     out = []
-    for line in text.splitlines():
-        line = line.split("#")[0].strip()
+    for line in _declared_requirement_lines():
         name = re.split(r"[<>=!~\[]", line)[0].strip()
         if name.startswith("pytest-"):
             out.append(name.replace("-", "_"))
@@ -486,7 +504,7 @@ def test_the_running_environment_matches_requirements() -> None:
     from packaging.requirements import Requirement
     from packaging.version import Version
 
-    req_path = OPS_ROOT / "requirements.txt"
+    req_path = OPS_ROOT / "requirements.txt"  # 兩份都要看,見 DECLARATION_FILES
     specs = [
         line.strip()
         for line in req_path.read_text(encoding="utf-8").splitlines()

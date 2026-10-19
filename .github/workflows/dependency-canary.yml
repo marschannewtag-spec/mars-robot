@@ -1,0 +1,241 @@
+name: 依賴 canary · 最新版預警
+
+# 每週解析一次「照目前宣告範圍能拿到的最新版」,跑完整的必要檢查。
+#
+# 這一層回答的是一個 lock 自己回答不了的問題:
+#
+#   lock 讓正式環境穩定,代價是**安全修補不會自己進來**,而且「哪天升上去會
+#   出事」要等到有人手動升級才會知道。canary 把那件事變成**被觀測的**:
+#   最新組合全綠 → 開一個更新 lock 的 PR;最新組合壞掉 → 開一張預警 Issue,
+#   而正式環境一動也不動。
+#
+# ⚠ 三條邊界,都是刻意的:
+#
+# 1. **這個 workflow 與 L1 每日健檢完全獨立。** 它不是 health job 的 `needs`,
+#    不讀也不寫 health 的 output,不碰 ops-data 分支。canary 失敗**不得**
+#    讓每日健檢變紅 —— 上游發新版不是「我們的資料壞了」,而一條會為了別人的
+#    發布而亮紅燈的警報,幾週後就會被無視(本 repo 實測過連紅 54 天的後果)。
+#
+# 2. **不自動合併。** 它的終點是一個可審查的 PR。`main` 直接部署到公開的
+#    GitHub Pages,而那是一個會給出投資部位建議的工具 ——「所有必要檢查通過」
+#    不等於「可以無人核可地改變線上建議」。這條邊界寫在 ops/CLAUDE.md,
+#    這裡只是不去碰它。
+#
+# 3. **去重用版本組合,不用 run ID。** 同一個壞掉的組合每週重報一次,
+#    就是狼來了。key 的定義見 ops/src/dep_manifest.py::combination_key。
+
+on:
+  schedule:
+    - cron: "0 3 * * 1" # 每週一 UTC 03:00。頻率刻意低:它是預警不是監控
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: dependency-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: 最新相容版本組合
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 只用來推 deps/ 分支;main 由分支保護擋住
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠ 刻意不開 pip cache。這一層的工作就是「去解析現在最新的是什麼」,
+      # 快取會讓它拿到上週的輪子,於是它量的東西變成「上週的最新版」。
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # parity 測試會用 jsdom 載入線上真的在跑的 index.html。
+      # ⚠ Node 側維持原有的精確鎖定(npm ci + package-lock.json)——
+      # 這一輪不順便升 Node 相依,否則 canary 綠或紅都分不出是哪一邊造成的。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ops/package-lock.json
+
+      - name: 解析並安裝最新相容版本
+        id: resolve
+        continue-on-error: true
+        run: |
+          set +e
+          {
+            python -m pip install --upgrade pip
+            pip install -r ops/requirements.txt -r ops/requirements-test.txt
+          } > "$GITHUB_WORKSPACE/canary_install.log" 2>&1
+          code=$?
+          set -e
+          cat "$GITHUB_WORKSPACE/canary_install.log"
+          echo "pip_version=$(python -m pip --version 2>/dev/null | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: npm ci
+        if: steps.resolve.outcome == 'success'
+        run: npm ci --prefix ops
+
+      # L2 與 canary 共用同一個入口(ops/scripts/ci_checks.sh)。
+      # 兩邊各寫一套 pytest 指令的話,canary 遲早會在測一組與 L2 不同的檢查,
+      # 而那是一個看起來在把關、實際上在量別的東西的閘門。
+      - name: 跑完整檢查(與 L2 同一個入口)
+        id: tests
+        if: steps.resolve.outcome == 'success'
+        continue-on-error: true
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          set +e
+          bash ops/scripts/ci_checks.sh -q > "$GITHUB_WORKSPACE/canary_tests.log" 2>&1
+          code=$?
+          set -e
+          tail -60 "$GITHUB_WORKSPACE/canary_tests.log"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      - name: 寫 canary manifest
+        if: always()
+        env:
+          PIP_VERSION: ${{ steps.resolve.outputs.pip_version }}
+          DEP_RESOLVER: canary-latest
+          PYTHONIOENCODING: utf-8
+        run: |
+          # 解析失敗時 phase=failure,manifest 會標 resolution_complete=false,
+          # 並改用 incomplete key —— 它不是一個真實的版本組合,報告上要分得出來。
+          if [ "${{ steps.resolve.outcome }}" = "success" ]; then
+            phase=success
+          else
+            phase=failure
+          fi
+          python ops/src/dep_manifest.py --phase "$phase" \
+            --source "latest(requirements.txt + requirements-test.txt)" \
+            --requested ops/requirements.txt \
+            --requested ops/requirements-test.txt \
+            --log "$GITHUB_WORKSPACE/canary_install.log" \
+            --exit-code "${{ steps.resolve.outcome == 'success' && '0' || '1' }}" \
+            --tests-log "$GITHUB_WORKSPACE/canary_tests.log" \
+            --tests-exit-code "${{ steps.tests.outputs.code || '99' }}" \
+            --out "$GITHUB_WORKSPACE/canary_manifest.json" \
+            --emit-issue --issue-kind canary \
+            --issue-title "$GITHUB_WORKSPACE/canary_title.txt" \
+            --issue-body "$GITHUB_WORKSPACE/canary_body.md"
+
+      - name: 保存 canary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-canary
+          path: |
+            canary_manifest.json
+            canary_install.log
+            canary_tests.log
+          retention-days: 30
+          if-no-files-found: warn
+
+      # ── 失敗:開/更新預警 Issue,按版本組合去重 ──────────────────────────
+      - name: 失敗 → 開或更新 canary Issue
+        if: steps.resolve.outcome != 'success' || steps.tests.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create dependency-canary --color 1D76DB \
+            --description "最新依賴組合的預警(不是正式環境故障)" 2>/dev/null || true
+
+          key=$(python -c "import json,sys;print(json.load(open(sys.argv[1],encoding='utf-8'))['dedupe_key'])" \
+                  "$GITHUB_WORKSPACE/canary_manifest.json")
+          title=$(cat "$GITHUB_WORKSPACE/canary_title.txt")
+          existing=$(gh issue list --label dependency-canary --state open --limit 1 \
+                       --json number --jq '.[0].number // empty')
+
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --label dependency-canary \
+              --body-file "$GITHUB_WORKSPACE/canary_body.md"
+            exit 0
+          fi
+
+          # 同一個版本組合 → 只更新內文,不留言。
+          # 不同組合 → 這是新發現,值得出聲一次。
+          gh issue view "$existing" --json body --jq .body > canary_old.md || true
+          gh issue edit "$existing" --title "$title" \
+            --body-file "$GITHUB_WORKSPACE/canary_body.md"
+          if grep -q "depcombo: $key" canary_old.md 2>/dev/null; then
+            echo "同一個版本組合($key)—— 只更新內文,不留言"
+          else
+            gh issue comment "$existing" \
+              --body "新的版本組合仍然失敗($key)。詳見內文與 artifact。"
+          fi
+
+      # ── 成功:若鎖定檔會變,開一個 PR。不合併。 ──────────────────────────
+      - name: 全綠 → 重新產生鎖定檔
+        id: relock
+        if: steps.resolve.outcome == 'success' && steps.tests.outcome == 'success'
+        working-directory: ops
+        run: |
+          # ⚠ 生成工具釘死版本。不釘的話,鎖定檔的內容會取決於「那天的
+          # pip-compile/uv 是哪一版」—— 一個為了可重現而存在的檔案,
+          # 自己的產生過程卻不可重現。
+          python -m pip install "uv==0.9.9"
+          # 參數與路徑必須與 ops/requirements-ci.lock 的標頭完全一致,
+          # 否則每次重新產生都會有一行假 diff(標頭記錄的是指令本身)。
+          python -m uv pip compile requirements.txt requirements-test.txt \
+            --generate-hashes --python-version 3.12 --python-platform linux \
+            --output-file requirements-ci.lock
+          if git diff --quiet -- requirements-ci.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "鎖定檔沒有變化 —— 最新版就是目前鎖定的版本"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat -- requirements-ci.lock
+          fi
+
+      - name: 鎖定檔有變化 → 開 PR(不合併)
+        if: steps.relock.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="deps/lock-refresh-$(date -u '+%Y%m%d')"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add ops/requirements-ci.lock
+          git commit -m "chore(deps): 更新 L2 鎖定檔到最新全綠組合"
+          git push -f origin "$branch"
+
+          {
+            echo "canary 在乾淨環境解析最新相容版本,**全部必要檢查通過**,"
+            echo "所以這份鎖定檔可以升上去。"
+            echo ""
+            echo "- canary run:$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo "- 完整版本組合與測試結果見 artifact \`dependency-canary\`"
+            echo ""
+            echo "## 這個 PR 不會自動合併"
+            echo ""
+            echo "\`main\` 直接部署到公開的 GitHub Pages,而那是一個會給出投資部位"
+            echo "建議的工具。「所有必要檢查通過」是合併的**必要**條件,不是授權。"
+            echo "合併前請確認 L2 在這個分支上是綠的(黃金基準 440 個月、\`1e-9\`)。"
+          } > pr_body.md
+
+          gh pr create --title "chore(deps): 更新 L2 鎖定檔到最新全綠組合" \
+            --body-file pr_body.md --base main --head "$branch" \
+            || gh pr edit "$branch" --body-file pr_body.md
+
+      - name: 摘要
+        if: always()
+        run: |
+          {
+            echo "## 依賴 canary"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| 解析最新版 | ${{ steps.resolve.outcome }} |"
+            echo "| 完整檢查 | ${{ steps.tests.outcome || 'skipped' }} |"
+            echo "| 鎖定檔有變化 | ${{ steps.relock.outputs.changed || 'n/a' }} |"
+            echo ""
+            echo "⚠ 這一層失敗**不代表**線上或每日健檢有問題 —— "
+            echo "正式環境跑的是凍結的鎖定組合。"
+          } >> "$GITHUB_STEP_SUMMARY"
