@@ -921,3 +921,198 @@ def test_the_leak_scan_catches_the_bug_it_was_written_for(tmp_path: Path) -> Non
     assert not leaks2, (
         f"`except: return` 的提早離開寫法被誤報了:{leaks2} —— "
         "假警報會讓這條掃描被放寬,放寬之後它就再也抓不到真的違規")
+
+
+# --------------------------------------------------------------------------
+# 每日健檢停掉的那段日子,不可以算成「沒有失敗」(2026-10-20)
+#
+# `section_data_health()` 原本把統計窗口錨在 **log 自己的最後一筆**上
+# (`cutoff = log["date"].max() - 365 天`)。於是一份在 200 天前就停住的軌跡,
+# 會被當成「它自己的那一年」來統計。
+#
+# `實測`(造一份 60 天全綠、最後一筆在 200 天前的軌跡):
+#
+#     - 紀錄區間:2026-02-02 .. 2026-04-02(60 天 · 共 60 次執行)
+#     - 全綠天數:**60/60**(100.0%)
+#     - 過去一年沒有任何失敗紀錄
+#
+# 每日健檢已經死了 200 天,而這一節報 **100.0%**、「過去一年沒有任何失敗」。
+#
+# 為什麼這是整個系統最貴的一條:整套安全模型是「沒消息就是好消息」——
+# 每日健檢停掉時**不會有 Issue、不會有通知、什麼都不會發生**。
+# 年度健檢是一年一次、人真的會去看「監控自己還活著嗎」的唯一場合,
+# 而它把「沒有紀錄」渲染成了「全綠」。
+#
+# 這就是本專案反覆踩的那條線的最貴一次:
+# **「沒得判斷」和「也壞了」在報告上必須長得不一樣**,而這裡還多一種
+# 「根本沒有人來報到」—— 它被默默排除在分母之外。
+# --------------------------------------------------------------------------
+
+def _trail(tmp_path: Path, *, ends_days_ago: int, n_days: int,
+           ok: int = 1, name: str = "t.csv") -> Path:
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone.utc).date()
+    last = today - timedelta(days=ends_days_ago)
+    rows = ["date,ok,n_checks,failed"]
+    for i in range(n_days):
+        d = last - timedelta(days=n_days - 1 - i)
+        rows.append(f"{d},{ok},17," + ("" if ok else "資料新鮮度 · vix"))
+    p = tmp_path / name
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return p
+
+
+def test_a_trail_that_stopped_is_not_reported_as_all_green(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """每日健檢停了 200 天 → 這一節必須講出來,而不是報 100%。"""
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=200, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert "200 天" in body, f"沒有講軌跡已經多久沒有新紀錄:\n{body}"
+    assert "⚠" in body, f"軌跡停了 200 天卻沒有任何警告:\n{body}"
+    assert "過去一年沒有任何失敗紀錄" not in body, (
+        "軌跡停掉時仍然宣稱「過去一年沒有任何失敗紀錄」—— "
+        f"那是把『沒有人來報到』說成『沒有壞』:\n{body}"
+    )
+
+
+def test_the_window_is_anchored_on_today_not_on_the_last_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """統計窗口的終點是今天,不是軌跡自己的最後一筆。
+
+    錨在 log 自己的 max 上,等於讓一份停掉的軌跡自己定義「過去一年」——
+    停得越久,它看起來越乾淨。
+    """
+    import annual_review
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=200, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert str(today) in body, f"窗口沒有錨在今天({today}):\n{body}"
+    assert str(today - timedelta(days=365)) in body, \
+        f"沒有講窗口的起點:\n{body}"
+
+
+def test_days_with_no_record_are_their_own_category(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """「窗口內有幾天」和「有紀錄的有幾天」必須是兩個數字。
+
+    只印後者,等於把沒有人來報到的日子從分母裡拿掉 ——
+    而那是整個系統唯一會無聲發生的故障。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=200, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert "60/365" in body or "60 / 365" in body, \
+        f"沒有把「窗口內有紀錄的天數」對著 365 講清楚:\n{body}"
+    assert "**60/60**" in body, \
+        f"全綠比率的分母應該仍然是有紀錄的那 60 天(並標明):\n{body}"
+
+
+def test_a_fresh_trail_does_not_raise_the_stale_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """控制組:軌跡是新的就不准有警告。
+
+    少了這一條,「永遠印警告」會是讓上面三條全部變綠的最省事寫法 ——
+    而一個永遠亮著的警告等於沒有警告。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=0, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert "⚠" not in body, f"軌跡是新的卻跳警告:\n{body}"
+    assert "**60/60**" in body, body
+
+
+def test_the_stale_warning_names_the_real_cause(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """警告要說出它真正代表什麼 —— 不是資料源壞了,是健檢沒跑或沒推上去。
+
+    這兩件事要做的處置完全不同,而使用者一年只讀這份報告一次。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=30, n_days=10))
+    body = annual_review.section_data_health().body
+
+    assert "沒有在跑" in body or "沒有推" in body, \
+        f"警告沒有講出原因(健檢沒跑 / 沒推上 ops-data):\n{body}"
+
+
+def test_records_older_than_the_window_are_excluded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """超過 365 天的舊紀錄不計入 —— 窗口的起點是今天往回 365 天。
+
+    ⚠ 這一條是補上來的。上面那幾條**抓不到**「窗口錨回 log 自己的最後一筆」:
+    突變 M72 把 `recent` 改回舊寫法,35 條測試全綠。原因是那幾條用的軌跡
+    都短到完全落在兩種窗口裡,兩種算法給出同一批列。
+    要分辨兩者,軌跡必須**跨過窗口邊界**。
+
+    這正是本專案記過的那件事的又一次:測試要讓兩個候選實作給出**不同**的
+    答案,否則它量的不是那個差異。
+    """
+    import annual_review
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    win_start = today - timedelta(days=annual_review.WINDOW_DAYS)
+
+    # 300 天連續紀錄,結束在 200 天前 —— 起點落在窗口之外
+    days = [today - timedelta(days=200 + i) for i in range(300)]
+    inside = [d for d in days if d >= win_start]
+    assert 0 < len(inside) < len(days), \
+        f"前置條件壞了:軌跡沒有跨過窗口邊界({len(inside)}/{len(days)})"
+
+    p = tmp_path / "spanning.csv"
+    p.write_text("date,ok,n_checks,failed\n"
+                 + "".join(f"{d},1,17,\n" for d in sorted(days)),
+                 encoding="utf-8")
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", p)
+    body = annual_review.section_data_health().body
+
+    assert f"**{len(inside)}/{annual_review.WINDOW_DAYS}**" in body, (
+        f"窗口外的 {len(days) - len(inside)} 天被算進來了 —— "
+        f"應該是 {len(inside)}/{annual_review.WINDOW_DAYS}:\n{body}"
+    )
+    assert f"**{len(inside)}/{len(inside)}**" in body, \
+        f"全綠天數的分母不是窗口內的天數:\n{body}"
+    assert str(min(inside)) in body, \
+        f"「有紀錄的日子」的起點不是窗口內的第一天:\n{body}"
+
+
+def test_a_trail_entirely_older_than_the_window_has_nothing_to_judge(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """整份軌跡都在 365 天之外 → 「沒得判讀」,不是「沒有失敗」。
+
+    這條路徑在舊的寫法裡**不可能發生**(窗口跟著 log 自己走,永遠至少
+    涵蓋最後一天),所以它是新加的分支 —— 新分支要有自己的測試,
+    否則它就是一段沒有人走過的程式碼。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=400, n_days=30))
+    body = annual_review.section_data_health().body
+
+    assert "一筆紀錄都沒有" in body, f"\n{body}"
+    assert "沒得判讀" in body, f"\n{body}"
+    assert "%" not in body, f"沒有紀錄卻還印出了比率:\n{body}"
