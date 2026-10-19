@@ -81,7 +81,7 @@ def failed_names(results) -> list[str]:
 
 
 def test_stale_data_is_detected(sandbox: Path, cfg: dict) -> None:
-    days = _trading_days(date.today() - timedelta(days=400), 60)
+    days = _trading_days(hc.today_utc() - timedelta(days=400), 60)
     write_sp(sandbox, days)
     write_vix(sandbox, days)
     (sandbox / fetch_data.SOURCES["shiller"].filename).write_text(
@@ -95,12 +95,12 @@ def test_stale_data_is_detected(sandbox: Path, cfg: dict) -> None:
 
 def test_fresh_data_is_not_flagged(sandbox: Path, cfg: dict) -> None:
     """對照組 —— 少了這條,上面那條可能只是「什麼都報 FAIL」。"""
-    days = _trading_days(date.today() - timedelta(days=90), 60)
+    days = _trading_days(hc.today_utc() - timedelta(days=90), 60)
     write_sp(sandbox, days)
     write_vix(sandbox, days)
     (sandbox / fetch_data.SOURCES["shiller"].filename).write_text(
         f"Date,SP500,Dividend,Long Interest Rate\n"
-        f"{date.today().isoformat()},3000,50,2.5\n",
+        f"{hc.today_utc().isoformat()},3000,50,2.5\n",
         encoding="utf-8", newline="\n")
 
     st = statuses(hc.check_freshness(cfg))
@@ -334,7 +334,7 @@ def truncated_sp(sandbox: Path, monkeypatch):
     「沒壞的來源不該連坐」那條對照組就失去判別力。第一版就是這樣寫壞的。
     """
     # 8200 個交易日 ≈ 32 年,夠過 min_rows 的 8000 下限
-    vix_days = _trading_days(date.today() - timedelta(days=365 * 33), 8200)
+    vix_days = _trading_days(hc.today_utc() - timedelta(days=365 * 33), 8200)
     real_vix = "DATE,OPEN,HIGH,LOW,CLOSE\n" + "".join(
         f"{d.isoformat()},20,22,20,20\n" for d in vix_days)
     shiller = "Date,SP500,Dividend,Long Interest Rate\n" + "".join(
@@ -422,7 +422,7 @@ def test_check_order_is_load_bearing(sandbox: Path, cfg: dict, monkeypatch) -> N
     一開始是空的。這條依賴在本機完全看不出來(本機 raw 檔一直在)——
     有人重排 run_all() 的話,本機測試照樣全綠,線上會爆一整排「檔案不存在」。
     """
-    days = _trading_days(date.today() - timedelta(days=400), 260)
+    days = _trading_days(hc.today_utc() - timedelta(days=400), 260)
 
     def fake_fetch(name: str) -> str:
         if name == "sp_daily":
@@ -590,7 +590,7 @@ def source_dead_but_local_data_exists(sandbox: Path, monkeypatch, cfg: dict):
     就是 31.4 年,序列本來就結束在 2025 年,那個砍掉完全沒有作用,
     實際測到的是「566 天前」。數字對不上就代表 fixture 在說謊。
     """
-    last = date.today() - timedelta(days=30)
+    last = hc.today_utc() - timedelta(days=30)
     # 8200 個交易日往回推約 11480 個日曆天,讓序列結束在 last
     start = last - timedelta(days=11600)
     days = [d for d in _trading_days(start, 8600) if d <= last]
@@ -624,7 +624,7 @@ def test_stale_local_data_is_still_judged_when_the_source_is_down(
     )
     # 天數由 fixture 實際寫出的日期算,不寫死 —— today-30 可能落在週末,
     # 最後一個交易日因此是 31 天前。寫死數字只會讓測試在某些日子紅。
-    expected_age = (date.today() - source_dead_but_local_data_exists).days
+    expected_age = (hc.today_utc() - source_dead_but_local_data_exists).days
     assert f"已 {expected_age} 天" in vix.detail, f"天數算錯了:{vix.detail!r}"
     assert "最後一份好資料" in vix.detail, (
         f"沒講明評估的是舊資料,使用者會以為這是剛抓到的:{vix.detail!r}"

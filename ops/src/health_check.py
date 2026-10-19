@@ -42,6 +42,25 @@ UA = {"User-Agent": "cash-gauge-ops/1.0 health-check"}
 
 OK, FAIL, SKIP = "OK", "FAIL", "SKIP"
 
+
+def today_utc() -> date:
+    """整份健檢裡「今天」的唯一來源。
+
+    ⚠ 不要用 `date.today()`。那是**執行這段程式的機器的本地日期**,而這個
+    repo 其他每一個時間戳都是 UTC:心跳 commit、Issue 內文的 `at=` 標記、
+    報告檔名、workflow 的排程。在 UTC+8 的開發機上,本地午夜到早上八點
+    之間兩者差一整天。
+
+    這個差會這樣現形:**CI(UTC)永遠綠,開發機每天紅八小時**,
+    而那看起來像「測試不穩」——最容易被當成雜訊關掉的那種紅燈。
+    2026-10-20 `check_published_mirror`(用 `date.today()`)就是這樣跟
+    `check_freshness`(用 UTC)分岔的,由 test_health_check.py 那條
+    算天數的測試在本地凌晨跑出來才看見。
+
+    與 `markets.ok` 門檻分岔同一個形狀:**同一個判斷不能有兩個來源**。
+    """
+    return datetime.now(timezone.utc).date()
+
 # 從外部回應擷取片段時允許的字元。刻意極保守。
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9 ,.:;/_@=<>()\[\]{}\"'?!+*%-]")
 
@@ -192,7 +211,7 @@ def check_freshness(cfg: dict, unavailable: set[str] | None = None) -> list[Resu
     """
     out: list[Result] = []
     unavailable = unavailable or set()
-    today = datetime.now(timezone.utc).date()
+    today = today_utc()
     for name, spec in cfg["freshness"].items():
         if not fetch_data.has_local(name):
             # 刻意不帶 source:那個欄位的語意是「這是可達性檢查的結果」,
@@ -544,6 +563,20 @@ def check_published_mirror(cfg: dict) -> list[Result]:
     """
     mcfg = cfg["pwa"]["mirror"]
     out: list[Result] = []
+    today = today_utc()
+
+    # ⚠ 兩條腿的區域變數**刻意不共用名字**(sp_* / vix_*)。
+    #    2026-10-20 之前兩段都叫 `months` / `last` / `age`,而 `age` 只在 S&P
+    #    那一段被指派 —— Python 的區域變數是函式範圍的,所以 VIX 那段比的是
+    #    S&P 的年齡。實測三種後果:VIX 停 300 天報 OK(detail 寫「最後
+    #    2025-12-24(1 天前)」,日期和天數自己對不起來);S&P 提早分支時
+    #    VIX 報「讀取失敗:cannot access local variable 'age'」;S&P 過期時
+    #    把正常的 VIX 拖成假警報。既藏真故障,也造假故障。
+    #
+    #    既有測試看不見它,因為每一條年齡測試都把兩份鏡像一起搬到同一天,
+    #    洩漏來的值剛好等於正確值。同檔案在 404 那條早就寫了「兩項必須獨立
+    #    判斷」,年齡這條沒有人套用。名字分開之後,接錯會是 NameError 而不是
+    #    一個看起來合理的錯數字。
 
     # --- S&P 月序列 ---
     try:
@@ -553,28 +586,29 @@ def check_published_mirror(cfg: dict) -> list[Result]:
                               f"HTTP {r.status_code} —— PWA 會退到代理鏈/月頻"))
         else:
             payload = r.json()
-            months = len(payload.get("chart", {}).get("result", [{}])[0]
-                         .get("timestamp", []) or [])
-            last = _mirror_last_day(payload)
-            if months < mcfg["min_sp_months"]:
+            sp_months = len(payload.get("chart", {}).get("result", [{}])[0]
+                            .get("timestamp", []) or [])
+            sp_last = _mirror_last_day(payload)
+            if sp_months < mcfg["min_sp_months"]:
                 out.append(Result(
                     "PWA 資料鏡像 · S&P", FAIL,
-                    f"只有 {months} 個月,低於下限 {mcfg['min_sp_months']} —— "
+                    f"只有 {sp_months} 個月,低於下限 {mcfg['min_sp_months']} —— "
                     f"PWA 的 spFromYahoo 會丟掉它並退到下一層"))
-            elif last is None:
+            elif sp_last is None:
                 out.append(Result("PWA 資料鏡像 · S&P", FAIL,
                                   "格式不符:取不到 chart.result[0].timestamp"))
             else:
-                age = _days_between(last, date.today())
-                if age > mcfg["max_age_days"]:
+                sp_age = _days_between(sp_last, today)
+                if sp_age > mcfg["max_age_days"]:
                     out.append(Result(
                         "PWA 資料鏡像 · S&P", FAIL,
-                        f"最後一筆 {last},已 {age} 天"
+                        f"最後一筆 {sp_last},已 {sp_age} 天"
                         f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了,"
                         f"使用者看到的是舊資料"))
                 else:
-                    out.append(Result("PWA 資料鏡像 · S&P", OK,
-                                      f"{months} 個月,最後 {last}({age} 天前)"))
+                    out.append(Result(
+                        "PWA 資料鏡像 · S&P", OK,
+                        f"{sp_months} 個月,最後 {sp_last}({sp_age} 天前)"))
     except Exception as exc:  # noqa: BLE001
         out.append(Result("PWA 資料鏡像 · S&P", FAIL, f"讀取失敗:{exc}"))
 
@@ -594,8 +628,8 @@ def check_published_mirror(cfg: dict) -> list[Result]:
                     f"缺欄位 {missing} —— buildVixMonthly 讀不到,"
                     f"VIX 腿會整個消失"))
             else:
-                months = df["DATE"].astype(str).str.slice(0, 7).nunique()
-                last = str(df["DATE"].iloc[-1]) if len(df) else ""
+                vix_months = df["DATE"].astype(str).str.slice(0, 7).nunique()
+                vix_last = str(df["DATE"].iloc[-1]) if len(df) else ""
                 # ⚠ 先確認最後一筆【真的是一個日期】。
                 #    `_days_between` 對解析不出來的輸入回 0(那是為了通知路徑
                 #    設計的),所以一份 DATE 欄全是垃圾、但剛好有 132 個不同
@@ -604,25 +638,27 @@ def check_published_mirror(cfg: dict) -> list[Result]:
                 #    S&P 那一邊靠 `_mirror_last_day()` 回 None 已經擋住了,
                 #    這一邊少了對應的那一道。(與 CLAUDE.md 的推論同一個形狀:
                 #    「失敗時回安全值」在量測路徑上是陷阱。)
-                if _as_date(last) is None:
+                if _as_date(vix_last) is None:
                     out.append(Result(
                         "PWA 資料鏡像 · VIX", FAIL,
-                        f"最後一筆的 DATE 不是日期({last!r})—— "
+                        f"最後一筆的 DATE 不是日期({vix_last!r})—— "
                         f"檔案格式壞了,buildVixMonthly 會算出空的 VIX 腿"))
-                elif months < mcfg["min_vix_months"]:
+                elif vix_months < mcfg["min_vix_months"]:
                     out.append(Result(
                         "PWA 資料鏡像 · VIX", FAIL,
-                        f"只有 {months} 個月,低於下限 {mcfg['min_vix_months']}"
+                        f"只有 {vix_months} 個月,低於下限 {mcfg['min_vix_months']}"
                         f"(圖要 96 個月 + 滾動 z 分數要 36 個月)—— 歷史圖會自己變短"))
-                elif age > mcfg["max_age_days"]:
-                    out.append(Result(
-                        "PWA 資料鏡像 · VIX", FAIL,
-                        f"最後一筆 {last},已 {age} 天"
-                        f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了"))
                 else:
-                    out.append(Result("PWA 資料鏡像 · VIX", OK,
-                                      f"{len(df)} 列 / {months} 個月,"
-                                      f"最後 {last}({age} 天前)"))
+                    vix_age = _days_between(vix_last, today)
+                    if vix_age > mcfg["max_age_days"]:
+                        out.append(Result(
+                            "PWA 資料鏡像 · VIX", FAIL,
+                            f"最後一筆 {vix_last},已 {vix_age} 天"
+                            f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了"))
+                    else:
+                        out.append(Result("PWA 資料鏡像 · VIX", OK,
+                                          f"{len(df)} 列 / {vix_months} 個月,"
+                                          f"最後 {vix_last}({vix_age} 天前)"))
     except Exception as exc:  # noqa: BLE001
         out.append(Result("PWA 資料鏡像 · VIX", FAIL, f"讀取失敗:{exc}"))
 

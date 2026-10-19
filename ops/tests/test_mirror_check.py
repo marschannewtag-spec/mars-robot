@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -96,7 +97,7 @@ def _run(monkeypatch, cfg: dict, *, sp: _Resp, vix: _Resp) -> dict[str, hc.Resul
 
 
 def _fresh() -> date:
-    return date.today() - timedelta(days=1)
+    return hc.today_utc() - timedelta(days=1)
 
 
 def _ok_pair(cfg: dict) -> tuple[_Resp, _Resp]:
@@ -153,7 +154,7 @@ def test_a_stale_mirror_is_caught(cfg: dict, monkeypatch) -> None:
     這是「publish 成功但心跳沒推上去」唯一會留下的痕跡:本機剛算出的資料
     很新,而使用者讀到的那一份沒動。兩者分開量才抓得到。
     """
-    old = date.today() - timedelta(days=cfg["pwa"]["mirror"]["max_age_days"] + 3)
+    old = hc.today_utc() - timedelta(days=cfg["pwa"]["mirror"]["max_age_days"] + 3)
     res = _run(monkeypatch, cfg,
                sp=_Resp(200, json.dumps(_sp_payload(old))),
                vix=_Resp(200, _vix_csv(old)))
@@ -168,14 +169,14 @@ def test_the_age_boundary_is_inclusive_of_the_limit(cfg: dict, monkeypatch) -> N
     邊界寫錯一天的方向,等於每個週末都紅一次。
     """
     limit = cfg["pwa"]["mirror"]["max_age_days"]
-    on_limit = date.today() - timedelta(days=limit)
+    on_limit = hc.today_utc() - timedelta(days=limit)
     res = _run(monkeypatch, cfg,
                sp=_Resp(200, json.dumps(_sp_payload(on_limit))),
                vix=_Resp(200, _vix_csv(on_limit)))
     assert all(not r.failed for r in res.values()), \
         {k: v.detail for k, v in res.items()}
 
-    over = date.today() - timedelta(days=limit + 1)
+    over = hc.today_utc() - timedelta(days=limit + 1)
     res = _run(monkeypatch, cfg,
                sp=_Resp(200, json.dumps(_sp_payload(over))),
                vix=_Resp(200, _vix_csv(over)))
@@ -396,3 +397,139 @@ def test_a_persistent_5xx_is_reported_with_its_status_code(
     r = res["PWA 資料鏡像 · VIX"]
     assert r.status == hc.FAIL and "503" in r.detail, r.detail
     assert calls["vix"] == 3
+
+
+# --------------------------------------------------------------------------
+# 兩條腿的年齡必須各量各的(2026-10-20)
+#
+# `check_published_mirror` 原本只在 **S&P** 那一段指派 `age`,而 VIX 那一段
+# 直接拿它來比。Python 的區域變數是函式範圍的,所以那個值會漏過去:
+#
+#   實測 A  S&P 新、VIX 停在 300 天前  → VIX 報 **OK**,detail 寫
+#           「最後 2025-12-24(1 天前)」—— 日期和天數自己對不起來
+#   實測 B  S&P HTTP 500(提早分支,`age` 從未被指派)、VIX 正常
+#           → VIX 報「讀取失敗:cannot access local variable 'age'」
+#   實測 C  S&P 停在 300 天前、VIX 新 → VIX 報 FAIL「最後 2026-10-19,已 300 天」
+#
+# 也就是說這個洩漏**兩個方向都會錯**:既藏掉真的過期,也造出假的過期。
+# 而 VIX 腿的「過期」正是這整個檔案要抓的那件事(publish 成功但 push 失敗)。
+#
+# 為什麼既有測試看不見它:上面每一條年齡測試都把**兩份鏡像一起**搬到同一天,
+# 於是洩漏來的值剛好等於正確值。同一個檔案在 404 那條已經寫了
+# 「兩項必須獨立判斷」,年齡這條卻沒有人套用。
+#
+# 底下的 `_assert_self_consistent` 是比「VIX 要獨立」更強的釘子:
+# **只要一行 detail 同時印出日期和天數,兩者就必須對得上。**
+# 任何未來的重構把某個中間值接錯,都會在這裡停下來。
+# --------------------------------------------------------------------------
+
+_LAST_RE = re.compile(r"最後(?:一筆)?\s*(\d{4}-\d{2}-\d{2})")
+
+
+def _stated(detail: str) -> tuple[date, int]:
+    """從 detail 讀出它自己宣稱的「最後一筆日期」與「幾天」。"""
+    m = _LAST_RE.search(detail)
+    assert m, f"detail 沒有講最後一筆是哪天:{detail!r}"
+    rest = detail[m.end():]
+    a = (re.search(r"已\s*(\d+)\s*天", rest)
+         or re.search(r"[((]\s*(\d+)\s*天前", rest))
+    assert a, f"detail 沒有講幾天:{detail!r}"
+    return date.fromisoformat(m.group(1)), int(a.group(1))
+
+
+def _assert_self_consistent(r: hc.Result) -> None:
+    """一行 detail 裡的日期和天數必須是同一份資料算出來的。"""
+    last, age = _stated(r.detail)
+    want = (hc.today_utc() - last).days
+    assert age == want, (
+        f"{r.name} 的 detail 自相矛盾:說最後一筆是 {last},卻說已 {age} 天"
+        f"(對 UTC 今天 {hc.today_utc()} 應該是 {want} 天)—— {r.detail!r}"
+    )
+
+
+def test_a_stale_vix_mirror_is_caught_even_when_sp_is_fresh(
+    cfg: dict, monkeypatch
+) -> None:
+    """VIX 停更、S&P 正常 → VIX 必須 FAIL。
+
+    這是 VIX 腿「publish 成功但 push 失敗」的唯一痕跡。原本它拿的是 S&P 的
+    年齡,所以 S&P 一天沒停,VIX 停多久都是綠的。
+    """
+    stale = hc.today_utc() - timedelta(days=300)
+    res = _run(monkeypatch, cfg,
+               sp=_Resp(200, json.dumps(_sp_payload(_fresh()))),
+               vix=_Resp(200, _vix_csv(stale)))
+    assert res["PWA 資料鏡像 · S&P"].status == hc.OK, res["PWA 資料鏡像 · S&P"].detail
+    vix = res["PWA 資料鏡像 · VIX"]
+    assert vix.failed, f"VIX 停了 300 天卻是 {vix.status}:{vix.detail!r}"
+    _assert_self_consistent(vix)
+
+
+def test_a_stale_sp_mirror_does_not_make_a_fresh_vix_look_stale(
+    cfg: dict, monkeypatch
+) -> None:
+    """反向:S&P 停更不能把正常的 VIX 拖成假警報。
+
+    假警報和漏報一樣貴 —— 這份專案的通知規則是「只有壞掉才通知」,
+    一則內容自相矛盾的通知會直接侵蝕那條規則。
+    """
+    stale = hc.today_utc() - timedelta(days=300)
+    res = _run(monkeypatch, cfg,
+               sp=_Resp(200, json.dumps(_sp_payload(stale))),
+               vix=_Resp(200, _vix_csv(_fresh())))
+    assert res["PWA 資料鏡像 · S&P"].failed
+    vix = res["PWA 資料鏡像 · VIX"]
+    assert vix.status == hc.OK, f"VIX 是新的卻被報成 {vix.status}:{vix.detail!r}"
+    _assert_self_consistent(vix)
+
+
+def test_a_broken_sp_leg_does_not_corrupt_the_vix_verdict(
+    cfg: dict, monkeypatch
+) -> None:
+    """S&P 走提早分支時,VIX 仍然要報出它自己的真實狀態。
+
+    原本 S&P 任何一條提早分支都會讓 `age` 從未被指派,於是 VIX 報
+    「讀取失敗:cannot access local variable 'age'」—— 一個 Python 內部錯誤
+    被當成鏡像的健康狀態印給使用者看。
+    """
+    _, vix_ok = _ok_pair(cfg)
+    broken_sp = [
+        _Resp(404, "Not Found"),
+        _Resp(500, "boom"),
+        _Resp(200, json.dumps(_sp_payload(_fresh(), months=3))),
+        _Resp(200, '{"chart":{"result":[{}]}}'),
+        _Resp(200, "not json at all"),
+    ]
+    for sp in broken_sp:
+        res = _run(monkeypatch, cfg, sp=sp, vix=vix_ok)
+        r = res["PWA 資料鏡像 · VIX"]
+        assert r.status == hc.OK, \
+            f"S&P 壞掉({sp.status_code})把 VIX 的判斷弄壞了:{r.detail!r}"
+        assert "age" not in r.detail, f"內部變數名漏進報告:{r.detail!r}"
+        _assert_self_consistent(r)
+
+
+def test_every_age_line_agrees_with_its_own_date(cfg: dict, monkeypatch) -> None:
+    """掃描式安全網:四種年齡組合下,兩條腿的 detail 都必須自洽。
+
+    ⚠ 這條測試自己有一個「真的掃到東西」的守衛 —— 少了它,未來若文案改成
+    不再印日期,`_stated` 的 assert 會變成唯一的失敗點,而把它放寬掉
+    (例如改成「找不到就跳過」)會讓整條測試無聲地變成空轉。
+    """
+    fresh, old = _fresh(), hc.today_utc() - timedelta(days=300)
+    checked = 0
+    for sp_day, vix_day in ((fresh, fresh), (fresh, old), (old, fresh), (old, old)):
+        res = _run(monkeypatch, cfg,
+                   sp=_Resp(200, json.dumps(_sp_payload(sp_day))),
+                   vix=_Resp(200, _vix_csv(vix_day)))
+        for want_day, name in ((sp_day, "PWA 資料鏡像 · S&P"),
+                               (vix_day, "PWA 資料鏡像 · VIX")):
+            r = res[name]
+            _assert_self_consistent(r)
+            last, _ = _stated(r.detail)
+            assert last == want_day, \
+                f"{name} 報出來的日期不是它自己那份鏡像的:{last} != {want_day}"
+            assert r.failed is (want_day == old), \
+                f"{name} 在 {want_day} 的判定是 {r.status}:{r.detail!r}"
+            checked += 1
+    assert checked == 8, f"掃描只跑到 {checked} 項,應該是 8 項"

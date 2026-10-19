@@ -669,3 +669,86 @@ def test_the_running_environment_matches_requirements() -> None:
         + "\n\n本機綠而 CI 紅(或兩邊測的根本不是同一件事)就是從這裡開始的。"
         + "\n修法:pip install -r ops/requirements.txt -r ops/requirements-test.txt"
     )
+
+
+# --------------------------------------------------------------------------
+# 全 repo 只能有一個「今天」(2026-10-20)
+#
+# `date.today()` 是**執行機器的本地日期**。這個 repo 其他每一個時間戳都是
+# UTC:心跳 commit、Issue 內文的 `at=` 標記、報告檔名、workflow 排程。
+# 在 UTC+8 的機器上,本地午夜到早上八點之間兩者差一整天。
+#
+# 這個差的現形方式最難處理:**CI(UTC)永遠綠,開發機每天紅八小時**,
+# 看起來像「測試不穩」—— 最容易被當成雜訊關掉的那種紅燈。
+# 2026-10-20 `check_published_mirror` 就是這樣跟 `check_freshness` 分岔的,
+# 在本地凌晨跑整組測試才看見。
+#
+# 與 `markets.ok` 門檻分岔同一個形狀:同一個判斷不能有兩個來源。
+# --------------------------------------------------------------------------
+
+def _code_only(path: Path) -> str:
+    """把一份 .py 的註解與字串字面值拿掉,只留真正會執行的 token。
+
+    ⚠ 一定要剝掉 docstring。`health_check.py` 的說明裡**正好**寫著
+    `date.today()`(在講為什麼不要用它),純 grep 會把那段說明判成違規,
+    於是這條測試第一次寫出來就是紅的 —— 然後最自然的反應是放寬判準,
+    而放寬之後它就再也抓不到真的違規了。
+    """
+    import io
+    import tokenize
+
+    kept: list[str] = []
+    src = path.read_text(encoding="utf-8")
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        kept.append(tok.string)
+    return " ".join(kept)
+
+
+_LOCAL_CLOCK = (
+    ("date.today()", "本地日期 —— 請改用 health_check.today_utc()"),
+    ("datetime.today()", "本地日期 —— 請改用 health_check.today_utc()"),
+    ("datetime.utcnow()", "naive datetime,Python 3.12 起已棄用"),
+)
+
+
+def test_no_production_module_measures_time_against_the_local_clock() -> None:
+    """src/ 裡不得出現本地時鐘。"""
+    files = sorted(SRC.glob("*.py"))
+    assert len(files) >= 5, f"掃描沒有掃到東西,只找到 {files}"
+
+    offenders: list[str] = []
+    for f in files:
+        code = _code_only(f)
+        for needle, why in _LOCAL_CLOCK:
+            if needle.replace("(", " ( ").replace(")", " ) ") in code \
+                    or needle in code.replace(" ", ""):
+                offenders.append(f"{f.name}: {needle} —— {why}")
+
+    assert not offenders, (
+        "這些地方用了執行機器的本地時鐘:\n  " + "\n  ".join(offenders)
+        + "\n\nCI 跑在 UTC,所以本地時鐘的分岔在 CI 上永遠看不見 ——"
+        "\n它只會在 UTC+N 的開發機上每天紅 N 小時,看起來像測試不穩。"
+    )
+
+
+def test_the_utc_helper_is_actually_what_the_checks_use() -> None:
+    """安全網:上面那條是掃描式的,必須證明它掃的東西真的存在且被用著。
+
+    少了這條,把 `today_utc()` 整個刪掉會讓掃描測試**變綠**(沒有違規了),
+    而所有日期判斷同時失效 —— 掃描式測試最典型的空轉方式。
+    """
+    import health_check as hc
+
+    assert callable(getattr(hc, "today_utc", None)), "today_utc() 不見了"
+
+    code = _code_only(SRC / "health_check.py")
+    n = code.replace(" ", "").count("today_utc()")
+    assert n >= 3, (
+        f"health_check.py 只呼叫了 today_utc() {n} 次 —— "
+        "新鮮度、鏡像、以及它自己的定義各算一次,少於 3 就代表有判斷繞過了它"
+    )
+
+    from datetime import datetime, timezone
+    assert hc.today_utc() == datetime.now(timezone.utc).date()
