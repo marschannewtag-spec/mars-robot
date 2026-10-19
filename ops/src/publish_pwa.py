@@ -136,29 +136,59 @@ def vix_payload(vix_daily: pd.DataFrame, years: int = PWA_VIX_YEARS,
     return out.to_csv(index=False, lineterminator="\n")
 
 
+def _publish_sp(out: Path, now: datetime | None) -> dict:
+    sp = sp_monthly_payload(fetch_data.load("sp_daily", refresh_if_missing=False), now)
+    text = json.dumps(sp, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ts = sp["chart"]["result"][0]["timestamp"]
+    if not ts:
+        raise ValueError("sp_daily 聚合後一個月份都沒有")
+    (out / SP_MONTHLY).write_text(text, encoding="utf-8", newline="\n")
+    return {
+        "sp_months": len(ts),
+        "sp_last": datetime.fromtimestamp(ts[-1], timezone.utc).strftime("%Y-%m-%d"),
+        "sp_bytes": len(text.encode("utf-8")),
+    }
+
+
+def _publish_vix(out: Path, now: datetime | None) -> dict:
+    text = vix_payload(fetch_data.load("vix", refresh_if_missing=False), now=now)
+    rows = text.strip().split("\n")
+    if len(rows) < 2:
+        raise ValueError("vix 切窗後一列都不剩")
+    (out / VIX_DAILY).write_text(text, encoding="utf-8", newline="\n")
+    return {
+        "vix_rows": len(rows) - 1,
+        "vix_last": rows[-1].split(",")[0],
+        "vix_bytes": len(text.encode("utf-8")),
+    }
+
+
 def publish(out_dir: Path | None = None, now: datetime | None = None) -> dict:
-    """產生兩個檔案,回傳摘要(給 workflow 的 log 與健檢用)。"""
+    """產生兩個檔案,回傳摘要(給 workflow 的 log 與健檢用)。
+
+    ⚠ 兩個發布物【各自獨立】成功或失敗,不綁在一起。
+
+    原本是一個函式一路寫到底,於是**任何一個來源掛掉都會讓兩份鏡像一起凍結**。
+    在乾淨的 runner 上這很容易發生:`data/raw/*.csv` 不進版控,只有
+    `check_sources_reachable()` 抓成功的那幾個才會落地 —— 所以 VIX 來源
+    掛一天,S&P 的鏡像也跟著停在前一天,即使 S&P 抓得好好的。
+
+    這是「一個故障擴散成兩個」的典型形狀。分開之後,壞掉的那一份沿用
+    分支上的舊版(舊資料好過沒資料),好的那一份照常更新,而「舊版有多舊」
+    由健檢的 `PWA 資料鏡像` 兩項分別報告 —— 它們本來就是分開的兩項。
+    """
     out = out_dir or PWA_DIR
     out.mkdir(parents=True, exist_ok=True)
 
-    sp = sp_monthly_payload(fetch_data.load("sp_daily", refresh_if_missing=False), now)
-    vix = vix_payload(fetch_data.load("vix", refresh_if_missing=False), now=now)
-
-    sp_text = json.dumps(sp, ensure_ascii=False, separators=(",", ":")) + "\n"
-    (out / SP_MONTHLY).write_text(sp_text, encoding="utf-8", newline="\n")
-    (out / VIX_DAILY).write_text(vix, encoding="utf-8", newline="\n")
-
-    ts = sp["chart"]["result"][0]["timestamp"]
-    vix_rows = vix.strip().split("\n")
-    return {
-        "sp_months": len(ts),
-        "sp_last": datetime.fromtimestamp(ts[-1], timezone.utc).strftime("%Y-%m-%d")
-                   if ts else None,
-        "sp_bytes": len(sp_text.encode("utf-8")),
-        "vix_rows": len(vix_rows) - 1,
-        "vix_last": vix_rows[-1].split(",")[0] if len(vix_rows) > 1 else None,
-        "vix_bytes": len(vix.encode("utf-8")),
-    }
+    summary: dict = {}
+    errors: dict[str, str] = {}
+    for name, fn in (("sp", _publish_sp), ("vix", _publish_vix)):
+        try:
+            summary.update(fn(out, now))
+        except Exception as exc:  # noqa: BLE001
+            errors[name] = f"{type(exc).__name__}: {exc}"
+    summary["errors"] = errors
+    return summary
 
 
 def main() -> int:
@@ -169,12 +199,18 @@ def main() -> int:
     try:
         summary = publish(Path(args.out) if args.out else None)
     except Exception as exc:  # noqa: BLE001
-        # 刻意不讓它變成紅燈:這一層失敗時 PWA 會沿用分支上的舊版,
-        # 而「舊版有多舊」由健檢的 `PWA 資料鏡像` 那一項負責報告。
-        print(f"發布失敗:{exc}", file=sys.stderr)
+        print(f"發布整個失敗:{exc}", file=sys.stderr)
         return 1
+
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0
+    errors = summary.get("errors") or {}
+    for name, msg in errors.items():
+        print(f"[warn] {name} 鏡像沒有更新:{msg}", file=sys.stderr)
+    # 只有【兩份都失敗】才回非零。一份成功一份失敗仍然回 0,因為成功的那一份
+    # 真的更新了 —— 把它報成失敗會讓 workflow 的 log 看起來像什麼都沒做。
+    # 真正的「舊版有多舊」由健檢的 `PWA 資料鏡像` 兩項分別報告(讀線上那一份),
+    # 所以這裡的 exit code 只負責描述這一步做了什麼,不負責判斷嚴重程度。
+    return 1 if len(errors) == 2 else 0
 
 
 if __name__ == "__main__":

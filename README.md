@@ -65,16 +65,37 @@ const CACHE = "cwgauge-v5";   // ← 改一次 index.html 就 +1
 
 ## 資料來源(逐層自動退回)
 
-**VIX**(固定):GitHub `datasets/finance-vix` 的 `vix-daily.csv`。
+瀏覽器抓不到 Yahoo / CBOE —— 它們不送 `Access-Control-Allow-Origin` 標頭。
+2026-10 之前的解法是串免費 CORS 代理,而那些代理**已經全數失效**。
 
-**S&P 趨勢腿**,由新鮮到穩定:
+**現在的解法:這個 repo 自己發布資料。** 每日 workflow 在 server 端抓
+(沒有 CORS 問題),寫成 PWA 現有解析器就讀得懂的格式,推到 `ops-data` 分支:
 
-1. **自有 Cloudflare Worker** — 使用者在 UI 填網址,存 localStorage。最優先、最穩定。回傳 Yahoo chart JSON 格式。
-2. **TwelveData** — 使用者填 API key。盤中即時 SPY。
-3. **Yahoo `^GSPC` 經 CORS 代理**(預設、免金鑰)— 依序試 `query1`/`query2` 兩個主機 × `corsproxy.io`/`allorigins` 兩個代理。
-4. **Shiller 月頻**(保底)— GitHub `datasets/s-and-p-500`,永遠可用,但延遲約一個月。
+```
+ops/data/pwa/sp_monthly.json   Yahoo chart JSON 的子集,每月最後一個交易日
+ops/data/pwa/vix_daily.csv     DATE,HIGH,CLOSE,近 14 年
+```
 
-**逾時保護:** 每個請求單次上限 7–12 秒,第 3 層整段有 12 秒總預算。任何來源掛掉都不會拖住頁面。
+瀏覽器直接讀 `raw.githubusercontent.com` —— 那個網域送 `ACAO: *`。
+**不需要代理、不需要金鑰、不需要自架 Cloudflare Worker。**
+
+**VIX**:CBOE 官方 `VIX_History.csv`(1990 起)→ 鏡像到上面那個 CSV。
+2026-10-19 從 GitHub `datasets/finance-vix` 換過來 —— 那份鏡像自 2026-09-22
+起凍結,但仍回 HTTP 200,所以只有新鮮度看得出來。
+
+**S&P 趨勢腿**,逐層自動退回:
+
+1. **自有 Cloudflare Worker**(選填)— 使用者在 UI 填網址,存 localStorage。回傳 Yahoo chart JSON 格式。
+2. **TwelveData**(選填)— 使用者填 API key。盤中即時 SPY。
+3. **本專案資料鏡像** ← **預設路徑**,也是上面兩層失敗時的退回點。
+4. **Yahoo `^GSPC` 經 CORS 代理** — 2026-10 實測已全死,留著是因為它哪天會回來。
+5. **Shiller 月頻**(保底)— 永遠可用,但那是**月均價**定義,與回測基準不同,畫面會顯示警示列。
+
+每一層失敗都往下掉,**不跳過任何一層**(`ops/tests/test_source_chain.py` 在
+jsdom 裡跑真的那支 `fetchSP`,用假的 fetch 控制每層死活逐一驗證)。
+
+**逾時保護:** 每個請求單次上限 7–12 秒,第 4 層整段有 12 秒總預算。
+實測冷啟動(繞過快取、跨來源):**135ms**。
 
 ### 已知不可用的來源(別再加回來)
 
@@ -123,10 +144,10 @@ python -m http.server 8765
   退回 Shiller 時畫面會出現黃色警示列,不會無聲切換。
 - **這個工具是用報酬換回撤,不是兩者兼得。** 1990–2026 月收盤回測(現金不計息):
   最大回撤 -25.8% vs 買進持有 -52.6%,但年化 7.5% 低於買進持有 9.0%。
-- **「距高點」的回看區間隨資料源而變** — 走每日 Yahoo 只回看約 10 年,退回 Shiller 可回看到 1871。UI 左上角會標示實際區間,別把「距 10 年高點」讀成「距歷史高點」。
+- **「距高點」的回看區間隨資料源而變** — 走本專案鏡像可回看到 1970(鏡像發的是全段歷史),退回 Shiller 可到 1871,走 Yahoo 代理則只有約 10 年。UI 左上角會標示實際區間,別把「距 10 年高點」讀成「距歷史高點」。
 - **現金水位本身不含信用利差** — 純信用事件預警未納入計算。信用面只在下方「早期警訊」面板以 CNN 的垃圾債需求子指標**間接**觀察,而那一層不參與水位計算。(FRED HY-OAS 的管線曾經存在但從未接上出海口,已於 2026-08 移除。)
-- **免費 CORS 代理偶有不穩** — 要長期穩定就自架 Cloudflare Worker(第 1 層)。
-- 本機快取(`localStorage`)存的是完整 CSV 原文,約 550 KB。
+- **免費 CORS 代理已經全死** — 但那不再影響你:趨勢腿的預設路徑是本專案的資料鏡像(第 3 層),代理退到第 4 順位。健檢仍然每天探測它,只是在鏡像正常時不當成異常。
+- 本機快取(`localStorage`)存的是 VIX 原文 + S&P 月序列,**實測 222 KB**(2026-10-19 於線上版量測;改用鏡像之前是約 550 KB)。
 - **僅供研究,非投資建議,盈虧自負。**
 
 ---

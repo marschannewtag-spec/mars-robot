@@ -314,3 +314,78 @@ def test_published_filenames_match_what_the_pwa_requests(index_html: Path):
     vix = re.search(r'const VIX_URL\s*=\s*"([^"]+)"', html).group(1)
     assert sp.endswith("/" + publish_pwa.SP_MONTHLY)
     assert vix.endswith("/" + publish_pwa.VIX_DAILY)
+
+
+# --------------------------------------------------------------------------
+# 5. 一個來源掛掉不可以凍結另一份鏡像
+# --------------------------------------------------------------------------
+
+def test_a_dead_vix_source_does_not_freeze_the_sp_mirror(
+    tmp_path: Path, monkeypatch, sp_daily: pd.DataFrame
+):
+    """VIX 抓不到時,S&P 的鏡像仍然要更新。
+
+    在乾淨的 runner 上這很容易發生:`data/raw/*.csv` 不進版控,只有
+    `check_sources_reachable()` 抓成功的那幾個才會落地。原本兩份鏡像
+    綁在同一個函式裡一路寫到底,於是 **VIX 掛一天,S&P 的鏡像也跟著凍結** ——
+    一個故障擴散成兩個。
+    """
+    def fake_load(name, **kw):
+        if name == "vix":
+            raise FileNotFoundError("data/raw/vix_daily.csv 不存在")
+        return sp_daily
+
+    monkeypatch.setattr(publish_pwa.fetch_data, "load", fake_load)
+    summary = publish_pwa.publish(out_dir=tmp_path)
+
+    assert (tmp_path / publish_pwa.SP_MONTHLY).exists(), "S&P 鏡像不該被 VIX 拖累"
+    assert summary["sp_months"] > 100
+    assert "vix" in summary["errors"] and "sp" not in summary["errors"]
+    assert "FileNotFoundError" in summary["errors"]["vix"]
+
+
+def test_a_failed_artifact_leaves_the_previous_version_untouched(
+    tmp_path: Path, monkeypatch, sp_daily: pd.DataFrame, vix_daily: pd.DataFrame
+):
+    """失敗的那一份必須沿用舊版,不可以被清空或截斷。
+
+    舊資料好過沒資料 —— PWA 會照常算,而「舊版有多舊」由健檢的
+    `PWA 資料鏡像 · VIX` 讀線上那一份去報告。寫出一個空檔或半截檔的話,
+    PWA 會靜靜退到下一層,而健檢的格式檢查才會發現,晚了一天。
+    """
+    monkeypatch.setattr(publish_pwa.fetch_data, "load",
+                        lambda name, **kw: {"sp_daily": sp_daily,
+                                            "vix": vix_daily}[name])
+    publish_pwa.publish(out_dir=tmp_path)
+    before = (tmp_path / publish_pwa.VIX_DAILY).read_text(encoding="utf-8")
+    assert len(before) > 1000
+
+    def fake_load(name, **kw):
+        if name == "vix":
+            raise RuntimeError("來源今天掛了")
+        return sp_daily
+
+    monkeypatch.setattr(publish_pwa.fetch_data, "load", fake_load)
+    summary = publish_pwa.publish(out_dir=tmp_path)
+    after = (tmp_path / publish_pwa.VIX_DAILY).read_text(encoding="utf-8")
+    assert after == before, "失敗的那一份被動到了"
+    assert summary["errors"].keys() == {"vix"}
+
+
+def test_an_empty_aggregation_raises_instead_of_publishing_nothing(
+    tmp_path: Path, monkeypatch
+):
+    """聚合後一筆都沒有 → 當成失敗,不要寫出一個空的鏡像。
+
+    空的 sp_monthly.json 會讓 `spFromYahoo` 丟例外,PWA 靜靜退到下一層;
+    空的 vix_daily.csv 會讓 VIX 腿整個消失。兩者都比「沿用舊版」糟。
+    """
+    empty_sp = pd.DataFrame({"date": [], "close": []})
+    empty_vix = pd.DataFrame({"DATE": [], "HIGH": [], "CLOSE": []})
+    monkeypatch.setattr(publish_pwa.fetch_data, "load",
+                        lambda name, **kw: {"sp_daily": empty_sp,
+                                            "vix": empty_vix}[name])
+    summary = publish_pwa.publish(out_dir=tmp_path)
+    assert summary["errors"].keys() == {"sp", "vix"}
+    assert not (tmp_path / publish_pwa.SP_MONTHLY).exists()
+    assert not (tmp_path / publish_pwa.VIX_DAILY).exists()

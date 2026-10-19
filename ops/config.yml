@@ -97,10 +97,17 @@ accepted:
   # (FRED 那個形狀)。要再加回來的話,proxies 與 index.html 的 PROXIES
   # 兩邊都要加 —— 測試會要求你加兩邊。
   #
-  # ⚠ 現況:corsproxy.io 也已於 2026-08-28 起失效(轉為需 API key,回 HTTP 401),
-  #   所以「PWA 代理鏈」這一項目前是【真的】紅燈,不是誤報。
+  # ⚠ 現況:corsproxy.io 自 2026-08-28 起失效(轉為需 API key,回 HTTP 401)。
   #   不要為了讓它變綠而把 corsproxy.io 加進這份清單 —— 那等於把警報關掉。
-  #   正解是填 config 的 worker_url / PWA 的自架 Worker 欄位。
+  #
+  #   2026-10-19 起這一項不再是紅燈,但【不是因為放寬了它】:
+  #   趨勢腿的第一順位改成本專案自己發布的資料鏡像(見上面的 pwa.mirror
+  #   與 ops/src/publish_pwa.py),代理鏈退到第四順位。
+  #   所以它的嚴重程度改成**取決於鏡像**:
+  #       鏡像好 + 代理全死 -> SKIP(使用者看到的數字完全正確)
+  #       鏡像壞 + 代理全死 -> FAIL(這條仍然會紅,有測試釘住)
+  #   舊的「正解是填 worker_url」已經過時 —— 那要求使用者去部署一支 Worker,
+  #   而這個 repo 自己就能做那件事,現在也真的在做。
   known_dead_proxies: []
 
 # 選填:自架 Cloudflare Worker 端點。留空則跳過該項檢查。

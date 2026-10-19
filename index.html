@@ -455,11 +455,15 @@ function spFromYahoo(json){
   return months.map(k=>({ym:k,price:byMonth[k]}));
 }
 // 取得 S&P 月序列(由新鮮到穩定,逐層自動退回):
-//   有自架 Worker → 每日(使用者明確設定)
-//   有 key       → 即時 SPY/TwelveData(使用者明確設定)
-//   兩者皆無     → 【本專案鏡像】每日、免金鑰、免代理 ← 預設路徑
-//   鏡像也不行   → 每日 Yahoo^GSPC(經 CORS 代理;2026-10 實測代理已全死)
-//   都失敗       → Shiller 月頻(永遠可用,但【月均價】定義,畫面會標示)
+//   1. 自架 Worker          使用者明確設定時才試
+//   2. TwelveData API key   使用者明確設定時才試
+//   3. 【本專案鏡像】       每日、免金鑰、免代理 ← 沒設定任何東西時的預設路徑,
+//                           也是上面兩層【失敗時】的退回點
+//   4. Yahoo^GSPC 經 CORS 代理(2026-10 實測代理已全死,留著是因為它哪天會回來)
+//   5. Shiller 月頻         永遠可用,但是【月均價】定義,畫面會標示警示列
+//
+//   每一層失敗都往下掉,不跳過任何一層 —— 由 tests/test_source_chain.py
+//   逐一驗證(它在 jsdom 裡跑真的那支 fetchSP,用假的 fetch 控制每一層的死活)。
 // 註:曾有的 Stooq 層已移除 — 實測它不送 CORS 標頭,經代理則回傳擋爬蟲的 HTML,永遠失效。
 async function fetchSP(force){
   const key=getKey(), worker=getWorker(), opt=force?{cache:"reload"}:{};
@@ -472,19 +476,6 @@ async function fetchSP(force){
       throw new Error("Worker 資料不足");
     }catch(err){ /* 退到下一層 */ }
   }
-  // 1) 本專案的資料鏡像 —— 免金鑰、免代理的預設路徑。
-  //    每日 workflow 在 server 端抓 Yahoo ^GSPC 全段日K,只發每月最後一個
-  //    交易日(spFromYahoo 做的就是按月取最後一筆,所以結果完全相同,
-  //    而檔案從 421 KB 掉到 19 KB)。推到 ops-data,這裡直接讀。
-  //    排在使用者自己設定的 Worker / API key 之後 —— 那兩個是明確的使用者意圖。
-  if(!worker && !key){
-    try{
-      const j=await fetchT(SP_MIRROR,opt,8000).then(r=>{if(!r.ok)throw 0;return r.json()});
-      const spArr=spFromYahoo(j);
-      if(spArr.length>=13) return {spArr, src:"每日 · 本專案鏡像"};
-      throw new Error("鏡像資料不足");
-    }catch(err){ /* 退到下一層 —— 鏡像壞掉時下面的代理鏈仍然會試 */ }
-  }
   if(key){
     try{
       const u=`https://api.twelvedata.com/time_series?symbol=SPY&interval=1day&outputsize=5000&apikey=${encodeURIComponent(key)}`;
@@ -493,8 +484,27 @@ async function fetchSP(force){
       const spArr=spFromTwelveData(j);
       if(spArr.length<13) throw new Error("歷史太短");
       return {spArr, src:"即時 · SPY/TwelveData"};
-    }catch(err){ /* 退到 Yahoo 代理 */ }
+    }catch(err){ /* 退到資料鏡像 */ }
   }
+  // 2) 本專案的資料鏡像 —— 免金鑰、免代理的預設路徑。
+  //    每日 workflow 在 server 端抓 Yahoo ^GSPC 全段日K,只發每月最後一個
+  //    交易日(spFromYahoo 做的就是按月取最後一筆,所以結果完全相同,
+  //    而檔案從 421 KB 掉到 19 KB)。推到 ops-data,這裡直接讀。
+  //
+  // ⚠ 這一層【不可以】加 `if(!worker && !key)` 的前置條件。
+  //    我第一版就是那樣寫的,想表達「使用者設定的來源優先」——
+  //    但優先順序已經由**順序**表達了,那個條件式只做一件事:
+  //    **把設了 Worker 或 key 的使用者,在那兩者失敗時排除在鏡像之外**,
+  //    讓他們掉到已經全死的代理鏈、再掉到 Shiller 月均價。
+  //    而「API key 過期或額度用盡」是這份程式碼別處就預期得到的情況
+  //    (見 load() 的錯誤訊息)。這正是這個專案一再踩到的形狀:
+  //    一條寫了但走不到的退回路徑。
+  try{
+    const j=await fetchT(SP_MIRROR,opt,8000).then(r=>{if(!r.ok)throw 0;return r.json()});
+    const spArr=spFromYahoo(j);
+    if(spArr.length>=13) return {spArr, src:"每日 · 本專案鏡像"};
+    throw new Error("鏡像資料不足");
+  }catch(err){ /* 退到下一層 —— 鏡像壞掉時下面的代理鏈仍然會試 */ }
   // 免金鑰:Yahoo ^GSPC 經 CORS 代理。兩個主機 × 兩個代理輪流試。
   // 整段有 12 秒總預算,單次最多 7 秒 — 全掛也不會拖過 12 秒就退到 Shiller。
   const deadline=Date.now()+12000;
