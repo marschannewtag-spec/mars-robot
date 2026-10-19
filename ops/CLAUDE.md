@@ -2199,6 +2199,54 @@ known = bool(s) and _as_date(s) is not None
 **與 M91(tooltip 裡「最高」出現兩次)、`$RUNNER_TEMP` 那次同一條:
 判準要對準那個對象,不是對準整段文字裡有沒有出現某個詞。**
 
+### 32 條測試可以無聲消失,而測試集照樣回報成功(2026-10-20)
+
+`實測`:把 `ops/node_modules/jsdom` 改個名字,再跑整組 ——
+
+```
+392 passed, 32 skipped in 26.87s      ← exit 0,CI 綠燈
+```
+
+消失的那 32 條,是**唯一會執行 PWA 真實 JavaScript** 的測試:
+
+| 檔案 | 條數 | 它在驗什麼 |
+|---|---|---|
+| `test_parity.py` | 10 | engine 與 PWA 逐月對帳 —— **整個專案的核心正確性宣稱** |
+| `test_source_chain.py` | 9 | 五層來源退回鏈 |
+| `test_leg_lag.py` | 12 | 兩腿落後的警示列 |
+| `test_publish_pwa.py` | 1 | 發布出去的鏡像與全段日資料等價 |
+
+只要 `setup-node` 或 `npm ci` 從某個 workflow 消失(被刪、被改成
+`continue-on-error`、或 npm 裝失敗卻沒讓步驟紅),**整層 JS 驗證就不存在了,
+而 CI 會顯示 392 passed 的健康綠燈。**
+
+這是「看起來在把關、實際上沒在量任何東西」的最貴一版:被關掉的正好是
+這份專案唯一能回答「使用者螢幕上那個數字對不對」的那一層。
+
+`實測`:目前 `ci.yml` / `dependency-canary.yml` / `daily-health.yml`(autofix)
+三個會跑 pytest 的地方**都有**裝 node —— 沒有正在發作的故障。
+補的兩條測試是要讓它們保持這樣:
+
+1. **靜態**:每個會跑測試的 job 都必須有 `actions/setup-node` 與 `npm ci`,
+   而且 `npm ci` 不得 `continue-on-error`。到處都跑得動,不依賴環境。
+2. **CI 上硬失敗**:`CI=true` 時 node 或 jsdom 不在就是 FAIL,不是 skip。
+   本機允許沒有 node(那是真的可選),但在 CI 上
+   **「沒得判斷」和「通過」不可以長得一樣**。
+
+#### 寫這條掃描又踩了同一個坑
+
+第一版只看步驟的 `run:`,掃到 **2** 個 job 就斷言「至少 3 個」而紅。
+原因:`daily-health.yml` 的 autofix 是把「在 `ops/` 下跑
+`python -m pytest tests/ -q`」寫在給 claude-code-action 的 **prompt 輸入**裡,
+不是 `run:`。那個 job 同樣需要 node,卻整個沒被看見。
+
+判準改成同時看 `run:` 與 step 的 `with:` 值(仍然不看註解、不看整份檔案的
+字串)之後是 3 個。
+
+> **第三次了:判準要對準那個對象。** 太窄會漏掉真的該管的東西(這次),
+> 太寬會把註解和說明算進來(`$RUNNER_TEMP` 那次、M91 那次)。
+> 兩個方向都要用「掃到幾個」這個數字去驗,而不是看它綠不綠。
+
 ### 突變測試結果 —— 資料鏡像那一輪(2026-10-19)
 
 新寫的程式碼一律要問一次「如果我把它改錯,有沒有測試會紅」。
@@ -2316,6 +2364,10 @@ known = bool(s) and _as_date(s) is not None
 | M99 | 舊版兩欄標記當成 observed | `health_check.py` | **抓到** |
 | M100 | 新起點一律算 observed | `health_check.py` | **抓到**(2 條) |
 | M101 | 新起點一律算 assumed(永遠亮著) | `health_check.py` | **抓到**(3 條) |
+| M102 | `ci.yml` 拿掉 `actions/setup-node` | `ci.yml` | **抓到** |
+| M103 | `ci.yml` 拿掉 `npm ci` | `ci.yml` | **抓到** |
+| M104 | canary 的 `npm ci` 改成 `continue-on-error` | `dependency-canary.yml` | **抓到** |
+| M105 | `CI=true` 且 jsdom 不在(模擬 CI 掉了 npm ci) | 環境 | **抓到** |
 
 M29 與 M40 最重要:前者是「空字串替判準做決定」那個洞本身,
 後者會讓安裝失敗退回成「只有一封紅燈信」。
@@ -2539,12 +2591,13 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 (宣告拆分 · 鎖定檔契約 · L1 失敗路徑 · canary 獨立性 · 失敗 shell 的真實執行) /
 設定區文案與退回鏈對帳 / 來源狀態與 dominance 同一個門檻 /
 年度健檢對 ops-data 的兩步真實執行 + 三條 workflow git 用法掃描)
-→ **424**(鏡像兩條腿各自量年齡 + detail 自洽 + 全 repo 單一時鐘
+→ **426**(鏡像兩條腿各自量年齡 + detail 自洽 + 全 repo 單一時鐘
 + 跨區塊變數串台的 AST 掃描 + 健檢軌跡自己的新鮮度與兩個分母
 + **體制訊號的發布狀態** + 通知裡「起點 observed vs assumed」(含來歷欄)
-+ pine tooltip 對帳)。
++ pine tooltip 對帳 + **JS 橋接器不得無聲消失**)。
+其中 1 條(CI 上硬性要求 node)在本機刻意 skip。
 
-10-19/10-20 那幾輪共 101 個突變:**97 個被抓到**,4 個逃掉 ——
+10-19/10-20 那幾輪共 105 個突變:**101 個被抓到**,4 個逃掉 ——
 一個是等價突變(有保存期限,見上),三個是我的測試太弱
 (M72 窗口、M91 判準對準字而非宣稱,均已補強)。
 

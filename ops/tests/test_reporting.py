@@ -1116,3 +1116,112 @@ def test_a_trail_entirely_older_than_the_window_has_nothing_to_judge(
     assert "一筆紀錄都沒有" in body, f"\n{body}"
     assert "沒得判讀" in body, f"\n{body}"
     assert "%" not in body, f"沒有紀錄卻還印出了比率:\n{body}"
+
+
+# --------------------------------------------------------------------------
+# 32 條測試可以無聲消失,而測試集照樣回報成功(2026-10-20)
+#
+# `實測`:把 `ops/node_modules/jsdom` 改個名字再跑整組 ——
+#
+#     392 passed, 32 skipped in 26.87s        ← exit 0,CI 綠燈
+#
+# 消失的那 32 條是**唯一會執行 PWA 真實 JavaScript** 的測試:
+#
+#   test_parity.py        10  engine 與 PWA 逐月對帳 —— 整個專案的核心正確性宣稱
+#   test_source_chain.py   9  五層來源退回鏈
+#   test_leg_lag.py       12  兩腿落後的警示列
+#   test_publish_pwa.py    1  發布出去的鏡像與全段日資料等價
+#
+# 也就是說:只要 `setup-node` 或 `npm ci` 從某個 workflow 裡消失(被刪、
+# 被改成 continue-on-error、或 npm 安裝失敗但沒讓步驟紅),
+# **整層 JS 驗證就不存在了,而 CI 會顯示 392 passed 的健康綠燈。**
+#
+# 這正是本 repo 記過最多次的那個形狀的最貴版本:
+# 一個看起來在把關、實際上沒在量任何東西的閘門。
+#
+# `實測`:目前 ci.yml / dependency-canary.yml / daily-health.yml(autofix)
+# 三個跑 pytest 的地方**都有**裝 node —— 底下兩條測試是要讓它們保持這樣。
+# --------------------------------------------------------------------------
+
+_RUNS_TESTS = ("ci_checks.sh", "python -m pytest", "pytest tests/")
+
+
+def _jobs_that_run_tests() -> dict[str, dict]:
+    """找出「真的會跑 pytest」的 job。
+
+    ⚠ 只看步驟自己的欄位(`run:` 與 `with:` 的值),不是整份 YAML 的字串。
+    對整份檔案做 `in` 判斷會把註解也算進去。
+    (與 pine tooltip 的 M91 同一條:判準要對準那個對象。)
+
+    ⚠ 兩種「會跑測試」都要算到:
+      · `run:` 裡直接跑(ci.yml 的 test、canary)
+      · 在 **step 輸入**裡叫別人跑 —— `daily-health.yml` 的 autofix 把
+        「在 `ops/` 下跑 `python -m pytest tests/ -q`」寫在給
+        claude-code-action 的 prompt 裡。第一版判準只看 `run:`,
+        於是那個 job 整個沒被看見,而它同樣需要 node。
+        `實測`:只看 `run:` 時掃到 2 個 job,加上 step 輸入之後是 3 個。
+    """
+    import yaml as _yaml
+
+    wf_dir = OPS_ROOT.parent / ".github" / "workflows"
+    found: dict[str, dict] = {}
+    for path in sorted(wf_dir.glob("*.yml")):
+        doc = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_name, job in (doc.get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            runs = [str(s.get("run", "")) for s in steps]
+            inputs = [str(v) for s in steps
+                      for v in (s.get("with") or {}).values()]
+            if any(k in text for text in runs + inputs for k in _RUNS_TESTS):
+                found[f"{path.name}:{job_name}"] = {"steps": steps, "runs": runs}
+    return found
+
+
+def test_every_job_that_runs_tests_also_installs_the_javascript_bridge() -> None:
+    """跑 pytest 的 job 都必須裝 node + jsdom,否則那 32 條會無聲跳過。"""
+    jobs = _jobs_that_run_tests()
+    assert len(jobs) >= 3, (
+        f"掃描沒掃到東西,只找到 {sorted(jobs)} —— "
+        "預期至少 ci / canary / autofix 三個 job 會跑測試")
+
+    problems: list[str] = []
+    for where, info in jobs.items():
+        uses = [str(s.get("uses", "")) for s in info["steps"]]
+        if not any(u.startswith("actions/setup-node") for u in uses):
+            problems.append(f"{where}:沒有 actions/setup-node")
+        if not any("npm ci" in r for r in info["runs"]):
+            problems.append(f"{where}:沒有 npm ci")
+        for s in info["steps"]:
+            if "npm ci" in str(s.get("run", "")) and s.get("continue-on-error"):
+                problems.append(f"{where}:npm ci 是 continue-on-error —— "
+                                "裝不起來也不會紅,而後果是 32 條測試靜默跳過")
+
+    assert not problems, (
+        "這些會跑測試的 job 少了 JavaScript 橋接器:\n  "
+        + "\n  ".join(problems)
+        + "\n\n後果:test_parity / test_source_chain / test_leg_lag 共 32 條"
+          "\n(唯一執行 PWA 真實 JS 的那些)會跳過,而測試集回報 392 passed。"
+    )
+
+
+def test_the_javascript_bridge_is_a_hard_requirement_in_ci() -> None:
+    """在 CI 上,node 或 jsdom 不在就是**失敗**,不是跳過。
+
+    本機允許沒有 node —— 那是真的可選(L2 的 Python 部分照樣跑得動)。
+    但在 CI 上「沒得判斷」和「通過」不可以長得一樣:上面那 32 條是
+    PWA 正確性的唯一驗證,少了它們的綠燈是假的。
+
+    ⚠ 這條測試自己在本機會跳過。驗證它真的會在 CI 上紅,
+      要用 `CI=true` 加上把 jsdom 藏起來跑一次(2026-10-20 已實測)。
+    """
+    import shutil
+
+    if os.environ.get("CI", "").lower() not in ("1", "true", "yes"):
+        pytest.skip("本機允許沒有 node —— 這條只在 CI 上硬失敗")
+
+    assert shutil.which("node"), (
+        "CI 上找不到 node —— test_parity / test_source_chain / test_leg_lag "
+        "共 32 條會靜默跳過,而測試集仍然回報成功")
+    assert (OPS_ROOT / "node_modules" / "jsdom").is_dir(), (
+        "CI 上沒有安裝 jsdom(`npm ci --prefix ops`)—— "
+        "同上,32 條 JS 驗證會靜默跳過")
