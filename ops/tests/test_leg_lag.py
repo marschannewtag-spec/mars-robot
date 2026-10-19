@@ -27,24 +27,24 @@ VIX 腿是**領先**腿。它存在的唯一理由是搶在均線跌破之前反
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from conftest import require_js_bridge  # noqa: E402
+
 TESTS_DIR = Path(__file__).resolve().parent
 BRIDGE = TESTS_DIR / "render_bridge.mjs"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None, reason="需要 node 才能執行渲染橋接器"
-)
 
 
 def _run(index_html: Path, scenario: str, now: str | None = None) -> dict:
     """`now` 固定橋接器裡的時鐘。預設 2026-10-14(實測到這組故障的那天)。"""
-    if not (TESTS_DIR.parent / "node_modules" / "jsdom").exists():
-        pytest.skip("尚未 npm install jsdom")
+    require_js_bridge(
+        "兩腿落後的警示列 —— 相對落後(VIX 腿落後趨勢腿)與絕對落後"
+        "(兩腿一起落後日曆)。少了它,『VIX 飆升期間畫面顯示 0%』這條"
+        "實測過的故障就沒有人盯著了。")
     proc = subprocess.run(
         ["node", str(BRIDGE), str(index_html), scenario, *( [now] if now else [] )],
         capture_output=True, text=True, encoding="utf-8", timeout=180,

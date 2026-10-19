@@ -274,3 +274,47 @@ def test_run_all_includes_the_regime_check() -> None:
     body = src.split("def run_all()", 1)[1].split("\ndef ", 1)[0]
     assert "check_published_signals(cfg)" in body, \
         "check_published_signals() 沒有被 run_all() 呼叫"
+
+
+# --------------------------------------------------------------------------
+# 用瀏覽器的尺量,不是用 Python 的(2026-10-20,同日補)
+#
+# `requests.Response.json()` 走的是 Python 的 `json.loads`,而它**預設吃得下**
+# `Infinity` / `-Infinity` / `NaN`。瀏覽器的 `JSON.parse` 會直接拋。
+#
+# `實測`:餵一份 `"margin": Infinity` 的 signals.json 給這個檢查 →
+#
+#     OK | 2026-10-19(0 天前),1 條警訊
+#
+# 而同一份檔案在 PWA 端會讓 `fetchT(...).then(r=>r.json())` 拋,
+# 被 `.catch(()=>{})` 吞掉,**整塊體制層面板消失** —— 正是這個檢查存在的理由。
+#
+# 也就是說:這個檢查用錯的尺在量,而它量錯的正好是它要防的那件事。
+# `fetch_signals.py` 自己有兩道防線(`jsonable()` + `allow_nan=False`),
+# 所以這不是正在發作的故障 —— 但這個檢查讀的是**線上那一份**,
+# 它可能被手改、被舊版寫出、或在傳輸中壞掉。檢查的職責是回答
+# 「瀏覽器此刻拿得到什麼」,那就必須用瀏覽器的判準。
+#
+# 與 test_signals_contract.py 的 `_reject_constant` 同一把尺。
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("token", ["Infinity", "-Infinity", "NaN"])
+def test_a_payload_javascript_cannot_parse_is_a_failure(
+    cfg: dict, monkeypatch, token: str
+) -> None:
+    body = json.dumps(_payload()).replace('"margin": 1.2', f'"margin": {token}')
+    assert token in body, "前置條件:沒有真的把 margin 換成不合法的值"
+    r = _run(monkeypatch, cfg, _Resp(200, body))
+    assert r.failed, (
+        f"`{token}` 被放行了 —— 瀏覽器的 JSON.parse 會拋,"
+        f"而那會讓整塊體制層面板消失:{r.detail!r}")
+    assert token in r.detail or "JSON" in r.detail, r.detail
+
+
+def test_the_control_payload_is_still_accepted(cfg: dict, monkeypatch) -> None:
+    """控制組:合法的 JSON 不准被這道新判準誤殺。
+
+    把 `parse_constant` 寫成「什麼都拒絕」是讓上面三條全綠的最省事寫法。
+    """
+    r = _run(monkeypatch, cfg, _Resp(200, json.dumps(_payload())))
+    assert r.status == hc.OK, r.detail

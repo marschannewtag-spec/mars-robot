@@ -1204,24 +1204,120 @@ def test_every_job_that_runs_tests_also_installs_the_javascript_bridge() -> None
     )
 
 
-def test_the_javascript_bridge_is_a_hard_requirement_in_ci() -> None:
-    """在 CI 上,node 或 jsdom 不在就是**失敗**,不是跳過。
+def _test_sources() -> list[tuple[Path, "ast.Module"]]:
+    """每個測試檔的 AST。
 
-    本機允許沒有 node —— 那是真的可選(L2 的 Python 部分照樣跑得動)。
-    但在 CI 上「沒得判斷」和「通過」不可以長得一樣:上面那 32 條是
-    PWA 正確性的唯一驗證,少了它們的綠燈是假的。
+    ⚠ 用 AST,不是文字掃描。第一版用文字,結果連續兩次掃到**自己的說明**:
+    本檔的錯誤訊息裡同時有「skip」和「jsdom」,新開的
+    `test_js_bridge_policy.py` 的 docstring 也是。
+    把掃描器放在它要掃的目錄裡,它一定會讀到描述這條規則的那些句子。
 
-    ⚠ 這條測試自己在本機會跳過。驗證它真的會在 CI 上紅,
-      要用 `CI=true` 加上把 jsdom 藏起來跑一次(2026-10-20 已實測)。
+    AST 只看**呼叫節點**與它的字串引數 —— docstring 不是 Call,
+    說明文字自然不在範圍內。判準因此對準了「程式做了什麼」,
+    而不是「檔案裡出現過哪些字」。這是本輪第四次踩到同一條。
     """
-    import shutil
+    import ast
 
-    if os.environ.get("CI", "").lower() not in ("1", "true", "yes"):
-        pytest.skip("本機允許沒有 node —— 這條只在 CI 上硬失敗")
+    out = []
+    for f in sorted((OPS_ROOT / "tests").glob("test_*.py")):
+        out.append((f, ast.parse(f.read_text(encoding="utf-8"))))
+    assert len(out) >= 15, f"掃描沒掃到東西,只找到 {len(out)} 個測試檔"
+    return out
 
-    assert shutil.which("node"), (
-        "CI 上找不到 node —— test_parity / test_source_chain / test_leg_lag "
-        "共 32 條會靜默跳過,而測試集仍然回報成功")
-    assert (OPS_ROOT / "node_modules" / "jsdom").is_dir(), (
-        "CI 上沒有安裝 jsdom(`npm ci --prefix ops`)—— "
-        "同上,32 條 JS 驗證會靜默跳過")
+
+def _dotted(node) -> str:
+    import ast
+
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _strings_in(node, consts: dict) -> list[str]:
+    """呼叫裡所有看得到的字串 —— 含「引數是個模組層級常數」的情況。"""
+    import ast
+
+    out = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.append(n.value)
+        elif isinstance(n, ast.Name) and n.id in consts:
+            out.append(consts[n.id])
+    return out
+
+
+def _module_str_consts(tree) -> dict:
+    import ast
+
+    out = {}
+    for s in tree.body:
+        if isinstance(s, ast.Assign) and len(s.targets) == 1 and \
+                isinstance(s.targets[0], ast.Name):
+            vals = [c.value for c in ast.walk(s.value)
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+            if vals:
+                out[s.targets[0].id] = " ".join(vals)
+    return out
+
+
+def test_no_test_skips_itself_when_the_javascript_bridge_is_missing() -> None:
+    """沒有任何測試可以因為 node/jsdom 不在而**跳過**。
+
+    2026-10-20 的決定:缺席是失敗,不是跳過
+    (`conftest.require_js_bridge()`)。理由在 conftest 裡。
+
+    ⚠ 這條原本寫成「只在 CI 上硬失敗」—— 它自己在本機會 skip,
+      於是**驗證這條規則的測試,本身就是一個沒有人看的 skip**。
+      一個只在別處生效的守門員,在這裡看不出它還活著。
+    """
+    import ast
+
+    offenders: list[str] = []
+    for f, tree in _test_sources():
+        consts = _module_str_consts(tree)
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            name = _dotted(n.func)
+            if name not in ("pytest.skip", "pytest.mark.skipif"):
+                continue
+            blob = " ".join(_strings_in(n, consts))
+            if "jsdom" in blob or "node" in blob:
+                offenders.append(f"{f.name}:{n.lineno}  {name}(…{blob[:50]}…)")
+
+    assert not offenders, (
+        "這些地方還在用「跳過」處理 node/jsdom 缺席:\n  "
+        + "\n  ".join(offenders)
+        + "\n\n實測:jsdom 不在時整組會得到「392 passed, 32 skipped」——"
+          "\nexit 0、CI 綠燈,而整層 PWA JavaScript 驗證不存在。"
+          "\n請改用 conftest 的那個守門員。"
+    )
+
+
+def test_every_bridge_gate_says_what_is_lost() -> None:
+    """每個關口都必須寫出少了它會失去什麼驗證。
+
+    只寫「尚未 npm install jsdom」的話,讀的人知道怎麼修,卻不知道不修會
+    失去什麼 —— 於是最自然的反應是把它改回 skip,而那正是這一輪在修的事。
+    """
+    import ast
+
+    calls = 0
+    thin: list[str] = []
+    for f, tree in _test_sources():
+        consts = _module_str_consts(tree)
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call) or _dotted(n.func) != "require_js_bridge":
+                continue
+            calls += 1
+            blob = " ".join(_strings_in(n, consts))
+            if len(blob) < 40:
+                thin.append(f"{f.name}:{n.lineno}  {blob[:50]!r}")
+
+    assert calls >= 5, f"只找到 {calls} 個關口 —— 預期至少 5 個"
+    assert not thin, (
+        "這些關口的說明太短,沒講出失去的是什麼驗證:\n  " + "\n  ".join(thin))

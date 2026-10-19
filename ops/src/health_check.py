@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -665,6 +666,25 @@ def check_published_mirror(cfg: dict) -> list[Result]:
     return out
 
 
+def _reject_js_hostile(name: str):
+    """`json.loads` 的 `parse_constant` 鉤子 —— 遇到 Infinity / NaN 就拋。
+
+    ⚠ 為什麼不能直接用 `r.json()`:它走 Python 的 `json.loads`,而那**預設
+    吃得下** `Infinity` / `-Infinity` / `NaN`。瀏覽器的 `JSON.parse` 會拋。
+
+    `實測`(2026-10-20):餵一份 `"margin": Infinity` 的 signals.json 給這個
+    檢查,它回 `OK | 2026-10-19(0 天前),1 條警訊` —— 而同一份檔案在 PWA 端
+    會讓 `.then(r=>r.json())` 拋、被 `.catch(()=>{})` 吞掉,**整塊體制層面板
+    消失**。也就是這個檢查用錯的尺在量,而量錯的正好是它要防的那件事。
+
+    `fetch_signals.py` 自己有兩道防線(`jsonable()` + `allow_nan=False`),
+    所以這不是正在發作的故障。但這個檢查讀的是**線上那一份** ——
+    它可能被手改、被舊版寫出、或在傳輸中壞掉。檢查的職責是回答
+    「瀏覽器此刻拿得到什麼」,那就必須用瀏覽器的判準。
+    """
+    raise ValueError(f"JSON 裡有 {name} —— 瀏覽器的 JSON.parse 會直接拋")
+
+
 def check_published_signals(cfg: dict) -> list[Result]:
     """線上那份 `signals.json` 還新不新、PWA 讀不讀得懂。
 
@@ -698,7 +718,8 @@ def check_published_signals(cfg: dict) -> list[Result]:
         if r.status_code != 200:
             return [Result(name, FAIL,
                            f"HTTP {r.status_code} —— PWA 的體制層面板會整塊不顯示")]
-        payload = r.json()
+        # 刻意不用 r.json() —— 見 _reject_js_hostile() 的說明。
+        payload = json.loads(r.text, parse_constant=_reject_js_hostile)
     except Exception as exc:  # noqa: BLE001
         return [Result(name, FAIL, f"讀取失敗:{exc}")]
 

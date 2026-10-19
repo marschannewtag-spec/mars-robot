@@ -17,21 +17,17 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, require_js_bridge
 
 TESTS_DIR = Path(__file__).resolve().parent
 BRIDGE = TESTS_DIR / "sw_bridge.mjs"
 SW = REPO_ROOT / "sw.js"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None, reason="需要 node 才能執行 SW 橋接器"
-)
 
 
 @pytest.fixture(scope="module")
@@ -42,6 +38,11 @@ def sw_src() -> str:
 @pytest.fixture(scope="module")
 def run() -> dict:
     """把 sw.js 載進假的 ServiceWorker 環境,派送幾種 fetch 事件。"""
+    require_js_bridge(
+        "sw.js 的快取策略(離線可用、版本切換時清掉舊快取、不要快取資料請求)"
+        " —— sw.js 是使用者每次開啟 PWA 都會經過的第一段程式,"
+        "而它曾經是這個 repo 唯一一個【沒有任何測試載入過】的檔案。",
+        needs_jsdom=False)
     proc = subprocess.run(
         ["node", str(BRIDGE), str(SW)],
         capture_output=True, text=True, encoding="utf-8", timeout=120,

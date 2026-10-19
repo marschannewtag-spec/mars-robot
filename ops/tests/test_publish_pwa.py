@@ -15,7 +15,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import shutil
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +22,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from conftest import require_js_bridge  # noqa: E402
 import publish_pwa
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -81,7 +81,6 @@ def test_one_row_per_month_and_it_is_the_last_trading_day(sp_daily: pd.DataFrame
     assert days == [last[m] for m in months]
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 node")
 def test_real_pwa_spFromYahoo_sees_them_as_identical(
     index_html: Path, sp_daily: pd.DataFrame, tmp_path: Path
 ):
@@ -90,8 +89,10 @@ def test_real_pwa_spFromYahoo_sees_them_as_identical(
     Python 側那條測試用的是我寫的分組;真正跑在使用者瀏覽器裡的是這一支。
     兩邊都問過才算驗過 —— 這正是 js_bridge 存在的理由。
     """
-    if not (TESTS_DIR.parent / "node_modules" / "jsdom").exists():
-        pytest.skip("尚未 npm install jsdom")
+    require_js_bridge(
+        "PWA 自己的 spFromYahoo() 對『全段日資料』與『只有月底的鏡像』"
+        "給出相同結果 —— 也就是『只發 19 KB 不是 421 KB』那個最佳化"
+        "沒有改變任何一個月的數字。")
 
     df = sp_daily.copy()
     df["close"] = pd.to_numeric(df["close"], errors="coerce")

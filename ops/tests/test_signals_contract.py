@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from conftest import require_js_bridge  # noqa: E402
 import fetch_signals
 import regime
 
@@ -212,12 +212,15 @@ def test_the_committed_signals_file_is_strict_json() -> None:
     json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
 
 
-@pytest.mark.skipif(shutil.which("node") is None, reason="需要 node 才能用真正的 JSON.parse")
 def test_javascript_can_parse_what_python_wrote(payload: dict, tmp_path) -> None:
     """最終判準:交給**真正的** JSON.parse。
 
     Python 的 json 對 Infinity/NaN 太寬容,拿它當判準等於用錯的尺量。
     """
+    require_js_bridge(
+        "用真正的 JSON.parse 當判準。Python 的 json 對 Infinity/NaN 太寬容,"
+        "拿它量等於用錯的尺 —— 而一個含 Infinity 的 signals.json 會讓 PWA "
+        "的體制層面板整塊消失。")
     p = tmp_path / "signals.json"
     p.write_text(json.dumps({**payload, "dominance": {**payload["dominance"],
                                                       "margin": None}},

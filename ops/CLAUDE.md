@@ -2247,6 +2247,83 @@ known = bool(s) and _as_date(s) is not None
 > 太寬會把註解和說明算進來(`$RUNNER_TEMP` 那次、M91 那次)。
 > 兩個方向都要用「掃到幾個」這個數字去驗,而不是看它綠不綠。
 
+#### 接著把「跳過」整個拿掉(2026-10-20,同日)
+
+上一節補的是 workflow 層的守門。但**跳過本身**才是問題:
+
+> 一個沒有人讀的 `skip`,和 `pass` 在 exit code 上是同一件事。
+
+對照:Python 那邊的相依缺失從來就不是 skip ——
+`test_the_running_environment_matches_requirements` 直接硬失敗。
+`npm ci --prefix ops` 和 `pip install -r requirements-test.txt` 是同一層級的
+一次性設定,沒有理由一個紅一個綠。
+
+所以 `conftest.require_js_bridge(what)` 取代全部七個關口,`pytest.fail`:
+
+```
+JavaScript 橋接器不可用(ops/node_modules/jsdom 不存在)。
+  失去的驗證:engine.py 與線上 index.html 的逐月對帳(440 個月、現金水位 /
+             趨勢腿 / VIX 腿 / 風險分數)—— 這是整個專案『螢幕上的數字
+             就是回測過的那個』唯一的證據。
+  修法:npm ci --prefix ops   (需要 Node.js 22+)
+```
+
+**`what` 是刻意要求的**:只寫「尚未 npm install jsdom」的話,讀的人知道
+怎麼修,卻不知道不修會失去什麼 —— 於是最自然的反應是把它改回 skip。
+那是這條規則最可能的死法,所以由
+`test_every_bridge_gate_says_what_is_lost` 釘住每個關口的說明長度。
+
+`實測`(藏起 jsdom 跑整組):
+
+| | 結果 | exit |
+|---|---|---|
+| 改之前 | `392 passed, 32 skipped` | **0**(CI 綠燈) |
+| 改之後 | `22 failed, 398 passed, 11 errors` | **1** |
+
+**第七個關口是掃描自己找出來的。** 我手動 grep 只找到六個;
+AST 掃描一跑就指出 `test_sw.py:32` 也在用 `skipif` ——
+而 `sw.js` 正是這個 repo 當初那條教訓的來源(唯一一個沒有任何測試載入過的
+檔案),它的 15 條測試可以整組無聲消失。
+`sw_bridge.mjs` 只 `import node:fs`,不碰 jsdom,所以那個關口用
+`needs_jsdom=False` —— **說錯話的檢查遲早會被當成雜訊關掉。**
+
+##### 判準對準什麼:這一輪第四次,而且是最貴的一次
+
+這條掃描寫了四版:
+
+| 版本 | 判準 | 結果 |
+|---|---|---|
+| 1 | 只在 `CI=true` 時硬失敗 | **它自己在本機 skip** —— 驗證「不准 skip」這條規則的測試,本身是一個沒人看的 skip |
+| 2 | 文字掃描 `skip` + `jsdom` | 掃到**自己的錯誤訊息**(訊息裡同時有這兩個詞) |
+| 3 | 排除本檔 + 自我守衛 | 自我守衛掃到自己的 **docstring** |
+| 4 | **AST:只看 `Call` 節點與它的字串引數** | 乾淨,而且立刻找出第七個關口 |
+
+docstring 不是 `Call`,說明文字自然不在範圍內。**判準因此對準了「程式做了
+什麼」,而不是「檔案裡出現過哪些字」。**
+
+> **把掃描器放在它要掃的目錄裡,它一定會讀到描述這條規則的那些句子。**
+> 文字掃描在這種情況下必然自我誤判,而每一次「排除一下」都在削弱它。
+> 正解是換一個層次去看 —— AST / tokenize,而不是再加一條例外。
+
+#### 順帶修掉我自己當天寫的一個洞
+
+`check_published_signals()` 用 `r.json()` 讀線上那份 signals.json。
+`requests` 走的是 Python 的 `json.loads`,而它**預設吃得下**
+`Infinity` / `-Infinity` / `NaN`;瀏覽器的 `JSON.parse` 會拋。
+
+`實測`:餵一份 `"margin": Infinity` 的檔案給它 →
+`OK | 2026-10-19(0 天前),1 條警訊`。
+而同一份檔案在 PWA 端會讓 `.then(r=>r.json())` 拋、被 `.catch(()=>{})` 吞掉,
+**整塊體制層面板消失** —— 正是這個檢查存在的理由。
+
+**這個檢查用錯的尺在量,而量錯的正好是它要防的那件事。**
+改用 `json.loads(r.text, parse_constant=_reject_js_hostile)`,
+與 `test_signals_contract.py` 的 `_reject_constant` 同一把尺。
+
+(`fetch_signals.py` 自己有 `jsonable()` + `allow_nan=False` 兩道防線,
+所以不是正在發作的故障。但這個檢查讀的是**線上那一份** —— 它可能被手改、
+被舊版寫出、或在傳輸中壞掉。檢查的職責是回答「瀏覽器此刻拿得到什麼」。)
+
 ### 突變測試結果 —— 資料鏡像那一輪(2026-10-19)
 
 新寫的程式碼一律要問一次「如果我把它改錯,有沒有測試會紅」。
@@ -2368,6 +2445,12 @@ known = bool(s) and _as_date(s) is not None
 | M103 | `ci.yml` 拿掉 `npm ci` | `ci.yml` | **抓到** |
 | M104 | canary 的 `npm ci` 改成 `continue-on-error` | `dependency-canary.yml` | **抓到** |
 | M105 | `CI=true` 且 jsdom 不在(模擬 CI 掉了 npm ci) | 環境 | **抓到** |
+| M106 | 某個關口退回 `pytest.skip` | `test_parity.py` | **抓到** |
+| M107 | 守門員自己改成 `skip` | `conftest.py` | **抓到**(2 條) |
+| M108 | 守門員永遠放行 | `conftest.py` | **抓到**(3 條) |
+| M109 | 關口的說明被縮短成「需要 node」 | `test_sw.py` | **抓到** |
+| M110 | `needs_jsdom` 預設改成 False | `conftest.py` | **抓到** |
+| M111 | 線上 signals.json 含 `Infinity` / `NaN` | `health_check.py` | **抓到**(3 條) |
 
 M29 與 M40 最重要:前者是「空字串替判準做決定」那個洞本身,
 後者會讓安裝失敗退回成「只有一封紅燈信」。
@@ -2591,13 +2674,14 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 (宣告拆分 · 鎖定檔契約 · L1 失敗路徑 · canary 獨立性 · 失敗 shell 的真實執行) /
 設定區文案與退回鏈對帳 / 來源狀態與 dominance 同一個門檻 /
 年度健檢對 ops-data 的兩步真實執行 + 三條 workflow git 用法掃描)
-→ **426**(鏡像兩條腿各自量年齡 + detail 自洽 + 全 repo 單一時鐘
+→ **434**(鏡像兩條腿各自量年齡 + detail 自洽 + 全 repo 單一時鐘
 + 跨區塊變數串台的 AST 掃描 + 健檢軌跡自己的新鮮度與兩個分母
-+ **體制訊號的發布狀態** + 通知裡「起點 observed vs assumed」(含來歷欄)
-+ pine tooltip 對帳 + **JS 橋接器不得無聲消失**)。
-其中 1 條(CI 上硬性要求 node)在本機刻意 skip。
++ **體制訊號的發布狀態**(用瀏覽器的 JSON 判準)
++ 通知裡「起點 observed vs assumed」(含來歷欄)
++ pine tooltip 對帳 + **JS 橋接器缺席一律失敗、七個關口都要說出失去什麼**)。
+**整組零 skip。**
 
-10-19/10-20 那幾輪共 105 個突變:**101 個被抓到**,4 個逃掉 ——
+10-19/10-20 那幾輪共 111 個突變:**107 個被抓到**,4 個逃掉 ——
 一個是等價突變(有保存期限,見上),三個是我的測試太弱
 (M72 窗口、M91 判準對準字而非宣稱,均已補強)。
 
