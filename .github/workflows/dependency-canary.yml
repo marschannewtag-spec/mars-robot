@@ -112,18 +112,27 @@ jobs:
           else
             phase=failure
           fi
+          # ⚠ 測試那一步被跳過時(解析失敗),**不要**傳 --tests-exit-code。
+          # 第一版寫 `${{ steps.tests.outputs.code || '99' }}`,於是空字串變成 99,
+          # 而 manifest 會記成「測試跑過,失敗,exit 99」—— 測試根本沒跑。
+          # 「沒得判斷」和「也壞了」在報告上必須長得不一樣,這是本專案
+          # 反覆踩過的那條線(SKIP vs FAIL、ok=False vs triggered=False)。
+          args=()
+          if [ "${{ steps.tests.outcome }}" != "skipped" ]; then
+            args+=(--tests-log "$GITHUB_WORKSPACE/canary_tests.log")
+            args+=(--tests-exit-code "${{ steps.tests.outputs.code }}")
+          fi
           python ops/src/dep_manifest.py --phase "$phase" \
             --source "latest(requirements.txt + requirements-test.txt)" \
             --requested ops/requirements.txt \
             --requested ops/requirements-test.txt \
             --log "$GITHUB_WORKSPACE/canary_install.log" \
             --exit-code "${{ steps.resolve.outcome == 'success' && '0' || '1' }}" \
-            --tests-log "$GITHUB_WORKSPACE/canary_tests.log" \
-            --tests-exit-code "${{ steps.tests.outputs.code || '99' }}" \
             --out "$GITHUB_WORKSPACE/canary_manifest.json" \
             --emit-issue --issue-kind canary \
             --issue-title "$GITHUB_WORKSPACE/canary_title.txt" \
-            --issue-body "$GITHUB_WORKSPACE/canary_body.md"
+            --issue-body "$GITHUB_WORKSPACE/canary_body.md" \
+            "${args[@]}"
 
       - name: 保存 canary artifact
         if: always()

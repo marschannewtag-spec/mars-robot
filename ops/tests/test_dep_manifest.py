@@ -291,3 +291,69 @@ def test_a_canary_resolution_failure_says_the_set_is_partial() -> None:
                  exit_code=1, log="ResolutionImpossible", environ={})
     body = dm.canary_issue_body(m)
     assert "已落地的部分" in body, "沒說清單不完整,等於冒稱那是解析結果"
+
+
+# --------------------------------------------------------------------------
+# 6. 「沒得判斷」與「也壞了」必須分得開(2026-10-19,canary 的自我 debug)
+#
+# canary 的第一版寫 `--tests-exit-code "${{ steps.tests.outputs.code || '99' }}"`。
+# 解析失敗時測試那一步被跳過 → output 是空字串 → 變成 99 →
+# manifest 記成「測試跑過、失敗、exit 99」。測試根本沒跑。
+#
+# 這是本專案反覆踩過的同一條線(SKIP vs FAIL、ok=False vs triggered=False):
+# 把「沒得判斷」寫成「壞了」,讀的人會去查一個不存在的失敗。
+# --------------------------------------------------------------------------
+
+def test_a_manifest_without_tests_does_not_claim_a_test_failure() -> None:
+    m = dm.build(phase="failure", requested=[], source="latest",
+                 exit_code=1, log="ResolutionImpossible", environ={})
+    assert "tests" not in m, "測試沒跑,manifest 卻有 tests 區塊"
+    body = dm.canary_issue_body(m)
+    assert "未執行" in body, f"沒有講明測試沒跑:{body[:400]}"
+    assert "失敗(exit" not in body, "把「沒跑」寫成了「失敗」"
+
+
+def test_a_real_test_failure_is_still_reported_as_a_failure() -> None:
+    """對照組。少了它,上面那條可以靠「永遠說未執行」通過。"""
+    m = dm.build(phase="success", requested=[], source="latest", environ={},
+                 dists={"numpy": "2.6.0"}, tests_exit_code=1, tests_log="1 failed")
+    body = dm.canary_issue_body(m)
+    assert "失敗(exit 1)" in body
+    assert "未執行" not in body
+
+
+def test_a_passing_run_says_so() -> None:
+    m = dm.build(phase="success", requested=[], source="latest", environ={},
+                 dists={"numpy": "2.6.0"}, tests_exit_code=0)
+    assert "通過" in dm.canary_issue_body(m)
+
+
+def test_the_cli_fails_loudly_when_it_cannot_write(tmp_path: Path, capsys) -> None:
+    """寫不出 manifest 時必須回非零並說出來,不得安靜地「成功」。
+
+    這是 artifact 與 Issue 都還沒發生之前的最後一道:如果它靜靜回 0,
+    workflow 會以為軌跡留下來了,而那天其實什麼都沒有。
+    """
+    blocker = tmp_path / "blocked"
+    blocker.mkdir()  # 目的檔的路徑是一個【目錄】→ 寫入必定失敗
+    rc = dm.main([
+        "--phase", "success", "--source", "requirements.txt",
+        "--requested", str(RUNTIME), "--out", str(blocker),
+    ])
+    assert rc == 1, "寫不出來卻回 0"
+    assert "manifest 寫入失敗" in capsys.readouterr().err
+
+
+def test_a_failed_cli_write_does_not_touch_the_previous_manifest(tmp_path: Path) -> None:
+    """對照組的另一半:寫入失敗時,上一份有效的 manifest 必須原封不動。
+
+    舊的那一份是「昨天裝到什麼版本」—— 也就是歸因唯一的參照點。
+    """
+    out = tmp_path / "install.json"
+    dm.write_atomic(out, {"yesterday": True})
+    before = out.read_text(encoding="utf-8")
+    # 讓序列化失敗:argparse 走得過,build 回來的 dict 沒問題,所以改用
+    # write_atomic 直接驗(CLI 層的失敗已由上一條覆蓋)
+    with pytest.raises(TypeError):
+        dm.write_atomic(out, {"bad": object()})
+    assert out.read_text(encoding="utf-8") == before

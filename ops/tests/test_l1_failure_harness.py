@@ -197,3 +197,79 @@ def test_a_second_consecutive_failure_updates_instead_of_creating(
         "上次就是同一個原因,還是留了言 —— 每天一則會把 Issue 洗成沒人看的"
         "討論串,而這個 repo 實測過那個後果(52 則留言)"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# canary 的 manifest 步驟 —— 兩種狀態都要真的跑一次
+#
+# 它的第一版用 `${{ steps.tests.outputs.code || '99' }}`,於是「測試被跳過」
+# 會變成「測試失敗,exit 99」。修法是在 shell 裡用一個陣列條件式帶參數,
+# 而 **bash 陣列 + `set -eo pipefail` + 空陣列展開**是那種只有真的跑一次
+# 才知道對不對的東西。
+# ══════════════════════════════════════════════════════════════════════════
+
+CANARY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "dependency-canary.yml"
+
+
+def _canary_manifest_shell(resolve: str, tests_outcome: str, tests_code: str) -> str:
+    """canary 寫 manifest 那一步的 shell,把 GitHub 運算式代成具體值。
+
+    ⚠ 代入是這個 harness 的限制:真正的 runner 才會求值那些 `${{ }}`。
+    運算式本身的形狀由 tests/test_dependency_policy.py 靜態釘住。
+    """
+    data = yaml.safe_load(CANARY_WORKFLOW.read_text(encoding="utf-8"))
+    hits = [s for s in data["jobs"]["canary"]["steps"]
+            if "--phase" in (s.get("run") or "")]
+    assert len(hits) == 1, f"找不到(或有多個)canary 的 manifest 步驟:{len(hits)}"
+    shell = hits[0]["run"]
+    for expr, value in (
+        ("${{ steps.resolve.outcome == 'success' && '0' || '1' }}",
+         "0" if resolve == "success" else "1"),
+        ("${{ steps.resolve.outcome }}", resolve),
+        ("${{ steps.tests.outcome }}", tests_outcome),
+        ("${{ steps.tests.outputs.code }}", tests_code),
+    ):
+        shell = shell.replace(expr, value)
+    return _absolutise(shell).replace(
+        "--requested ops/requirements-test.txt",
+        f"--requested {(REPO_ROOT / 'ops/requirements-test.txt').as_posix()}")
+
+
+def test_a_skipped_test_step_produces_a_manifest_with_no_test_claim(
+    harness, tmp_path: Path
+) -> None:
+    """解析失敗 → 測試被跳過 → manifest 不得聲稱測試跑過。"""
+    run, _, workspace = harness
+    (workspace / "canary_install.log").write_text(
+        "ERROR: ResolutionImpossible\n", encoding="utf-8", newline="\n")
+    proc = run(_canary_manifest_shell("failure", "skipped", ""))
+    assert proc.returncode == 0, f"shell 自己失敗了:\n{proc.stdout}\n{proc.stderr}"
+
+    m = json.loads((workspace / "canary_manifest.json").read_text(encoding="utf-8"))
+    assert m["resolution_complete"] is False
+    assert "tests" not in m, "測試沒跑,manifest 卻記了 tests"
+    assert m["dedupe_key"].startswith("incomplete:")
+    body = (workspace / "canary_body.md").read_text(encoding="utf-8")
+    assert "未執行" in body and "exit 99" not in body
+
+
+def test_a_real_test_failure_is_recorded_with_its_code(harness, tmp_path: Path) -> None:
+    """對照組:測試真的跑過且失敗時,exit code 要記下來。
+
+    少了這一條,上面那條可以靠「永遠不傳測試參數」通過 —— 而那會讓 canary
+    永遠看不到測試失敗。
+    """
+    run, _, workspace = harness
+    (workspace / "canary_install.log").write_text("ok\n", encoding="utf-8", newline="\n")
+    (workspace / "canary_tests.log").write_text(
+        "1 failed, 351 passed\n", encoding="utf-8", newline="\n")
+    proc = run(_canary_manifest_shell("success", "failure", "1"))
+    assert proc.returncode == 0, f"shell 自己失敗了:\n{proc.stdout}\n{proc.stderr}"
+
+    m = json.loads((workspace / "canary_manifest.json").read_text(encoding="utf-8"))
+    assert m["resolution_complete"] is True
+    assert m["tests"] == {"ran": True, "ok": False, "exit_code": 1,
+                          "log_tail": "1 failed, 351 passed\n"}
+    assert m["dedupe_key"].startswith("combo:")
+    body = (workspace / "canary_body.md").read_text(encoding="utf-8")
+    assert "失敗(exit 1)" in body and "未執行" not in body

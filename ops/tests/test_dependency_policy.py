@@ -374,3 +374,17 @@ def test_the_policy_document_exists_and_marks_its_evidence() -> None:
     for decision in ("D1", "D2", "D3", "D4"):
         assert decision in text, f"DEPENDENCIES.md 少了 {decision}"
     assert "已知的限制" in text, "沒有列出沒被解決的事 —— 那是這份文件最該有的一節"
+
+
+def test_the_canary_does_not_fake_a_test_exit_code(canary: dict) -> None:
+    """測試那一步被跳過時,不得硬塞一個 exit code 進 manifest。
+
+    第一版用 `${{ steps.tests.outputs.code || '99' }}`,於是「沒跑」會被記成
+    「失敗,exit 99」—— 而 99 看起來像一個真的測試框架回的碼。
+    """
+    text = _code(WORKFLOWS / "dependency-canary.yml")
+    assert "|| '99'" not in text, "又把空字串變成假的 exit code 了"
+    assert "steps.tests.outcome\" != \"skipped\"" in text or \
+           "steps.tests.outcome }}\" != \"skipped\"" in text, (
+        "沒有判斷測試那一步到底有沒有執行"
+    )

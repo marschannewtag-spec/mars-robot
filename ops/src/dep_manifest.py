@@ -267,6 +267,13 @@ def build(
     return manifest
 
 
+def _tests_label(tests: dict) -> str:
+    """測試欄位的三種狀態。`{}` = 那一步沒有執行(通常是解析失敗)。"""
+    if not tests.get("ran"):
+        return "**未執行**(解析失敗,所以沒得判斷)"
+    return ("通過" if tests.get("ok") else "失敗") + f"(exit {tests.get('exit_code', '—')})"
+
+
 def canary_issue_title(manifest: dict) -> str:
     if not manifest.get("resolution_complete"):
         err = (manifest.get("error") or {}).get("class", "unknown")
@@ -298,8 +305,9 @@ def canary_issue_body(manifest: dict) -> str:
         "| | |",
         "|---|---|",
         f"| 解析完成 | {manifest.get('resolution_complete')} |",
-        f"| 測試 | {'通過' if tests.get('ok') else '失敗'}"
-        f"(exit {tests.get('exit_code', '—')}) |",
+        # 三種狀態必須分得開:沒跑 / 跑了通過 / 跑了失敗。
+        # 把「沒跑」寫成「失敗」,讀的人會去查一個不存在的測試失敗。
+        f"| 測試 | {_tests_label(tests)} |",
         f"| Python | {env.get('python', '?')} |",
         f"| 平台 | {env.get('platform', '?')} |",
         f"| 去重 key | `{key}` |",
