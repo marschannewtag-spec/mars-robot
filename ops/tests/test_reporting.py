@@ -333,7 +333,8 @@ def _declared_requirement_lines() -> list[str]:
     for name in DECLARATION_FILES:
         path = OPS_ROOT / name
         assert path.exists(), f"宣告檔不見了:{name}"
-        for line in path.read_text(encoding="utf-8").splitlines():
+        # utf-8-sig:宣告檔開頭有 UTF-8 BOM(給 pip 的,見 dependency policy 測試)
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             line = line.split("#")[0].strip()
             if line:
                 out.append(line)
@@ -497,20 +498,18 @@ def test_the_running_environment_matches_requirements() -> None:
 
     一個「環境不符」的警告會被滑過去,而它造成的後果(本機綠、CI 紅,
     或更糟:本機綠、CI 綠、但兩邊測的不是同一件事)極難歸因。
-    修法很短:`pip install -r ops/requirements.txt`。
+    修法很短:`pip install -r ops/requirements.txt -r ops/requirements-test.txt`。
     """
     from importlib.metadata import PackageNotFoundError, version
 
     from packaging.requirements import Requirement
     from packaging.version import Version
 
-    req_path = OPS_ROOT / "requirements.txt"  # 兩份都要看,見 DECLARATION_FILES
-    specs = [
-        line.strip()
-        for line in req_path.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    ]
-    assert specs, "requirements.txt 解析不出任何相依 —— 這條測試會變成空轉"
+    # ⚠ **兩份都要讀。** 2026-10-19 把宣告拆成 runtime / test-only 之後,
+    # 這裡一度只讀 requirements.txt —— 於是 pytest、pytest-cov、packaging
+    # 的版本完全沒有被檢查,而「pytest 的宣告與事實不符」正是這條測試
+    # 存在的原因。拆檔案的時候最容易留下這種洞:掃描還在,但它少看了一個地方。
+    specs = _declared_requirement_lines()
 
     problems = []
     for spec in specs:
@@ -524,8 +523,8 @@ def test_the_running_environment_matches_requirements() -> None:
             problems.append(f"{r.name}:已裝 {installed},不在宣告的 {r.specifier} 內")
 
     assert not problems, (
-        "執行環境與 requirements.txt 不符:\n  "
+        "執行環境與宣告不符(requirements.txt + requirements-test.txt):\n  "
         + "\n  ".join(problems)
         + "\n\n本機綠而 CI 紅(或兩邊測的根本不是同一件事)就是從這裡開始的。"
-        + "\n修法:pip install -r ops/requirements.txt"
+        + "\n修法:pip install -r ops/requirements.txt -r ops/requirements-test.txt"
     )

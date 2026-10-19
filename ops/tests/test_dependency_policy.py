@@ -35,7 +35,9 @@ RUNTIME_ONLY = {"pandas", "numpy", "requests", "pyyaml"}
 def _requirements(path: Path) -> dict[str, str]:
     """{正規化套件名: 完整需求行}。"""
     out: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # ⚠ utf-8-sig:BOM 是給 pip 看的(見 test_pip_can_read_every_declaration_file),
+    # 用 utf-8 讀會讓第一行剩下一個 ﻿,變成一個名字叫 BOM 的假套件。
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
         line = line.split("#")[0].strip()
         if not line:
             continue
@@ -236,7 +238,7 @@ def test_l2_installs_the_lock_with_hash_verification() -> None:
 
 
 def test_the_lock_pins_every_declared_requirement_with_hashes() -> None:
-    text = LOCK_FILE.read_text(encoding="utf-8")
+    text = LOCK_FILE.read_text(encoding="utf-8-sig")
     pinned = dict(re.findall(r"^([A-Za-z0-9._-]+)==([^\s\\]+)", text, re.M))
     assert pinned, "鎖定檔解析不出任何 pin"
     normalised = {re.sub(r"[-_.]+", "-", k).lower(): v for k, v in pinned.items()}
@@ -258,7 +260,7 @@ def test_the_locked_versions_satisfy_the_declared_ranges() -> None:
     from packaging.requirements import Requirement
     from packaging.version import Version
 
-    text = LOCK_FILE.read_text(encoding="utf-8")
+    text = LOCK_FILE.read_text(encoding="utf-8-sig")
     pinned = {re.sub(r"[-_.]+", "-", k).lower(): v
               for k, v in re.findall(r"^([A-Za-z0-9._-]+)==([^\s\\]+)", text, re.M)}
     for path in (RUNTIME_FILE, TEST_FILE):
@@ -275,7 +277,7 @@ def test_the_lock_generation_command_is_pinned_and_consistent() -> None:
     生成工具不釘版本的話,鎖定檔的內容會取決於「那天的 uv 是哪一版」——
     一個為了可重現而存在的檔案,自己的產生過程卻不可重現。
     """
-    header = LOCK_FILE.read_text(encoding="utf-8").splitlines()[1]
+    header = LOCK_FILE.read_text(encoding="utf-8-sig").splitlines()[1]
     assert "uv pip compile" in header, "鎖定檔標頭沒有記錄產生指令"
     for flag in ("--generate-hashes", "--python-version 3.12", "--python-platform linux"):
         assert flag in header, f"鎖定檔不是用 {flag} 產生的"
@@ -388,3 +390,56 @@ def test_the_canary_does_not_fake_a_test_exit_code(canary: dict) -> None:
            "steps.tests.outcome }}\" != \"skipped\"" in text, (
         "沒有判斷測試那一步到底有沒有執行"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 6. pip 真的讀得懂這些檔案嗎(2026-10-19,第四次同一個形狀)
+#
+# `pip install -r <檔案>` 在沒有 BOM 時會退回用
+# `locale.getpreferredencoding(False)` 解碼。中文版 Windows 是 cp950,
+# 於是帶中文註解的 requirements 檔會讓 pip **直接 exit 2**。
+# 實測(開發機 cp950):原始檔 exit 2、加 BOM exit 0、純 ASCII exit 0。
+#
+# CI 跑在 UTF-8 的 Linux 上,所以這個 bug 在 CI 永遠不會出現 ——
+# 和 cp950 終端機、pytest-cov、pytest major 是同一個形狀的第四次:
+# **只在 CI 驗過,等於只在一種環境驗過。**
+# ══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.parametrize("name", [
+    "requirements.txt", "requirements-test.txt", "requirements-ci.lock",
+])
+def test_pip_can_read_every_declaration_file(name: str) -> None:
+    """判準:**要嘛有 UTF-8 BOM,要嘛整份是純 ASCII。**
+
+    那正好是 pip 在任何 locale 下都讀得懂的集合。
+
+    ⚠ 刻意不寫成「在這台機器上 pip 跑得起來」—— CI 的 locale 是 UTF-8,
+    那樣寫在 CI 上永遠綠,而這個 bug 只在非 UTF-8 的 locale 出現。
+    判準要測在事實產生的地方:**檔案的位元**,不是今天這台機器的 locale。
+    """
+    import codecs
+
+    raw = (OPS_ROOT / name).read_bytes()
+    if raw.startswith(codecs.BOM_UTF8):
+        return  # pip 看到 BOM 就會用 UTF-8 解碼,任何 locale 都安全
+    try:
+        raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise AssertionError(
+            f"{name} 有非 ASCII 內容卻沒有 UTF-8 BOM —— 在中文版 Windows 上"
+            f"`pip install -r` 會 exit 2(UnicodeDecodeError: cp950)。"
+            f"修法:在檔案開頭加 UTF-8 BOM,或把註解改成純 ASCII。"
+            f"\n第一個非 ASCII 位元組在 offset {exc.start}"
+        ) from None
+
+
+def test_the_bom_does_not_leak_into_the_first_requirement() -> None:
+    """對照組:BOM 不得被當成需求行的一部分。
+
+    加 BOM 的代價是第一行會多一個 `\ufeff`。如果那一行剛好是需求而不是註解,
+    套件名就會變成 `\ufeffpandas` —— 一個 pip 裝得起來(它會剝掉 BOM)、
+    但我們自己的解析器看不懂的名字。
+    """
+    for name in ("requirements.txt", "requirements-test.txt"):
+        for pkg in _requirements(OPS_ROOT / name):
+            assert pkg.isascii() and pkg == pkg.strip(), f"{name} 解析出髒名字:{pkg!r}"

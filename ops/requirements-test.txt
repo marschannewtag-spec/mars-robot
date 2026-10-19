@@ -1,3 +1,18 @@
+﻿# ⚠ 這個檔案開頭有一個 UTF-8 BOM,**請不要把它拿掉。**
+#
+# pip 讀 requirements 檔時,沒有 BOM 就退回用
+# `locale.getpreferredencoding(False)` 解碼。在中文版 Windows 上那是 cp950,
+# 於是下面這些中文註解會讓 `pip install -r` 直接【爆掉】:
+#
+#   UnicodeDecodeError: 'cp950' codec can't decode byte 0xe5 ...
+#   exit 2
+#
+# 2026-10-19 實測(開發機 cp950):原始檔 exit 2、加 BOM exit 0、
+# 純 ASCII exit 0、`PYTHONUTF8=1` exit 0。選 BOM 是因為它留得住註解
+# (註解在這個專案裡是內容,不是裝飾),而且不需要使用者先設環境變數。
+# CI 跑在 UTF-8 的 Linux 上,所以這個 bug 在 CI 永遠不會出現 ——
+# 和 cp950 終端機、pytest-cov、pytest major 是同一個形狀的第四次。
+# 由 tests/test_dependency_policy.py::test_pip_can_read_every_declaration_file 釘住。
 # 只有測試會用到的工具 —— L1 的執行路徑【不安裝這個檔案】。
 #
 # 為什麼要分開(2026-10-19):`daily-health.yml` 的安裝步驟失敗會停掉每日資料
