@@ -3,7 +3,7 @@
 //  策略:HTML 網路優先(部署新版立即生效)· 靜態檔快取優先 · 資料 API 不快取
 //  ⚠ 每次改動 index.html 後,把下面版本號 +1(v4→v5),舊快取才會被清掉!
 // ============================================================================
-const CACHE = "cwgauge-v16";
+const CACHE = "cwgauge-v17";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -43,8 +43,14 @@ self.addEventListener("fetch", (e) => {
   if (req.method !== "GET") return;
   const url = new URL(req.url);
 
-  // ① 跨網域(資料 API:自有 Worker / Yahoo / github VIX·Shiller / FRED …)
-  //    → 完全放行,SW 不介入、不快取,確保每次拿到最新資料
+  // ① 跨網域(資料 API:本專案資料鏡像 / 自有 Worker / TwelveData / Yahoo 經代理 /
+  //    GitHub 上的 Shiller …)→ 完全放行,SW 不介入、不快取,確保每次拿到最新資料。
+  //
+  //    ⚠ 2026-10-19 起主要資料來自 raw.githubusercontent.com 的資料鏡像,
+  //      那仍然是跨網域,所以照樣走這一條。**不要為了「加速」把它快取起來** ——
+  //      鏡像每天更新,而這個 SW 的 ③ 是快取優先:存進去就會一直回舊的那份,
+  //      直到有人想起來 bump CACHE 為止。離線時的保底是 PWA 自己的
+  //      localStorage 快取(load() 的 catch),不是 SW。
   if (url.origin !== self.location.origin) return;
 
   // ② HTML / 導覽 → 網路優先(重部署立即生效),離線才退回快取

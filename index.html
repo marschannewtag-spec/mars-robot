@@ -286,10 +286,10 @@
     分段:網路泡沫 -25.5% vs -46.3% · 金融海嘯 <b>-16.4% vs -52.6%</b> · 2020 疫情 -7.6% vs -19.9% · 2022 升息 -16.2% vs -20.9%。<br>
     全期有 <b>59.3%</b> 的月份是完全投入(現金 0%),現金拉到 90% 以上的只佔 8.6%。</p>
     <p style="margin-top:9px"><b>ALL-IN 的意思:</b> 現金 0% = 沒有防禦性現金、<b>滿倉做多(100% 投入)</b>,對應強勢通「降現金到 0% 吃漲勢」的行為。<b>不含槓桿/融資</b>,訊號出現也<b>不代表該在滿倉之上再加碼</b> — 那超出已驗證範圍。</p>
-    <p style="margin-top:9px"><b>即時資料:</b> VIX 來自 CBOE(每日)。S&P 趨勢腿預設走 Yahoo ^GSPC 每日(免金鑰,反映到昨收);填了 Worker 網址或 API key 可更穩定/更即時;全部抓不到才退回 Shiller 月頻(延遲約一個月)。離線時顯示上次抓到的值。</p>
+    <p style="margin-top:9px"><b>即時資料:</b> VIX 來自 CBOE 官方日K;S&P 趨勢腿來自 Yahoo ^GSPC 日K 的月收盤。兩者都由本專案的每日自動流程在伺服器端抓取後發布,瀏覽器直接讀(免金鑰、免代理,反映到昨收)—— 設定區那兩欄留空就好。鏡像抓不到才依序退回 CORS 代理、最後退回 Shiller 月頻(那是<b>月均價</b>定義,與基準不同,畫面會顯示警示列)。離線時顯示上次抓到的值。</p>
     <p style="margin-top:9px"><b>適用範圍:</b> 本工具針對<b>美國大盤股市(S&P 500 等廣基指數)</b>的多空方向設計,VIX 反映的是美股整體系統性風險。①月頻訊號,非日內;②現金水位本身<b>不含</b>信用利差,信用面只以下方「早期警訊」的垃圾債需求子指標<b>間接</b>觀察,且該層不參與計算;③僅供研究,非投資建議,盈虧自負。</p>
     <p style="margin-top:9px"><b>為什麼「早期警訊」是分開的一層:</b> 上方兩腿的階梯與門檻由 1990 起 440 個月的凍結基準釘住,那是判斷「有沒有改壞」的唯一依據。把未回測的新訊號併進那個數字,會同時失去基準與驗證能力 —— 所以新訊號一律平行呈現,由你決定要不要動手,程式不替你改水位。</p>
-    <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://github.com/datasets/finance-vix" target="_blank">finance-vix</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a> · <a href="https://twelvedata.com" target="_blank">Twelve Data</a></p>
+    <p style="margin-top:9px;color:var(--faint)">資料源 · <a href="https://www.cboe.com/tradable_products/vix/vix_historical_data/" target="_blank">CBOE VIX</a> · <a href="https://finance.yahoo.com/quote/%5EGSPC" target="_blank">Yahoo ^GSPC</a> · <a href="https://github.com/datasets/s-and-p-500" target="_blank">s-and-p-500</a> · <a href="https://twelvedata.com" target="_blank">Twelve Data</a></p>
   </div>
 </details>
 

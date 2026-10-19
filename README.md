@@ -154,6 +154,11 @@ python -m http.server 8765
 
 ## 資料源致謝
 
-[finance-vix](https://github.com/datasets/finance-vix) ·
+[CBOE VIX 歷史資料](https://www.cboe.com/tradable_products/vix/vix_historical_data/) ·
+[Yahoo Finance ^GSPC](https://finance.yahoo.com/quote/%5EGSPC) ·
 [s-and-p-500](https://github.com/datasets/s-and-p-500) ·
 [Twelve Data](https://twelvedata.com)
+
+> 2026-10-19 之前 VIX 走的是 [finance-vix](https://github.com/datasets/finance-vix)
+> —— CBOE 這份檔案的 GitHub 鏡像。它自 2026-09-22 起停止更新(但仍回 HTTP 200),
+> 所以改成直接抓上游。重疊的 9,278 個交易日 CLOSE 逐筆比對 0 筆不同。
