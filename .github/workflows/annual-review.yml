@@ -41,10 +41,23 @@ jobs:
       - name: 取回健檢軌跡
         run: |
           mkdir -p ops/data
-          if git fetch origin ops-data 2>/dev/null; then
-            git show origin/ops-data:ops/data/health_log.csv > ops/data/health_log.csv 2>/dev/null \
-              && echo "已取回 $(wc -l < ops/data/health_log.csv) 行軌跡" \
-              || echo "分支上尚無軌跡檔 —— 報告的資料源穩定度一節會是空的"
+          # ⚠ 明確 refspec。`actions/checkout` 只設定目前分支的 fetch refspec
+          #   (實測:remote.origin.fetch = +refs/heads/main:refs/remotes/origin/main),
+          #   所以 `git fetch origin ops-data` 會 **exit 0** 卻不建立
+          #   `origin/ops-data` —— 它只寫 FETCH_HEAD。接著 `git show
+          #   origin/ops-data:…` 失敗,而 `>` 早就把目的檔建成 0 bytes 了。
+          #   同一個陷阱在 daily-health.yml 的心跳步驟修過,這個檔漏掉。
+          if git fetch origin +refs/heads/ops-data:refs/remotes/origin/ops-data 2>/dev/null; then
+            # 先寫暫存檔再搬過去:`git show` 失敗時目的地不會留下一個 0 bytes
+            # 的檔案。那種檔案 `exists()` 為真,而 pandas 讀它會拋
+            # EmptyDataError —— 整份年度報告會因為一個輔助檔而產不出來。
+            if git show origin/ops-data:ops/data/health_log.csv > "$RUNNER_TEMP/health_log.csv" 2>/dev/null; then
+              mv "$RUNNER_TEMP/health_log.csv" ops/data/health_log.csv
+              echo "已取回 $(wc -l < ops/data/health_log.csv) 行軌跡"
+            else
+              rm -f "$RUNNER_TEMP/health_log.csv"
+              echo "ops-data 上還沒有 health_log.csv —— 資料源穩定度那一節會說明尚無紀錄"
+            fi
           else
             echo "ops-data 分支尚不存在 —— 每日健檢還沒跑過"
           fi
@@ -75,9 +88,17 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           tmp=$(mktemp -d) && cp -r ops/reports "$tmp/"
-          git fetch origin ops-data 2>/dev/null \
-            && git checkout -f -B ops-data origin/ops-data \
-            || git checkout -f -B ops-data
+          # `A && B || C` 的陷阱:B 失敗時 C 也會跑,而這裡的 C 是「從目前的
+          # HEAD(也就是 main)開一條新的 ops-data」—— 接下來的 push 會變成
+          # 非快轉而被拒。配上沒有明確 refspec 的 fetch(見上面那一步的說明),
+          # B 是**必定**失敗的,所以這條路每次都會走到。寫成 if/else,
+          # 讓「分支不存在」和「fetch 沒建立 ref」不要長得一樣。
+          if git fetch origin +refs/heads/ops-data:refs/remotes/origin/ops-data 2>/dev/null; then
+            git checkout -f -B ops-data origin/ops-data
+          else
+            echo "ops-data 尚不存在,由本次建立"
+            git checkout -f -B ops-data
+          fi
           mkdir -p ops && cp -r "$tmp/reports" ops/
           git add -f ops/reports/
           if git diff --cached --quiet; then

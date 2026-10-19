@@ -235,6 +235,17 @@ def section_data_health() -> Section:
         return Section("資料源穩定度",
                        "尚無 `data/health_log.csv` —— 每日健檢還沒累積足夠紀錄。\n"
                        "這一節要等每日流程跑滿一段時間才有內容。")
+    if HEALTH_LOG.stat().st_size == 0:
+        # 0 bytes 不等於「還沒有紀錄」。workflow 的「取回健檢軌跡」那一步用
+        # `git show ... > 檔案` 取回軌跡,而重導向在 git show 執行【之前】就把
+        # 目的檔建好了 —— 取回失敗就留下一個空殼。`exists()` 為真,
+        # 而 `pd.read_csv` 對 0 bytes 會拋 EmptyDataError,
+        # **整份年度報告會因為一個輔助檔而產不出來**。
+        # 這裡把它說成它本來的樣子:取回失敗,不是沒有紀錄。
+        return Section("資料源穩定度",
+                       "`data/health_log.csv` 是空檔案(0 bytes)—— 這不是"
+                       "「還沒有紀錄」,\n是**取回軌跡那一步沒有成功**"
+                       "(見 workflow 的「取回健檢軌跡」)。這一節沒得判讀。")
     log = pd.read_csv(HEALTH_LOG)
     log["date"] = pd.to_datetime(log["date"], errors="coerce")
     log = log.dropna(subset=["date"])

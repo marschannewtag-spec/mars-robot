@@ -1597,6 +1597,78 @@ BOM 會讓第一行變成 `\ufeff# ...`,而我們的解析器 `split("#")[0].str
 掃描式測試不會因為少看一個檔案而壞掉,它只會**少看一個檔案**,
 而那個狀態和「全部都檢查過」在輸出上長得一模一樣。
 
+### 兩個已經記在本檔裡的陷阱,在隔壁那個檔案原封不動(2026-10-19)
+
+`annual-review.yml` 是 `workflow_dispatch` 的,一年跑一次 ——
+**它是整個 repo 裡最久沒有被走過的路徑**,比「恢復正常 → 關閉 Issue」更久:
+那條至少在 2026-10-19 走過一次,這條一次都沒有。
+
+它裡面有兩個 bug,而兩個的形狀本檔都已經有專節:
+「`A && B || C` 不是 if/else」與「shell 的重導向會在命令失敗之前就把檔案清空」。
+兩節都是為了修 `daily-health.yml` 的心跳而寫的,**而隔壁這個檔案沒有一起改**。
+
+#### 實測到的連鎖(2026-10-19,本機真的 git)
+
+照 `actions/checkout` 的方式做一次單分支複製:
+
+```
+remote.origin.fetch = +refs/heads/main:refs/remotes/origin/main
+git fetch origin ops-data        → exit 0,只寫 FETCH_HEAD
+refs/remotes/origin/ops-data     → 不存在
+git show origin/ops-data:… > f   → 失敗,而 f 已經是 0 bytes
+明確 refspec 的 fetch            → refs/remotes/origin/ops-data 存在
+```
+
+`git fetch` 回 **0**,所以 `if` 走的是成功那一支;`git show` 失敗,
+訊息卻印「分支上尚無軌跡檔」—— 而那個分支上有 59 天的軌跡。
+**錯的診斷比沒有診斷更貴**,它會把讀的人指去查一個沒有問題的地方。
+
+接下來兩件事,都不是「有機率發生」,是**每次都會發生**:
+
+| | 後果 |
+|---|---|
+| `ops/data/health_log.csv` 是 0 bytes | `exists()` 為真 → `pd.read_csv` 拋 `EmptyDataError` → **整份年度報告產不出來** |
+| commit 那一步的 `A && B || C` | fetch 成功、checkout 失敗 → 走 C,從 **main** 開一條新的 ops-data → `git push` 非快轉被拒 |
+
+也就是說:**這個 workflow 從寫出來到現在,只要有人按下去就會紅**,
+而沒有人按過它,所以沒有人知道。
+
+#### 修法分三層,而第三層才是重點
+
+| 層 | 做了什麼 |
+|---|---|
+| shell | 明確 refspec;`git show` 先寫 `$RUNNER_TEMP` 成功才 `mv`;`A && B || C` 改 if/else |
+| Python | `section_data_health()` 認得 0 bytes,說成「取回沒有成功」而不是「還沒有紀錄」 |
+| **掃描** | **三條掃全部 workflow 的測試**,不是只修觸發它的那一個檔案 |
+
+三條掃描:每個 `git fetch` 都要有 `refs/remotes/origin/` 的明確 refspec、
+沒有任何地方把 `git checkout` 當成 `||` 的退路、
+`git show` 的重導向目標必須帶 shell 變數(也就是暫存位置,不是版控樹裡那個固定路徑)。
+每條都有「掃到 0 筆就硬失敗」的控制組。
+
+⚠ 重導向那條刻意**不去列舉允許的變數名**。第一版寫成
+「必須以 `$RUNNER_TEMP` / `$tmp` / `/tmp` 開頭」,結果把 `daily-health.yml`
+已經寫對的 `> "$keep/manifest.json"` 判成違規。判準應該是
+**「目的地不是那個固定路徑」**,不是「目的地在我想得到的那幾個暫存路徑裡」。
+
+#### 那段 shell 被真的跑了一次
+
+`tests/test_annual_ops_data.py` 建一個真的 bare repo 當 origin,
+照 `actions/checkout` 的方式單分支複製(並斷言 refspec 真的是窄的 ——
+前提不成立的話測試沒有意義),把那兩步的 `run:` 從 YAML 抽出來,
+在 `bash --noprofile --norc -eo pipefail` 下執行:
+
+| 情境 | 必須成立 |
+|---|---|
+| ops-data 上有軌跡 | 真的拿到,而且**不是 0 bytes** |
+| ops-data 上沒有那個檔 | **不留下 0 bytes 的空殼**(「沒有這個檔」與「檔是空的」在下游是兩種行為) |
+| ops-data 正常 | 訊息不可以去怪分支 |
+| commit 報告 | 新的 ops-data **必須以舊的為祖先**,而且 commit 裡不可以出現 main 的檔案 |
+
+**推論:一個陷阱被寫進文件,不等於它在這個 repo 裡只剩一個實例。**
+記下形狀之後要立刻拿去掃全部 —— 這和「一條新判準要立刻拿去掃全部」
+(`packaging>=23,<27` 那次)是同一條,只是對象從宣告換成了 shell。
+
 ### 來源狀態說「正常」,而它要餵的那塊面板是空的(2026-10-19)
 
 `signals.json` 的 `sources.markets.ok` 原本是:
@@ -1874,6 +1946,11 @@ Closed #2 as completed.
 | M58 | `n_counted` 自己另數一份 | `fetch_signals.py` | **抓到** |
 | M59 | 樣本不足的標記沉默(門檻改 0) | `fetch_signals.py` | **抓到** |
 | M60 | 成功但空的回應改回裸的「失敗」 | `fetch_signals.py` | **抓到** |
+| M61 | 年度健檢退回沒有 refspec 的 fetch + 直接重導向 | `annual-review.yml` | **抓到**(5 條) |
+| M62 | commit 步驟退回 `A && B \|\| C` | `annual-review.yml` | **抓到**(3 條) |
+| M63 | 拿掉 0 bytes 的防線 | `annual_review.py` | **抓到** |
+| M64 | 心跳改成直接重導向到版控樹裡的檔案 | `daily-health.yml` | **抓到** |
+| M65 | refspec 修了,但重導向還是打在目的檔上 | `annual-review.yml` | **抓到**(2 條) |
 
 M29 與 M40 最重要:前者是「空字串替判準做決定」那個洞本身,
 後者會讓安裝失敗退回成「只有一封紅燈信」。
@@ -2091,13 +2168,14 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 
 測試數:129 → 140(SW)→ 161(健檢 + 契約)→ 195(通知 / 代理鏈 / 資料落後)
 → 228(離線 SW / 月頻契約 / 嚴重程度 / DOM 契約 / 快取污染)
-→ **377**(資料鏡像 / CBOE 來源 / 代理嚴重程度 / 執行環境符合宣告 /
+→ **385**(資料鏡像 / CBOE 來源 / 代理嚴重程度 / 執行環境符合宣告 /
 來源退回鏈 / 鏡像各自獨立發布 / 鏡像日期合法性 / 軌跡表頭 / 鏡像的 workflow 契約 /
 鏡像讀取重試 / PWA 部署 / 探測不重試的不一致 / **相依治理**
 (宣告拆分 · 鎖定檔契約 · L1 失敗路徑 · canary 獨立性 · 失敗 shell 的真實執行) /
-設定區文案與退回鏈對帳 / 來源狀態與 dominance 同一個門檻)。
+設定區文案與退回鏈對帳 / 來源狀態與 dominance 同一個門檻 /
+年度健檢對 ops-data 的兩步真實執行 + 三條 workflow git 用法掃描)。
 
-10-19 那幾輪共 60 個突變:**58 個被抓到**,2 個逃掉 ——
+10-19 那幾輪共 65 個突變:**63 個被抓到**,2 個逃掉 ——
 一個是等價突變(有保存期限,見上),一個是我的測試太弱(已補強)。
 
 `health_check.py` 是 227 行、整套「沒消息就是好消息」的偵測器,**而沒有任何

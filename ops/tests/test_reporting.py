@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 SRC = OPS_ROOT / "src"
@@ -272,6 +274,145 @@ def test_empty_log_does_not_divide_by_zero(tmp_path: Path, monkeypatch) -> None:
 
     body = annual_review.section_data_health().body  # 不得拋例外
     assert "沒有可判讀的紀錄" in body
+
+
+def test_a_zero_byte_log_is_not_reported_as_having_no_records(
+        tmp_path: Path, monkeypatch) -> None:
+    """0 bytes 的軌跡檔 ≠ 只有表頭 ≠ 檔案不存在,而且都不該讓整份報告掛掉。
+
+    0 bytes 是 workflow 的「取回健檢軌跡」失敗時留下的東西:
+    `git show ... > 檔案` 的重導向在 git show 執行【之前】就把目的檔建好了。
+    這種檔案 `exists()` 為真,而 `pd.read_csv` 對它拋 `EmptyDataError` ——
+    **一個輔助檔足以讓整份年度報告產不出來**。
+
+    三種狀態的訊息必須互不相同:報告的讀者要據此決定去查哪裡。
+    """
+    import annual_review
+
+    missing = tmp_path / "nope.csv"
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", missing)
+    body_missing = annual_review.section_data_health().body
+
+    empty = tmp_path / "empty.csv"
+    empty.write_bytes(b"")
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", empty)
+    body_zero = annual_review.section_data_health().body   # 不得拋例外
+
+    header = tmp_path / "header.csv"
+    header.write_text("date,ok,n_checks,failed\n", encoding="utf-8")
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", header)
+    body_header = annual_review.section_data_health().body
+
+    assert "0 bytes" in body_zero, (
+        f"0 bytes 那一種沒有被說出來:{body_zero!r}"
+    )
+    assert len({body_missing, body_zero, body_header}) == 3, (
+        "「檔案不存在」/「0 bytes」/「只有表頭」有兩種以上長得一樣 —— "
+        "讀者會被指去查錯的地方:\n"
+        f"  不存在:{body_missing!r}\n  0 bytes:{body_zero!r}\n"
+        f"  只有表頭:{body_header!r}"
+    )
+
+
+# --------------------------------------------------------------------------
+# workflow 的 git 用法 —— 兩個已知陷阱,掃全部的檔案而不是只修觸發它的那一個
+# --------------------------------------------------------------------------
+
+
+def _workflow_shells() -> dict[str, str]:
+    """每個 workflow 的所有 `run:` 內容合起來(YAML 註解已經不在裡面)。
+
+    刻意讀整個檔案的 run 區塊而不是逐步驟 —— 這幾條掃描問的是
+    「這個 repo 裡還有沒有這種寫法」,不是某一步的行為。
+    """
+    wf_dir = OPS_ROOT.parent / ".github" / "workflows"
+    out: dict[str, str] = {}
+    for path in sorted(wf_dir.glob("*.yml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        runs = []
+        for job in (data.get("jobs") or {}).values():
+            for step in (job.get("steps") or []):
+                if step.get("run"):
+                    runs.append(step["run"])
+        out[path.name] = "\n".join(runs)
+    return out
+
+
+def _uncommented(shell: str) -> list[str]:
+    return [ln for ln in shell.splitlines() if not ln.lstrip().startswith("#")]
+
+
+def test_every_cross_branch_fetch_uses_an_explicit_refspec() -> None:
+    """`git fetch origin <分支>` 不保證建立 `origin/<分支>`。
+
+    `actions/checkout` 把 `remote.origin.fetch` 縮窄成只有當前分支,
+    所以那個指令會 **exit 0** 卻只寫 FETCH_HEAD —— 接著任何
+    `origin/<分支>` 的參照都會失敗,而 exit 0 讓 `if` 走了成功那一支。
+    本機實測過(單分支複製):refspec 是
+    `+refs/heads/main:refs/remotes/origin/main`,`origin/ops-data` 不存在。
+
+    `daily-health.yml` 的心跳修過這一點,`annual-review.yml` 漏掉 ——
+    所以這條掃全部,不是只修觸發它的那一個檔案。
+    """
+    offenders: list[str] = []
+    seen = 0
+    for name, shell in _workflow_shells().items():
+        for line in _uncommented(shell):
+            if "git fetch" not in line:
+                continue
+            seen += 1
+            if "refs/remotes/origin/" not in line:
+                offenders.append(f"{name}: {line.strip()}")
+    assert seen > 0, "掃不到任何 git fetch —— 這條測試會變成恆真"
+    assert not offenders, (
+        "這些 `git fetch` 沒有明確 refspec,不保證建立 remote-tracking ref:\n  "
+        + "\n  ".join(offenders)
+        + "\n寫成 `git fetch origin +refs/heads/X:refs/remotes/origin/X`。"
+    )
+
+
+def test_no_workflow_uses_a_checkout_as_an_or_fallback() -> None:
+    """`A && B || C` 讀起來像 if/else,但 B 失敗時 C 也會跑。
+
+    這裡的 C 一旦是「開一條新分支」,失敗的路徑就會從目前的 HEAD
+    (通常是 main)另起一條,接下來的 push 是非快轉而被拒。
+    """
+    offenders: list[str] = []
+    for name, shell in _workflow_shells().items():
+        for line in _uncommented(shell):
+            if re.search(r"\|\|\s*git\s+(checkout|switch)", line):
+                offenders.append(f"{name}: {line.strip()}")
+    assert not offenders, (
+        "這些地方把「切分支」當成 `||` 的退路:\n  " + "\n  ".join(offenders)
+        + "\n`A && B || C` 不是 if/else —— B 失敗時 C 也會跑。寫成 if/else。"
+    )
+
+
+def test_git_show_never_redirects_straight_onto_its_destination() -> None:
+    """`git show X > 檔案` 的重導向在 git show 執行【之前】就截斷目的檔。
+
+    失敗時留下的是一個 0 bytes 的空殼,而 `exists()` 為真 ——
+    下游會把它當成「有這個檔」去讀。先寫暫存檔、成功才搬過去。
+    """
+    offenders: list[str] = []
+    seen = 0
+    for name, shell in _workflow_shells().items():
+        for line in _uncommented(shell):
+            if "git show" not in line or ">" not in line:
+                continue
+            seen += 1
+            target = line.split(">", 1)[1].strip().strip('"')
+            # 判準是「目的地不是版控樹裡那個固定路徑」。寫死的 repo 相對路徑
+            # (ops/data/...)就是那個陷阱;帶 shell 變數的一律是暫存位置,
+            # 取回成功才會被 mv/cp 到定位。刻意不去列舉變數名 ——
+            # 列舉的話下一個人換個變數名就繞過了。
+            if "$" not in target:
+                offenders.append(f"{name}: {line.strip()}")
+    assert seen > 0, "掃不到任何 `git show ... >` —— 這條測試會變成恆真"
+    assert not offenders, (
+        "這些 `git show` 直接重導向到目的檔,失敗時會留下 0 bytes 的空殼:\n  "
+        + "\n  ".join(offenders)
+    )
 
 
 # --------------------------------------------------------------------------
