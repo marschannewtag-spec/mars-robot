@@ -752,3 +752,172 @@ def test_the_utc_helper_is_actually_what_the_checks_use() -> None:
 
     from datetime import datetime, timezone
     assert hc.today_utc() == datetime.now(timezone.utc).date()
+
+
+# --------------------------------------------------------------------------
+# 一個函式裡,A 段指派、B 段讀取(2026-10-20)
+#
+# `check_published_mirror()` 的 VIX 那段比的是 S&P 的 `age`,因為兩段共用
+# 變數名而 `age` 只在 S&P 那段被指派。結果:VIX 停更 300 天報 OK、
+# S&P 一壞 VIX 就報「cannot access local variable 'age'」。詳見 CLAUDE.md。
+#
+# 這個形狀會重複出現,因為「一個函式產出兩項獨立判斷」是這份程式的常見寫法
+# (check_* 幾乎都是)。所以用靜態掃描把整類釘住,而不是只補那一行。
+#
+# ⚠ 判準刻意窄,寧可漏也不要假警報:只在**前一個區塊有條件地**指派、
+#    而後一個區塊完全沒指派時才報。`try: x = f() except: return` 這種
+#    提早離開的寫法不算(走到後面就代表 try body 跑完了)——
+#    `_mirror_last_day()` 和 `dep_manifest.main()` 都是那個形狀,
+#    第一版判準把它們兩個都誤報了。
+# --------------------------------------------------------------------------
+
+def _names(node, ctx) -> set[str]:
+    import ast
+    return {n.id for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ctx)}
+
+
+def _terminates(stmts) -> bool:
+    import ast
+    return bool(stmts) and isinstance(
+        stmts[-1], (ast.Return, ast.Raise, ast.Continue, ast.Break))
+
+
+def _definite_stores(stmts) -> set[str]:
+    """沿著「一切順利」那條路徑一定會被綁定的名字。
+
+    條件式裡的指派不算 —— 那正是 `age` 的形狀:它在 try body 的 `else:`
+    分支裡,所以 S&P 走任何一條提早分支時它根本沒有被綁定。
+    """
+    import ast
+    out: set[str] = set()
+    for s in stmts:
+        if isinstance(s, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            out |= _names(s, ast.Store)
+        elif isinstance(s, (ast.With, ast.AsyncWith)):
+            out |= _definite_stores(s.body)
+        elif isinstance(s, ast.If) and s.orelse:
+            out |= _definite_stores(s.body) & _definite_stores(s.orelse)
+        elif isinstance(s, ast.Try) and all(
+                _terminates(h.body) for h in s.handlers):
+            out |= _definite_stores(s.body) | _definite_stores(s.orelse)
+        if _terminates([s]):
+            break
+    return out
+
+
+def _module_level(tree) -> set[str]:
+    """只看模組**最上層**的綁定。
+
+    ⚠ 不可以 `ast.walk(tree)` —— 那會鑽進每個函式 body,於是每個區域變數
+    都被算成模組層級名字,掃描就永遠 0 處。我第一版就是這樣,對著已知的
+    bug 跑出「0 處」,差一點就當成「沒有別的了」收工。
+    """
+    import ast
+    out: set[str] = set()
+    for s in tree.body:
+        if isinstance(s, (ast.Import, ast.ImportFrom)):
+            for a in s.names:
+                out.add(a.asname or a.name.split(".")[0])
+        elif isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(s.name)
+        else:
+            out |= _names(s, ast.Store)
+    return out
+
+
+def _cross_block_leaks(root: Path) -> tuple[list[str], int]:
+    import ast
+    hits: list[str] = []
+    scanned = 0
+    for f in sorted(root.glob("**/*.py")):
+        if "__pycache__" in str(f):
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        modlvl = _module_level(tree)
+        for fn in [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            scanned += 1
+            a = fn.args
+            params = {x.arg for x in a.args + a.kwonlyargs + a.posonlyargs}
+            if a.vararg:
+                params.add(a.vararg.arg)
+            if a.kwarg:
+                params.add(a.kwarg.arg)
+            nested = {d.name for d in ast.walk(fn)
+                      if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                        ast.ClassDef))}
+            blocks = [s for s in fn.body if isinstance(s, (ast.Try, ast.If))]
+            if len(blocks) < 2:
+                continue
+            safe = _definite_stores(fn.body) | params | modlvl | nested
+            seen: set[str] = set()
+            for b in blocks:
+                maybe = _names(b, ast.Store)
+                leaked = (_names(b, ast.Load) & seen) - maybe - safe
+                if leaked:
+                    hits.append(
+                        f"{f.name}:{b.lineno} {fn.name}() 讀到前面區塊"
+                        f"才(有條件地)指派的:{sorted(leaked)}")
+                seen |= maybe
+    return hits, scanned
+
+
+def test_no_function_lets_one_branch_read_another_branchs_variable() -> None:
+    leaks, scanned = _cross_block_leaks(SRC)
+    assert scanned >= 100, f"掃描沒掃到東西,只看到 {scanned} 個函式"
+    assert not leaks, (
+        "這些函式裡,後面的區塊讀到了前面區塊才指派的區域變數:\n  "
+        + "\n  ".join(leaks)
+        + "\n\n一個函式產出兩項獨立判斷時,兩段【不要共用變數名】"
+          "(sp_* / vix_*)——\n接錯會變成 NameError(立刻、大聲),"
+          "而不是一個看起來合理的錯數字。"
+    )
+
+
+def test_the_leak_scan_catches_the_bug_it_was_written_for(tmp_path: Path) -> None:
+    """安全網:掃描必須對**真的那個形狀**會紅,對正確的寫法不會紅。
+
+    少了這一條,掃描可以用十幾種方式無聲地變成空轉(我第一版就是:
+    `_module_level` 用了 `ast.walk`,對已知 bug 跑出 0 處)。
+    """
+    offender = tmp_path / "offender"
+    offender.mkdir()
+    (offender / "m.py").write_text(
+        "def check(cfg):\n"
+        "    out = []\n"
+        "    try:\n"
+        "        if cfg:\n"
+        "            out.append(1)\n"
+        "        else:\n"
+        "            age = 1\n"
+        "            out.append(age)\n"
+        "    except Exception as exc:\n"
+        "        out.append(exc)\n"
+        "    try:\n"
+        "        if age > 5:\n"
+        "            out.append(age)\n"
+        "    except Exception as exc:\n"
+        "        out.append(exc)\n"
+        "    return out\n",
+        encoding="utf-8")
+    leaks, _ = _cross_block_leaks(offender)
+    assert any("age" in x for x in leaks), \
+        f"掃描抓不到它被寫出來要抓的那個形狀:{leaks}"
+
+    innocent = tmp_path / "innocent"
+    innocent.mkdir()
+    (innocent / "m.py").write_text(
+        "def pick(d):\n"
+        "    try:\n"
+        "        ts = d['a']['b']\n"
+        "    except (KeyError, TypeError):\n"
+        "        return None\n"
+        "    if not ts:\n"
+        "        return None\n"
+        "    return ts[-1]\n",
+        encoding="utf-8")
+    leaks2, _ = _cross_block_leaks(innocent)
+    assert not leaks2, (
+        f"`except: return` 的提早離開寫法被誤報了:{leaks2} —— "
+        "假警報會讓這條掃描被放寬,放寬之後它就再也抓不到真的違規")
