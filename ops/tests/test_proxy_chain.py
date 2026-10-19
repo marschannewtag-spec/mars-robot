@@ -23,6 +23,7 @@ import re
 from pathlib import Path
 
 import pytest
+import requests
 import yaml
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
@@ -215,3 +216,31 @@ def test_mirror_is_serving_treats_skip_as_serving() -> None:
     assert not hc.mirror_is_serving(ok + failed), "任一項壞掉就不算在供應"
     # 不相關的項目不該影響判斷
     assert hc.mirror_is_serving(ok + [hc.Result("PWA 代理鏈", hc.FAIL, "")])
+
+
+def test_the_proxy_probe_is_not_retried(cfg: dict, monkeypatch) -> None:
+    """代理探測【刻意】不重試,和鏡像/部署那兩項不同。
+
+    這裡量的是「使用者的瀏覽器此刻能不能透過這個代理拿到資料」,而
+    `index.html` 的 `for(const p of PROXIES)` 對每個代理**只試一次**
+    (單一 `fetchT`,catch 就換下一個)。探測若重試,健檢就會比真正的
+    消費端更樂觀 —— 那是「用產生端的尺量消費端」,這個專案踩過好幾次。
+
+    ⚠ 這條測試存在的理由是**防止好意的統一**:2026-10-19 把鏡像與部署
+    兩項改成帶重試之後,很容易順手把這一個也改掉。
+    """
+    import health_check as hc  # 同檔其他測試一樣在函式內匯入
+
+    monkeypatch.setattr(hc, "_LIVE_BACKOFF", 0)
+    calls = {"n": 0}
+
+    def fake_get(*a, **k):
+        calls["n"] += 1
+        raise requests.ConnectionError("boom")
+
+    monkeypatch.setattr(hc.requests, "get", fake_get)
+    hc.check_proxies(cfg, mirror_ok=True)
+    assert calls["n"] == len(cfg["proxies"]), (
+        f"{len(cfg['proxies'])} 個代理卻發出 {calls['n']} 次請求 —— "
+        f"探測不該重試(它要和 PWA 的行為一致)"
+    )

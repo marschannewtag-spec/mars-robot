@@ -424,6 +424,14 @@ def check_proxies(cfg: dict, mirror_ok: bool = True) -> list[Result]:
     for p in cfg["proxies"]:
         url = p["template"].replace("{url}", quote(target, safe=""))
         try:
+            # ⚠ 這一個【刻意不重試】,和鏡像/部署那兩項不同。
+            #
+            # 這裡量的是「使用者的瀏覽器此刻能不能透過這個代理拿到資料」,
+            # 而 index.html 的 `for(const p of PROXIES)` 對每個代理**只試一次**
+            # (單一 fetchT,catch 就換下一個,2026-10-19 核對過原始碼)。
+            # 探測若重試,健檢就會比真正的消費端更樂觀 —— 那是「用產生端的尺
+            # 量消費端」,本檔踩過好幾次的同一個形狀。
+            # 由 test_proxy_chain.py::test_the_proxy_probe_is_not_retried 釘住。
             r = requests.get(url, headers=browser_headers, timeout=15)
             if r.status_code == 200 and '"chart"' in r.text[:400]:
                 alive.append(p["name"])
@@ -473,17 +481,17 @@ def _mirror_last_day(sp_json: dict) -> str | None:
     return datetime.fromtimestamp(int(ts[-1]), timezone.utc).strftime("%Y-%m-%d")
 
 
-# 讀線上鏡像的重試參數。`fetch_data._get()` 從一開始就是 3 次指數退避,
+# 讀「線上此刻是什麼狀態」的重試參數。`fetch_data._get()` 從一開始就是 3 次指數退避,
 # 而這個新檢查原本是**整個 repo 唯一沒有重試的網路讀取** —— 偏偏它讀的是
 # PWA 的第一順位來源,而且它失敗時會連帶把「PWA 代理鏈」也推成 FAIL
 # (`mirror_is_serving()` 回 False),於是一次 20 秒的網路抽風會被報成
 # 兩項故障 + 改標題 + 留一則言。那正是這個專案最怕的狼來了。
-_MIRROR_RETRIES = 3
-_MIRROR_BACKOFF = 1.0  # 秒,指數退避。測試把它設成 0
+_LIVE_RETRIES = 3
+_LIVE_BACKOFF = 1.0  # 秒,指數退避。測試把它設成 0
 
 
-def _get_mirror(url: str, timeout: int = 20):
-    """讀鏡像,只對「問不到」重試;「伺服器明確回答了」不重試。
+def _get_live(url: str, timeout: int = 20):
+    """讀線上資源,只對「問不到」重試;「伺服器明確回答了」不重試。
 
     | 情況 | 重試 | 理由 |
     |---|---|---|
@@ -498,7 +506,7 @@ def _get_mirror(url: str, timeout: int = 20):
     """
     last_exc: Exception | None = None
     resp = None
-    for attempt in range(_MIRROR_RETRIES):
+    for attempt in range(_LIVE_RETRIES):
         try:
             resp = requests.get(url, headers=UA, timeout=timeout)
             if resp.status_code < 500:
@@ -506,8 +514,8 @@ def _get_mirror(url: str, timeout: int = 20):
             last_exc = None
         except Exception as exc:  # noqa: BLE001 — 任何「問不到」都值得重試
             resp, last_exc = None, exc
-        if attempt < _MIRROR_RETRIES - 1 and _MIRROR_BACKOFF:
-            time.sleep(_MIRROR_BACKOFF * (2 ** attempt))
+        if attempt < _LIVE_RETRIES - 1 and _LIVE_BACKOFF:
+            time.sleep(_LIVE_BACKOFF * (2 ** attempt))
     if resp is not None:
         return resp  # 連續 5xx —— 交給呼叫端照常報 HTTP 狀態碼
     raise last_exc  # type: ignore[misc]
@@ -539,7 +547,7 @@ def check_published_mirror(cfg: dict) -> list[Result]:
 
     # --- S&P 月序列 ---
     try:
-        r = _get_mirror(mcfg["sp_url"])
+        r = _get_live(mcfg["sp_url"])
         if r.status_code != 200:
             out.append(Result("PWA 資料鏡像 · S&P", FAIL,
                               f"HTTP {r.status_code} —— PWA 會退到代理鏈/月頻"))
@@ -572,7 +580,7 @@ def check_published_mirror(cfg: dict) -> list[Result]:
 
     # --- VIX 日序列 ---
     try:
-        r = _get_mirror(mcfg["vix_url"])
+        r = _get_live(mcfg["vix_url"])
         if r.status_code != 200:
             out.append(Result("PWA 資料鏡像 · VIX", FAIL,
                               f"HTTP {r.status_code} —— PWA 會完全沒有 VIX 腿"))
@@ -636,7 +644,9 @@ def check_pwa_deploy(cfg: dict) -> list[Result]:
     """線上的 PWA 是不是還活著、而且是預期的那一版。"""
     url = cfg["pwa"]["url"]
     try:
-        r = requests.get(url, headers=UA, timeout=20)
+        # 走 _get_live:一次網路抽風不該報成「PWA 掛了」。判準沒有移動 ——
+        # 真的連不上、或標記真的不見了,三次之後照樣 FAIL。
+        r = _get_live(url)
         if r.status_code != 200:
             return [Result("PWA 部署", FAIL, f"{url} 回 HTTP {r.status_code}")]
         missing = [m for m in cfg["pwa"]["expect_markers"] if m not in r.text]
@@ -656,7 +666,7 @@ def check_worker(cfg: dict) -> list[Result]:
     if not url:
         return [Result("自架 Worker", SKIP, "未設定(config.yml 的 worker_url 留空)")]
     try:
-        r = requests.get(url, headers=UA, timeout=15)
+        r = _get_live(url, timeout=15)
         if r.status_code == 200 and '"chart"' in r.text[:400]:
             return [Result("自架 Worker", OK, f"HTTP 200,{len(r.text) // 1024} KB")]
         return [Result("自架 Worker", FAIL,

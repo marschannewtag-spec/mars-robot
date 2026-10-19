@@ -972,3 +972,89 @@ def test_an_existing_log_does_not_get_a_second_header(sandbox: Path) -> None:
     assert text.count("date,ok,n_checks,failed") == 1
     df = pd.read_csv(hc.HEALTH_LOG)
     assert len(df) == 2 and list(df["ok"]) == [1, 0]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 「PWA 部署」這一項原本一條測試都沒有(2026-10-19)
+#
+# 它是少數幾個能產生 FAIL 的檢查之一,而它的 FAIL 文案是「無法連線」——
+# 也就是**最容易被一次網路抽風誤觸**的那種。既然它在替整個線上版把關,
+# 它自己就需要被驗:抽一次風不報警、真的連不上要報警、
+# 而「回了 200 但內容不對」不得被重試吞掉。
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class _Resp:
+    def __init__(self, status: int, body: str):
+        self.status_code = status
+        self.text = body
+
+
+def _deploy_run(monkeypatch, cfg: dict, seq: list):
+    """跑 check_pwa_deploy,依序回應第 n 次請求,回傳 (Result, 請求次數)。"""
+    import requests  # noqa: PLC0415 — 只有這幾條測試需要造連線錯誤
+
+    monkeypatch.setattr(hc, "_LIVE_BACKOFF", 0)
+    calls = {"n": 0}
+
+    def fake_get(url, **kw):
+        item = seq[min(calls["n"], len(seq) - 1)]
+        calls["n"] += 1
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    monkeypatch.setattr(hc.requests, "get", fake_get)
+    assert requests  # 讓上面的 import 不是裝飾用
+    return hc.check_pwa_deploy(cfg)[0], calls["n"]
+
+
+def _good_page(cfg: dict) -> _Resp:
+    return _Resp(200, "".join(cfg["pwa"]["expect_markers"]))
+
+
+def test_a_healthy_pwa_deploy_is_ok(cfg: dict, monkeypatch) -> None:
+    """控制組。少了它,下面每一條都可能是「永遠紅」的空轉。"""
+    r, n = _deploy_run(monkeypatch, cfg, [_good_page(cfg)])
+    assert r.status == hc.OK, r.detail
+    assert n == 1, "成功時不該多問"
+
+
+def test_a_transient_blip_is_not_a_dead_pwa(cfg: dict, monkeypatch) -> None:
+    import requests
+
+    r, n = _deploy_run(monkeypatch, cfg,
+                       [requests.ConnectionError("boom"), _good_page(cfg)])
+    assert r.status == hc.OK, r.detail
+    assert n == 2, f"沒有重試,只請求了 {n} 次"
+
+
+def test_a_pwa_that_really_is_unreachable_is_still_a_failure(
+    cfg: dict, monkeypatch
+) -> None:
+    """安全網。重試用完仍然失敗必須 FAIL —— 否則「重試」就是「不報警」。"""
+    import requests
+
+    r, n = _deploy_run(monkeypatch, cfg, [requests.ConnectionError("boom")])
+    assert r.status == hc.FAIL and r.failed, r.detail
+    assert n == 3
+
+
+def test_a_404_from_pages_is_not_retried(cfg: dict, monkeypatch) -> None:
+    """4xx 是定論:Pages 說沒有這一頁。不重試,直接報。"""
+    r, n = _deploy_run(monkeypatch, cfg, [_Resp(404, "Not Found")])
+    assert r.status == hc.FAIL and "404" in r.detail
+    assert n == 1, f"404 被重試了 {n} 次"
+
+
+def test_a_200_with_missing_markers_is_still_a_failure(
+    cfg: dict, monkeypatch
+) -> None:
+    """回了 200 但內容不是預期的那一版 —— 重試不得把這件事吞掉。
+
+    這是「部署回退到舊版」唯一看得出來的訊號:HTTP 狀態完全正常,
+    和「還在回 HTTP 200 的死鏡像」同一個形狀。
+    """
+    r, n = _deploy_run(monkeypatch, cfg, [_Resp(200, "<html>舊版</html>")])
+    assert r.status == hc.FAIL and r.failed, r.detail
+    assert n == 1, "內容不對不是『問不到』,不該重試"

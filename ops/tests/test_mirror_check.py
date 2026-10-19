@@ -316,7 +316,7 @@ def _seq_run(monkeypatch, cfg: dict, *, sp_seq: list, vix_seq: list):
     序列元素是 `_Resp` 或 `Exception` 實例;用完之後固定重複最後一個
     (所以「只有一個元素」就代表「持續如此」)。
     """
-    monkeypatch.setattr(hc, "_MIRROR_BACKOFF", 0)  # 測試不要真的睡
+    monkeypatch.setattr(hc, "_LIVE_BACKOFF", 0)  # 測試不要真的睡
     sp_url = cfg["pwa"]["mirror"]["sp_url"]
     calls = {"sp": 0, "vix": 0}
 
