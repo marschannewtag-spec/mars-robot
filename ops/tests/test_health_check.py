@@ -1115,19 +1115,59 @@ def test_a_200_with_missing_markers_is_still_a_failure(
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_a_known_start_date_is_reported_as_a_known_start_date() -> None:
-    """控制組:有前次標記時,照常印「自 X 起,N 天」,不准加雜訊。
+def _lines_for(comment: str, item: str) -> str:
+    """只取出提到 `item` 的那幾行。
+
+    ⚠ 一則通知裡有很多項目,而它們的起點來歷可以不同 —— 對整段 comment
+    做 `in` 判斷,會讓**別的項目**的警語冒充成這一項的。
+    (與 pine tooltip 那次 M91 同一個形狀:判準要對準那一項,不是對準
+    整段文字裡有沒有出現某個詞。)
+    """
+    hit = [ln for ln in comment.splitlines() if item in ln]
+    assert hit, f"通知裡完全沒有提到 {item}:\n{comment}"
+    return "\n".join(hit)
+
+
+def _observed_start(day: str, item: str):
+    """造出一個【真的看過】的起點:上一輪這一項是好的,這一輪才壞。
+
+    這是唯一能確定「今天就是它的起點」的情況 —— 上一輪的失敗集合裡
+    沒有它。回傳那一輪的 body。
+    """
+    _, b0 = _plan_on("2026-08-31", ["PWA 代理鏈"])          # 別的項目在壞
+    _, b1 = _plan_on(day, ["PWA 代理鏈", item], previous_body=b0)
+    return b1
+
+
+def test_an_observed_start_is_reported_as_a_plain_date() -> None:
+    """控制組:真的看過起點時,照常印「自 X 起,N 天」,不准加雜訊。
 
     少了這一條,「永遠印不確定」會是讓下面幾條全綠的最省事寫法,
-    而那會讓真正知道起點的那些項目也變得不可信。
+    而那會讓真正知道起點的那些項目也變得不可信 ——
+    一個永遠亮著的警語等於沒有警語。
     """
-    _, b1 = _plan_on("2026-09-01", ["資料新鮮度 · vix"])
-    n2, _ = _plan_on("2026-09-23", ["資料新鮮度 · vix"], previous_body=b1)
+    b1 = _observed_start("2026-09-01", "資料新鮮度 · vix")
+    n2, _ = _plan_on("2026-09-23", ["PWA 代理鏈", "資料新鮮度 · vix"],
+                     previous_body=b1)
     assert n2.comment, "22 天應該要跨級出聲"
-    assert "自 2026-09-01 起" in n2.comment, n2.comment
-    assert "22 天" in n2.comment, n2.comment
-    assert "先前沒有紀錄" not in n2.comment, \
-        f"起點是已知的,卻說成不知道:\n{n2.comment}"
+    mine = _lines_for(n2.comment, "資料新鮮度 · vix")
+    assert "自 2026-09-01 起" in mine, mine
+    assert "22 天" in mine, mine
+    assert "先前沒有紀錄" not in mine, \
+        f"起點是真的看過的,卻說成不知道:\n{mine}"
+
+
+def test_an_observed_start_stays_observed_across_runs() -> None:
+    """看過就是看過 —— 之後每一輪都還是「自 X 起」,不會退化成推定。"""
+    b = _observed_start("2026-09-01", "資料新鮮度 · vix")
+    for day in ("2026-09-23", "2026-10-25", "2026-12-20"):
+        n, b = _plan_on(day, ["PWA 代理鏈", "資料新鮮度 · vix"], previous_body=b)
+        if n.comment:
+            mine = _lines_for(n.comment, "資料新鮮度 · vix")
+            assert "自 2026-09-01 起" in mine, (day, mine)
+            assert "至少" not in mine, (day, mine)
+    since = hc._parse_kv(b, hc._SINCE_PREFIX)["資料新鮮度 · vix"]
+    assert since.endswith(",o"), f"來歷欄沒有存成 observed:{since!r}"
 
 
 def test_a_lost_marker_does_not_claim_the_failure_started_today() -> None:
@@ -1161,17 +1201,62 @@ def test_an_item_whose_marker_is_corrupt_is_also_marked_unknown() -> None:
         assert "自 壞掉的日期 起,0 天" not in n.comment, n.comment
 
 
-def test_the_unknown_marker_disappears_once_a_real_start_is_recorded() -> None:
-    """安全網:第一次之後標記就存下來了,第二次起必須變成已知。
+def test_an_assumed_start_stays_assumed_across_runs() -> None:
+    """推定出來的起點,**不會因為被寫下來過就變成事實**。
 
-    少了這一條,「永遠不知道」會讓這個警語變成每一則通知都有的背景噪音,
-    而一個永遠亮著的警告等於沒有警告。
+    ⚠ 這是 2026-10-20 第一版漏掉的洞。那一版只靠「存下來的字串解析得出
+    日期嗎」判斷起點可不可信 —— 而推定值一旦寫回標記,下一輪就解析得出來,
+    於是**不確定性在一個週期之後被洗成事實**,報告會用一樣肯定的語氣
+    說一件沒有人看過的事。
+
+    來歷因此存成獨立的第三欄(`日期,等級,o|a`),一旦是 a 就永遠是 a。
     """
-    n1, b1 = _plan_on("2026-10-20", ["資料新鮮度 · vix"])
-    assert "先前沒有紀錄" in n1.comment
-    n2, _ = _plan_on("2026-11-20", ["資料新鮮度 · vix"], previous_body=b1)
-    assert n2.comment, "31 天應該要跨級出聲"
-    assert "自 2026-10-20 起" in n2.comment, n2.comment
-    assert "先前沒有紀錄" not in n2.comment, (
-        "第一次就已經把起點存進標記了,第二次不該再說不知道:\n" + n2.comment
-    )
+    n1, b = _plan_on("2026-10-20", ["資料新鮮度 · vix"])
+    assert "先前沒有紀錄" in n1.comment, n1.comment
+
+    seen = 0
+    for day in ("2026-11-20", "2026-12-25", "2027-02-01"):
+        n, b = _plan_on(day, ["資料新鮮度 · vix"], previous_body=b)
+        if n.comment:
+            seen += 1
+            mine = _lines_for(n.comment, "資料新鮮度 · vix")
+            assert "先前沒有紀錄" in mine, (
+                f"{day} 的通知把推定的起點說成了事實:\n{mine}")
+            assert "至少" in mine, (day, mine)
+    assert seen, "後續完全沒有出聲,這條測試沒有驗到任何東西"
+
+    since = hc._parse_kv(b, hc._SINCE_PREFIX)["資料新鮮度 · vix"]
+    assert since.endswith(",a"), f"來歷欄沒有存成 assumed:{since!r}"
+
+
+def test_an_old_two_field_marker_is_treated_as_assumed() -> None:
+    """舊版標記(只有「日期,等級」兩欄)的來歷不可考 —— 一律當推定。
+
+    遷移時寧可說「不知道」也不要替舊資料擔保。那些日期是舊版寫的,
+    而舊版正是會把「我們開始數的那天」寫成起點的那一版。
+    """
+    body = ("報告\n\n<!-- failsince: 資料新鮮度 · vix=2026-08-01,2 -->\n"
+            "<!-- failset: 資料新鮮度 · vix -->\n")
+    n, _ = _plan_on("2026-10-20", ["資料新鮮度 · vix"], previous_body=body)
+    assert n.comment, "沒有 lastnotice 標記時應該會出聲"
+    assert "先前沒有紀錄" in n.comment, (
+        "舊版的兩欄標記被當成「真的看過的起點」:\n" + n.comment)
+    assert "2026-08-01" in n.comment, (
+        "舊版記下來的日期仍然要用(它是個下界),只是不能當成事實:\n"
+        + n.comment)
+
+
+def test_a_rebroken_item_gets_an_observed_start() -> None:
+    """修好又壞掉 = 我們親眼看過它是好的 → 起點是 observed,不加警語。
+
+    這是 observed 這條路徑最重要的真實案例。少了它,整個 o/a 判斷可以
+    永遠回 a 而所有測試照樣綠。
+    """
+    _, b1 = _plan_on("2026-09-01", ["A"])
+    _, b2 = _plan_on("2026-09-20", [], previous_body=b1)      # A 恢復
+    n3, b3 = _plan_on("2026-09-21", ["A"], previous_body=b2)  # 又壞
+    assert n3.comment
+    assert "先前沒有紀錄" not in n3.comment, (
+        "親眼看過它恢復又壞掉,起點卻被當成推定:\n" + n3.comment)
+    since = hc._parse_kv(b3, hc._SINCE_PREFIX)["A"]
+    assert since.startswith("2026-09-21") and since.endswith(",o"), since

@@ -1006,36 +1006,59 @@ def plan_notice(previous_body: str | None, names: list[str],
     """
     prev = _parse_kv(previous_body, _SINCE_PREFIX)
     last_notice = _parse_kv(previous_body, _NOTICE_PREFIX).get("at")
+    # ⚠ 要在算 since 之前就拿到 —— 判斷「今天是不是真的起點」需要知道
+    #    上一輪這一項在不在失敗集合裡。
     known_before = parse_failset(previous_body)
 
-    # ⚠ 「它從那天開始壞」和「我們從那天開始數」必須分開。
+    # ⚠ 「它從那天開始壞」和「我們從那天開始數」必須分開,而且**來歷要存起來**。
+    #
     #    原本是 `since[n] = s or today` —— 沒有前次標記時起點就是今天,
-    #    內文印「(自 2026-10-20 起,0 天)」。第一次失敗時那是對的,
-    #    但 Issue 被關掉重開(標記活在內文裡,一關就沒了)、標記被編輯壞、
-    #    或 first_time 遷移時,一個已經壞 60 天的項目會被寫成「今天才壞」,
-    #    而且嚴重程度跟著從 0 重新數 —— **長期故障於是永遠不會跨級**。
+    #    內文印「(自 2026-10-20 起,0 天)」。第一次失敗時那是對的,但
+    #    Issue 被關掉重開(標記活在內文的 HTML 註解裡,一關就沒了)、標記被
+    #    編輯壞、或 first_time 遷移時,一個已經壞 60 天的項目會被寫成
+    #    「今天才壞」,嚴重程度跟著從 0 重新數 ——
+    #    **長期故障於是永遠不會跨級**。
+    #
+    #    ⚠ 第一版只靠「存下來的字串解析得出日期嗎」來判斷起點可不可信。
+    #      那有一個洞:推定出來的日期一旦寫回標記,下一輪它就解析得出來了,
+    #      於是**推定值在一個週期之後被洗成事實**。不確定性被洗掉,
+    #      而報告會用一樣的語氣說一件沒有人看過的事。
+    #
+    #    所以來歷存成**獨立的第三欄**:`日期,等級,o|a`
+    #      o = observed  上一輪確實看過這一項是好的,所以今天真的是起點
+    #      a = assumed   我們只是從這天開始數,實際可能更早
+    #    一旦是 a 就永遠是 a —— 它不會因為被寫下來過就變成事實。
+    #    沒有第三欄的是舊版標記:來歷不可考,一律當 assumed。
     #
     #    刻意【不】去猜真正的起點(例如回頭翻 health_log)。我們真的不知道,
     #    猜一個數字會讓通知頻率建立在編造的基礎上。要做的是把「不知道」
     #    講出來 —— 報告事實,不做結論。
     since: dict[str, str] = {}
-    since_known: dict[str, bool] = {}
+    since_observed: dict[str, bool] = {}
     notified_lv: dict[str, int] = {}
     for n in names:
-        raw = prev.get(n, "")
-        s, _, lv = raw.partition(",")
-        # 標記壞掉(不是 ISO 日期)也算不知道。`_days_between` 對它回 0,
-        # 配上「印成今天」就變成一個看起來很確定的假事實。
-        known = bool(s) and _as_date(s) is not None
-        since[n] = s if known else today
-        since_known[n] = known
+        parts = prev.get(n, "").split(",")
+        s = parts[0]
+        lv = parts[1] if len(parts) > 1 else ""
+        flag = parts[2] if len(parts) > 2 else ""
+        if _as_date(s) is not None:
+            since[n] = s
+            since_observed[n] = flag == "o"
+        else:
+            # 沒有起點,或存下來的根本不是日期(被手動編輯壞、被舊版寫壞)。
+            # 只有在「上一輪確實看過這一項是好的」時,今天才真的是它的起點。
+            since[n] = today
+            since_observed[n] = (known_before is not None
+                                 and n not in known_before)
         notified_lv[n] = int(lv) if lv.isdigit() else 0
 
     def since_phrase(n: str, lead: str = "") -> str:
-        if not since_known[n]:
-            return (f"(**本次統計自 {since[n]} 起** —— 先前沒有紀錄,"
-                    f"實際開始的時間可能更早)")
-        return f"(自 {since[n]} 起,{lead}{_days_between(since[n], today)} 天)"
+        d = _days_between(since[n], today)
+        if since_observed[n]:
+            return f"(自 {since[n]} 起,{lead}{d} 天)"
+        # 天數仍然要講 —— 它是一個【下界】,而跨級就是靠它判的。
+        return (f"(**至少 {d} 天** —— 自 {since[n]} 開始統計,"
+                f"先前沒有紀錄,實際開始的時間可能更早)")
 
     now_lv = {n: severity(_days_between(since[n], today)) for n in names}
 
@@ -1087,7 +1110,8 @@ def plan_notice(previous_body: str | None, names: list[str],
     #   留著不是防禦性程式碼,是因為它釘住的是語意而不是現況 ——
     #   哪天 speak 的條件多了一條抑制(例如留言頻率上限),沒有它就會
     #   出現「等級前進了但使用者沒被告知」的無聲漏報。
-    new_state = {n: f"{since[n]},{now_lv[n] if speak else notified_lv[n]}" for n in names}
+    new_state = {n: f"{since[n]},{now_lv[n] if speak else notified_lv[n]},"
+                    f"{'o' if since_observed[n] else 'a'}" for n in names}
     return Notice(
         comment=comment,
         state_markers=[
