@@ -101,6 +101,38 @@ def pct(x: float) -> str:
     return f"{x * 100:.2f}%"
 
 
+# PWA 用同一個門檻標「進行中」(`vLast.n < 15`)。兩個消費端對「這個月走完了沒」
+# 必須用同一把尺 —— 不同的話,報告會說「完整」而畫面說「進行中」。
+MIN_DAYS_FOR_COMPLETE_MONTH = 15
+
+
+def month_observation_counts() -> dict[str, int]:
+    """ym -> 該月在原始日K 裡的交易日數。
+
+    ⚠ 刻意**不**改 `engine.signal_frame()` 的回傳 schema。那個 frame 是真理來源,
+    `test_parity.py` / `test_golden.py` / `pine_sim.py` 全都逐月比對它 ——
+    為了一個一年跑一次的報告去動它的介面,代價不成比例。
+    這裡自己從原始日資料數一次,不重複任何訊號計算。
+
+    為什麼需要它:`signal_frame()` 在 merge 時取了 `n` 卻沒有回傳,
+    所以年度報告拿不到「這個月走完了沒」。於是 `section_extremes` 的百分位、
+    `section_recent` 的最近 12 個月,都可能把一個只跑了兩天的當月
+    當成完整月份,而且畫面上沒有任何標記 —— PWA 有標,報告沒標。
+    """
+    spd = fetch_data.load("sp_daily")
+    d = pd.to_datetime(spd["date"], utc=True, format="mixed")
+    return d.dt.strftime("%Y-%m").value_counts().to_dict()
+
+
+def incomplete_tail(sig: pd.DataFrame) -> str | None:
+    """最後一個月若還沒走完,回它的 ym;走完了回 None。"""
+    if not len(sig):
+        return None
+    last = str(sig["ym"].iloc[-1])
+    n = month_observation_counts().get(last, 0)
+    return last if n < MIN_DAYS_FOR_COMPLETE_MONTH else None
+
+
 # --------------------------------------------------------------------------
 # 各節
 # --------------------------------------------------------------------------
@@ -178,6 +210,11 @@ def section_extremes(sig: pd.DataFrame) -> Section:
         elif not hi_is_extreme and pctile >= 95:
             note = "歷史前 5%(乖離偏高)"
         rows.append(f"| {label} | {v:.4f} | {pctile:.1f} | {note} |")
+    partial = incomplete_tail(sig)
+    if partial:
+        rows += ["", f"> ⚠ **「現值」取自 {partial},而那個月還沒走完**"
+                 f"(交易日數少於 {MIN_DAYS_FOR_COMPLETE_MONTH} 天)。"
+                 "百分位是拿一個進行中的讀數去比歷史上的【完整月】,月底前還會變。"]
     return Section("極端值檢查", "\n".join(rows))
 
 

@@ -24,6 +24,7 @@ VIX 日頻     GitHub datasets,1990 起,免金鑰,穩定
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import io
 import json
@@ -181,6 +182,17 @@ def read_manifest() -> dict:
     return {}
 
 
+def has_local(name: str) -> bool:
+    """本機有沒有這份資料的既有檔案。
+
+    健檢用它來分辨兩件在報告上必須長得不一樣的事:
+      「抓取失敗 **且** 本機什麼都沒有」→ 沒得判斷,SKIP
+      「抓取失敗 **但** 本機還有上一份好資料」→ 仍然判斷得出它有多舊,照常檢查
+    第二種才是使用者最需要知道的:你手上最新的那份資料已經幾天了。
+    """
+    return (RAW_DIR / SOURCES[name].filename).exists()
+
+
 def load(name: str, refresh_if_missing: bool = True) -> pd.DataFrame:
     """從 data/raw/ 讀取。檔案不存在時視情況抓取。"""
     path = RAW_DIR / SOURCES[name].filename
@@ -193,7 +205,23 @@ def load(name: str, refresh_if_missing: bool = True) -> pd.DataFrame:
                 f"data/raw/{SOURCES[name].filename} 不存在,且未允許重新抓取"
             )
         refresh([name])
-    return pd.read_csv(path)
+    # ⚠ 一定要回 copy。年度健檢的敏感度網格會呼叫 144 次,而 `total_return_perf()`
+    #   對取回來的 DataFrame 做 `sh["ym"] = ...`(**原地改**)—— 直接回快取物件的話
+    #   那個原地改會污染快取,之後每一格拿到的都是被改過的東西,
+    #   結果會變成「依呼叫順序而改變」。那比慢 26 秒嚴重得多。
+    return _read_csv_cached(str(path), path.stat().st_mtime).copy()
+
+
+@functools.lru_cache(maxsize=8)
+def _read_csv_cached(path_str: str, mtime: float) -> pd.DataFrame:
+    """以 (路徑, mtime) 當鍵快取 CSV 解析。
+
+    年度健檢的 144 格網格原本每格都重讀三個 CSV —— 實測 432 次讀檔、26 秒。
+    把 mtime 放進鍵裡,`refresh()` 寫入新檔之後會自然失效,不需要手動清。
+
+    **永遠不要把這個函式的回傳值直接交出去** —— 見 `load()` 的說明。
+    """
+    return pd.read_csv(path_str)
 
 
 if __name__ == "__main__":

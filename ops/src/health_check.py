@@ -21,7 +21,7 @@ import argparse
 import io
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import re
 from pathlib import Path
 from urllib.parse import quote
@@ -150,37 +150,89 @@ def check_sources_reachable(cfg: dict) -> list[Result]:
     return out
 
 
+def _shift_month(year: int, month: int, back: int) -> str:
+    """回 'YYYY-MM',往前推 `back` 個月。純算術,不碰 datetime 的月份加減陷阱。"""
+    idx = year * 12 + (month - 1) - back
+    return f"{idx // 12:04d}-{idx % 12 + 1:02d}"
+
+
+def expected_month(today: date, grace_day: int) -> str:
+    """到了 `today` 這一天,一個月頻來源【至少】該有哪個觀測月的資料。
+
+    月初的寬限窗內只要求「上上個月」—— 因為這個月的那一列本來就還沒發布。
+    過了寬限日就要求「上個月」必須已經到了。
+
+    把它抽成純函式是刻意的:這是整條判準的核心,而它必須能在不碰網路、
+    不碰檔案、不碰 datetime.now() 的情況下逐日模擬一整年(見測試)。
+    """
+    return _shift_month(today.year, today.month, 1 if today.day >= grace_day else 2)
+
+
 def check_freshness(cfg: dict, unavailable: set[str] | None = None) -> list[Result]:
     """最新一筆距今多久。停更是最常見的無聲故障。
 
+    判準依來源自己的發布頻率:
+      daily   —— 最後一筆距今幾天,超過 max_age_days 就紅
+      monthly —— 該發布的那一期到了沒(見 `expected_month()`)
+
+    ⚠ 月頻來源【不能】用天數判。Shiller 的觀測月 M 那一列在 M+1 月初才發布,
+      所以它在被取代之前年齡必然走到約 60 天 —— 任何小於 60 的天數門檻都會
+      每個月必然破線一次。那不是偵測,那是週期性假警報。
+
     `unavailable`:本次可達性已失敗的來源(見 `unreachable_sources()`)。
-    那些來源的本機檔案這一輪不會更新、在乾淨 runner 上甚至根本不存在,
-    所以這裡標 SKIP 而不是再報一次 FAIL —— 同一個故障報兩次就是噪音。
+
+    ⚠ **抓取失敗不等於沒得判斷。** 第一版對 unavailable 的來源一律 SKIP,
+    那是錯的:只要本機還有上一份好資料,它有多舊仍然判斷得出來 ——
+    而且那正是使用者最需要知道的事(「你手上最新的那份已經 25 天了」)。
+    一律 SKIP 會把它藏起來,而來源連續死三週時那個訊號才是重點。
+
+    所以判準改成:**本機有沒有檔案**。沒有才 SKIP(真的沒得判斷),
+    有就照常檢查,並在 detail 裡講明評估的是最後一份好資料。
     """
     out: list[Result] = []
     unavailable = unavailable or set()
     today = datetime.now(timezone.utc).date()
-    for name, limit in cfg["freshness_days"].items():
-        if name in unavailable:
+    for name, spec in cfg["freshness"].items():
+        if not fetch_data.has_local(name):
             # 刻意不帶 source:那個欄位的語意是「這是可達性檢查的結果」,
             # 只有 check_sources_reachable() 會設。別處也設的話,
             # unreachable_sources() 哪天被餵錯清單就會把新鮮度失敗誤判成抓不到。
             out.append(Result(
                 f"資料新鮮度 · {name}", SKIP,
-                "跳過 —— 本次可達性檢查已失敗(見上方),無法判斷新鮮度",
+                "跳過 —— 本次抓取未通過檢查(見上方),且本機沒有既有資料可判斷"
+                if name in unavailable else "跳過 —— 本機沒有這份資料",
             ))
             continue
+        stale_note = "(評估的是本機最後一份好資料,本次抓取未通過檢查)" \
+            if name in unavailable else ""
         try:
             df = fetch_data.load(name, refresh_if_missing=False)
             last = pd.to_datetime(df[df.columns[0]]).max().date()
+
+            if spec["cadence"] == "monthly":
+                want = expected_month(today, spec["publish_grace_day"])
+                got = f"{last.year:04d}-{last.month:02d}"
+                if got < want:
+                    out.append(Result(
+                        f"資料新鮮度 · {name}", FAIL,
+                        f"最新觀測月是 {got},但到今天({today})應該已經有 {want} 那一期了"
+                        f" —— 月頻來源漏了一期{stale_note}",
+                    ))
+                else:
+                    out.append(Result(f"資料新鮮度 · {name}", OK,
+                                      f"觀測月 {got}(要求 ≥ {want}){stale_note}"))
+                continue
+
             age = (today - last).days
+            limit = spec["max_age_days"]
             if age > limit:
                 out.append(Result(
                     f"資料新鮮度 · {name}", FAIL,
-                    f"最新一筆是 {last},已 {age} 天沒更新(上限 {limit} 天)",
+                    f"最新一筆是 {last},已 {age} 天沒更新(上限 {limit} 天){stale_note}",
                 ))
             else:
-                out.append(Result(f"資料新鮮度 · {name}", OK, f"{last}({age} 天前)"))
+                out.append(Result(f"資料新鮮度 · {name}", OK,
+                                  f"{last}({age} 天前){stale_note}"))
         except Exception as exc:  # noqa: BLE001
             out.append(Result(f"資料新鮮度 · {name}", FAIL, f"無法判讀:{exc}"))
     return out
@@ -261,16 +313,20 @@ def _sanity_sp(cfg: dict) -> list[Result]:
 def check_sanity(cfg: dict, unavailable: set[str] | None = None) -> list[Result]:
     """數值合理性 —— 抓得到不代表資料是對的。
 
-    `unavailable` 的理由同 `check_freshness()`:上游紅了就沒得判斷,標 SKIP
-    而不是再報一次 FAIL。同一個故障報兩次就是噪音,而噪音會訓練使用者無視通知。
+    判準同 `check_freshness()`:**本機有沒有檔案**,不是「上游有沒有失敗」。
+    上游失敗但本機還有最後一份好資料時,那份資料的合理性仍然檢查得出來 ——
+    真的沒檔案才是沒得判斷。
     """
     out: list[Result] = []
     unavailable = unavailable or set()
     for name, label, fn in (("vix", "VIX", _sanity_vix),
                             ("sp_daily", "S&P", _sanity_sp)):
-        if name in unavailable:
-            out.append(Result(f"數值合理性 · {label}", SKIP,
-                              "跳過 —— 本次可達性檢查已失敗(見上方)"))
+        if not fetch_data.has_local(name):
+            out.append(Result(
+                f"數值合理性 · {label}", SKIP,
+                "跳過 —— 本次抓取未通過檢查(見上方),且本機沒有既有資料"
+                if name in unavailable else "跳過 —— 本機沒有這份資料",
+            ))
             continue
         out += fn(cfg)
     return out
@@ -488,6 +544,21 @@ def append_log(results: list[Result]) -> None:
 
 _MARKER_PREFIX = "<!-- failset: "
 _MARKER_SUFFIX = " -->"
+_SINCE_PREFIX = "<!-- failsince: "
+_NOTICE_PREFIX = "<!-- lastnotice: "
+
+# 嚴重程度只看【持續了多久】。這是這一層唯一有的、而且不會自己騙自己的維度 ——
+# 「這個來源死了 3 天」和「死了 90 天」是兩件完全不同的事,但失敗集合一模一樣。
+#
+# 分級刻意粗糙。精細的分級會假裝有精度,而這些門檻沒有任何統計依據,
+# 它們只是「人對時間長度的直覺斷點」。同 Warning.band 的設計。
+SEVERITY_DAYS = (7, 30, 90)
+SEVERITY_LABEL = ("剛發生", "持續一週以上", "持續一個月以上", "持續三個月以上")
+
+# 什麼都沒變化時,隔多久再提醒一次。
+# 不是每天 —— 每天留言正是把 Issue 洗成沒人看的討論串的那個行為。
+# 30 天是「久到你已經忘記它還開著」的量級。
+REMINDER_DAYS = 30
 
 
 def failset(results: list[Result]) -> list[str]:
@@ -519,6 +590,146 @@ def parse_failset(body: str | None) -> list[str] | None:
     return sorted(n for n in raw.split("|") if n)
 
 
+def _kv_marker(prefix: str, pairs: dict[str, str]) -> str:
+    return prefix + "|".join(f"{k}={v}" for k, v in sorted(pairs.items())) + _MARKER_SUFFIX
+
+
+def _parse_kv(body: str | None, prefix: str) -> dict[str, str]:
+    if not body or prefix not in body:
+        return {}
+    tail = body.split(prefix, 1)[1]
+    if _MARKER_SUFFIX not in tail:
+        return {}
+    out: dict[str, str] = {}
+    for token in tail.split(_MARKER_SUFFIX, 1)[0].split("|"):
+        if "=" in token:
+            k, _, v = token.partition("=")
+            out[k] = v
+    return out
+
+
+def _days_between(a: str | None, b: str | None) -> int:
+    """兩個 ISO 日期差幾天。任一邊缺或壞 → 0。
+
+    回 0 而不是拋:這條路上的日期來自【上一次寫進 Issue 內文的標記】,
+    而那是外部狀態 —— 被人手動編輯、被舊版寫壞、或根本還不存在都有可能。
+    一個解析不出來的日期不該讓整個健檢的通知流程掛掉。
+    """
+    if not a or not b:
+        return 0
+    try:
+        return (date.fromisoformat(b) - date.fromisoformat(a)).days
+    except (ValueError, TypeError):
+        return 0
+
+
+def severity(days: int) -> int:
+    """持續天數 -> 等級 0..3。"""
+    return sum(1 for t in SEVERITY_DAYS if days >= t)
+
+
+@dataclass(frozen=True)
+class Notice:
+    """這一次要不要出聲、出聲要說什麼、以及新的狀態標記。"""
+
+    comment: str | None          # None = 不要留言
+    state_markers: list[str]     # 要嵌進 Issue 內文的狀態標記
+
+
+def plan_notice(previous_body: str | None, names: list[str],
+                detail: dict[str, str], today: str) -> Notice:
+    """決定今天要不要在 Issue 上留言。
+
+    三種事件才出聲,其餘一律安靜 —— 每天留一則「仍未恢復」正是把 Issue
+    洗成沒人看的討論串的那個行為(實測 52 則)。
+
+    | 事件 | 為什麼它值得一則通知 |
+    |---|---|
+    | 失敗集合變動 | 「壞的東西換了」和「同一個東西還在壞」是兩件事 |
+    | 嚴重程度跨級 | `{vix}` 第 1 天和第 60 天集合一模一樣,嚴重程度完全不同 |
+    | 太久沒出聲   | 久到你已經忘記它還開著。週期提醒,不是每天重複 |
+
+    狀態存在內文的 HTML 註解標記裡:
+      `failsince`  —— 每一項第一次失敗的日期 + **上次已通知的等級**
+      `lastnotice` —— 上次真的留言是哪一天
+
+    ⚠ 等級是**存下來**的,不是回頭推算的。推算需要同時知道「第一次失敗是哪天」
+      與「上次留言是哪天」,兩個狀態互相依賴就會產生只在特定時序才重現的錯誤 ——
+      而這種錯誤的症狀是「某次該提醒卻沒提醒」,完全無聲。
+    """
+    prev = _parse_kv(previous_body, _SINCE_PREFIX)
+    last_notice = _parse_kv(previous_body, _NOTICE_PREFIX).get("at")
+    known_before = parse_failset(previous_body)
+
+    since: dict[str, str] = {}
+    notified_lv: dict[str, int] = {}
+    for n in names:
+        raw = prev.get(n, "")
+        s, _, lv = raw.partition(",")
+        since[n] = s or today
+        notified_lv[n] = int(lv) if lv.isdigit() else 0
+
+    now_lv = {n: severity(_days_between(since[n], today)) for n in names}
+
+    added = [n for n in names if n not in (known_before or [])] if known_before is not None else []
+    gone = [n for n in (known_before or []) if n not in names]
+    escalated = [n for n in names if now_lv[n] > notified_lv[n] and n not in added]
+    overdue = last_notice is None or _days_between(last_notice, today) >= REMINDER_DAYS
+    first_time = known_before is None
+
+    speak = bool(added or gone or escalated or overdue or first_time)
+
+    if speak:
+        lines = [f"### 健檢狀態更新 — {today}", ""]
+        if first_time:
+            lines += ["(這個 Issue 先前沒有記錄失敗項目,以下是目前的狀態。)", ""]
+        if added:
+            lines += ["**新增失敗:**", ""] + [f"- ❌ {n}" for n in added] + [""]
+        if gone:
+            lines += ["**已恢復:**", ""] + [f"- ✅ {n}" for n in gone] + [""]
+        if escalated:
+            lines += ["**持續時間跨級**(集合沒變,但嚴重程度變了):", ""]
+            lines += [f"- ⏱ {n} — {SEVERITY_LABEL[now_lv[n]]}"
+                      f"(自 {since[n]} 起,已 {_days_between(since[n], today)} 天)"
+                      for n in escalated] + [""]
+        if overdue and not (added or gone or escalated or first_time):
+            # last_notice 可能是 None —— 舊版寫的 Issue 只有 failset 標記、
+            # 沒有 lastnotice。那是遷移情境,不是「0 天前剛留過言」。
+            lines += ([f"**狀態沒有變化,但已經 {_days_between(last_notice, today)} 天"
+                       f"沒有更新這個 Issue 了** —— 以下是現況提醒。", ""]
+                      if last_notice else
+                      ["**這個 Issue 先前沒有記錄上次通知的時間** —— 以下是現況,"
+                       f"之後狀態沒變化時最多每 {REMINDER_DAYS} 天提醒一次。", ""])
+        lines += ["**目前失敗的全部項目:**", ""]
+        lines += [f"- **{n}** — {detail.get(n, '')}"
+                  f"(自 {since[n]} 起,{_days_between(since[n], today)} 天)"
+                  for n in names] or ["- (無)"]
+        lines += ["", "---",
+                  "逐日軌跡在 `ops-data` 分支的 `ops/data/health_log.csv`(append-only)。",
+                  "本留言只在**失敗項目變動、嚴重程度跨級、或太久沒更新**時出現 ——",
+                  f"「仍未恢復」不會每天洗一則(最長 {REMINDER_DAYS} 天提醒一次)。"]
+        comment = "\n".join(lines)
+    else:
+        comment = None
+
+    # 有留言才把等級推上去。`notified_lv` 的語意是**上次告訴使用者的等級**,
+    # 沒說出口就不該前進 —— 否則下一次的跨級會被無聲吃掉。
+    #
+    # ⚠ 這個條件式目前是**等價**的(2026-10-19 突變測試證實):只要任一項等級
+    #   上升,它必定落在 `added` 或 `escalated` 裡,於是 speak 必為真。
+    #   留著不是防禦性程式碼,是因為它釘住的是語意而不是現況 ——
+    #   哪天 speak 的條件多了一條抑制(例如留言頻率上限),沒有它就會
+    #   出現「等級前進了但使用者沒被告知」的無聲漏報。
+    new_state = {n: f"{since[n]},{now_lv[n] if speak else notified_lv[n]}" for n in names}
+    return Notice(
+        comment=comment,
+        state_markers=[
+            _kv_marker(_SINCE_PREFIX, new_state),
+            _kv_marker(_NOTICE_PREFIX, {"at": today if speak else (last_notice or today)}),
+        ],
+    )
+
+
 def issue_title(results: list[Result]) -> str:
     """標題必須說出【目前】在失敗的是什麼。
 
@@ -532,39 +743,6 @@ def issue_title(results: list[Result]) -> str:
     if len(short) > 60:
         short = short[:59] + "…"
     return f"健檢異常({len(names)} 項)· {short}"
-
-
-def change_summary(previous: list[str] | None, results: list[Result]) -> str | None:
-    """失敗集合有變動時的留言內文;沒變動回 None。
-
-    回 None 就是「不要留言」—— 那正是避免 52 則留言的關鍵。
-    """
-    now = failset(results)
-    if previous is not None and previous == now:
-        return None
-
-    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    lines = [f"### 失敗項目有變動 — {stamp}", ""]
-    if previous is None:
-        lines += ["(這個 Issue 先前沒有記錄失敗項目,以下是目前的狀態。)", ""]
-    else:
-        added = [n for n in now if n not in previous]
-        gone = [n for n in previous if n not in now]
-        if added:
-            lines += ["**新增失敗:**", ""]
-            lines += [f"- ❌ {n}" for n in added] + [""]
-        if gone:
-            lines += ["**已恢復:**", ""]
-            lines += [f"- ✅ {n}" for n in gone] + [""]
-
-    detail = {r.name: r.detail for r in results}
-    lines += ["**目前失敗的全部項目:**", ""]
-    lines += [f"- **{n}** — {detail.get(n, '')}" for n in now] or ["- (無)"]
-    lines += ["", "---",
-              "逐日軌跡在 `ops-data` 分支的 `ops/data/health_log.csv`(append-only)。",
-              "本留言只在**失敗項目有變動**時出現 —— 「仍未恢復」不會每天洗一則,",
-              "那會讓這個 Issue 變成沒人看的討論串,而那等於把整層監控關掉。"]
-    return "\n".join(lines)
 
 
 def render_markdown(results: list[Result]) -> str:
@@ -597,6 +775,16 @@ def render_markdown(results: list[Result]) -> str:
     return "\n".join(lines)
 
 
+def with_state_markers(report: str, markers: list[str]) -> str:
+    """把通知狀態標記接到報告末尾。
+
+    分成兩步是因為 `render_markdown()` 只看得到**這一次**的檢查結果,
+    而「這一項是從哪天開始壞的」必須從上一次的 Issue 內文讀回來。
+    那個歷史只有 `issue_plan()` 手上有。
+    """
+    return report.rstrip("\n") + "\n" + "\n".join(markers) + "\n"
+
+
 def issue_plan(report: str, old_body: str | None) -> dict:
     """給 workflow 用的決策:標題要改成什麼、要不要留言、留什麼。
 
@@ -619,12 +807,13 @@ def issue_plan(report: str, old_body: str | None) -> dict:
             detail[head.split("**", 2)[1]] = tail.strip()
 
     current = [Result(n, FAIL, detail.get(n, "")) for n in names]
-    previous = parse_failset(old_body)
-    comment = change_summary(previous, current)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    notice = plan_notice(old_body, names, detail, today)
     return {
-        "changed": comment is not None,
+        "changed": notice.comment is not None,
         "title": issue_title(current),
-        "comment": comment or "",
+        "comment": notice.comment or "",
+        "body": with_state_markers(report, notice.state_markers),
         "failed": names,
     }
 

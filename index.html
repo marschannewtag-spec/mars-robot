@@ -697,8 +697,10 @@ function render(data,fetchedAt,fromCache){
 
   $("momcash").textContent=Math.round(momC*100)+"%";$("momcash").style.color=riskColor(momC);
   $("vixcash").textContent=Math.round(vixC*100)+"%";$("vixcash").style.color=riskColor(vixC);
-  $("momdesc").innerHTML=`乖離 ${(sLast.mom*100).toFixed(1)}% · ${sLast.ym}`;
-  $("vixdesc").innerHTML=`風險分數 ${rLast.toFixed(2)} · ${vLast.ym}${vLast.n<15?" (進行中)":""}`;
+  // 純文字 → textContent。sLast.ym 來自 CSV 的日期欄,是【外部字串】;
+  // 專案規則是外部字串不得直接進 innerHTML,而這裡根本不需要 HTML。
+  $("momdesc").textContent=`乖離 ${(sLast.mom*100).toFixed(1)}% · ${sLast.ym}`;
+  $("vixdesc").textContent=`風險分數 ${rLast.toFixed(2)} · ${vLast.ym}${vLast.n<15?" (進行中)":""}`;
   $("mompill").textContent=momC>=vixC&&uni>0?"主導":"";$("mompill").style.color=riskColor(momC);
   $("vixpill").textContent=vixC>momC&&uni>0?"主導":"";$("vixpill").style.color=riskColor(vixC);
 
@@ -709,7 +711,7 @@ function render(data,fetchedAt,fromCache){
   $("smad").textContent=above?"站上均線":"跌破均線";
   $("sfresh").textContent=fromCache?"離線快取":"剛剛";
   $("sfresh").title="資料抓取時間:"+new Date(fetchedAt).toLocaleString();
-  $("sfreshd").innerHTML=`${data.src||"S&P "+sLast.ym}`;
+  $("sfreshd").textContent=`${data.src||"S&P "+sLast.ym}`;
   $("asof").textContent=`${data.src||""} · S&P ${sLast.ym} · VIX→${vLast.close.toFixed(1)} (${vLast.ym})`+(fromCache?" · 離線":"");
   drawChart(hist);
   renderOdds(data);

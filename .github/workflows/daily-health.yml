@@ -159,24 +159,28 @@ jobs:
           changed=$(printf '%s' "$plan" | jq -r .changed)
           title=$(printf '%s' "$plan" | jq -r .title)
           printf '%s' "$plan" | jq -r .comment > change_comment.md
+          # ⚠ 寫進 Issue 的是 plan 回傳的 body,不是原始報告 ——
+          #    它比報告多了狀態標記(每一項第一次失敗的日期、上次已通知的等級、
+          #    上次留言日)。少了那些,下一次執行就不知道「這一項壞多久了」,
+          #    嚴重程度跨級與週期提醒會整個失效,而且完全無聲。
+          printf '%s' "$plan" | jq -r .body > issue_body.md
 
           if [ -z "$existing" ]; then
             echo "沒有開放的 Issue,新建:$title"
             gh issue create --title "$title" --label health-fail \
-              --body-file "$GITHUB_WORKSPACE/health_report.md"
+              --body-file issue_body.md
             exit 0
           fi
 
           # 內文每次都換成最新狀態。少了這一步,Issue 內文會永遠停在第一天那一份,
           # 而使用者點進來看到的是一份早就不成立的報告。
-          gh issue edit "$existing" --title "$title" \
-            --body-file "$GITHUB_WORKSPACE/health_report.md"
+          gh issue edit "$existing" --title "$title" --body-file issue_body.md
 
           if [ "$changed" = "true" ]; then
-            echo "失敗項目有變動 → 留言並更新標題"
+            echo "有值得出聲的變化 → 留言並更新標題"
             gh issue comment "$existing" --body-file change_comment.md
           else
-            echo "失敗項目與上次相同 → 只更新內文,不留言"
+            echo "失敗集合沒變、嚴重程度沒跨級、也還沒到提醒週期 → 只更新內文,不留言"
             echo "(每天留一則「仍未恢復」會把 Issue 洗成沒人看的討論串,"
             echo " 那等於把整層監控關掉 —— 逐日軌跡看 health_log.csv)"
           fi

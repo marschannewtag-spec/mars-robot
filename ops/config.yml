@@ -1,11 +1,33 @@
 # 健檢設定。閾值刻意訂寬 —— 這套系統一年只該叫你幾次,
 # 狼來了比漏報更致命:一旦你開始無視通知,整層就等於不存在。
 
-# 資料新鮮度上限(天)。超過就代表來源真的停更了,不是週末或假期。
-freshness_days:
-  sp_daily: 7      # Yahoo 日K,正常 0-1 天
-  vix: 7           # GitHub finance-vix,正常 1-3 天
-  shiller: 50      # 月頻,正常落後約一個月
+# 資料新鮮度。判準依【來源自己的發布頻率】而定,不是一律用天數。
+#
+# ⚠ 2026-10-19 改掉 shiller。原本是 `shiller: 50`(天),而 Shiller 是月頻、
+#   觀測月 M 的那一列在 M+1 月的 1-2 號才發布 —— 所以那一列在被下一列取代之前,
+#   年齡必然會走到約 60 天。50 天的門檻於是【每個月必然破線一次再自動復原】。
+#   實測軌跡(ops-data 的 health_log.csv,82 天):
+#       08-21 FAIL → 09-01 ok → 09-22 FAIL → 10-02 ok
+#   一個每月固定紅一次的檢查項,正是訓練使用者無視通知的最佳設計。
+#
+#   這【不是】放寬閾值,是判準的單位錯了:應該問「該發布的那一期有沒有到」,
+#   不是「最後一期過了幾天」。新規則對真正停更的偵測並沒有變弱 —— 見下。
+#
+#   publish_grace_day:到當月第幾天之後,才要求「上一個月」那一列必須存在。
+#   依據是上面兩次實測的抵達日(1-2 號),加上週末/假日與排程時間的餘裕。
+#   不是挑一個比較好過的數字 —— 由 test_monthly_contract_has_no_false_alarms
+#   逐日模擬一整年證明它不會假警報,以及 test_a_stopped_monthly_source_is_caught
+#   證明它仍然抓得到真的停更。
+freshness:
+  sp_daily:
+    cadence: daily
+    max_age_days: 7      # Yahoo 日K,正常 0-1 天
+  vix:
+    cadence: daily
+    max_age_days: 7      # GitHub finance-vix,正常 1-3 天
+  shiller:
+    cadence: monthly
+    publish_grace_day: 5
 
 # 數值合理性
 sanity:

@@ -28,8 +28,14 @@ const source = readFileSync(swPath, "utf8");
 const unhandled = [];
 process.on("unhandledRejection", (e) => unhandled.push(String(e)));
 
-/** 最小可用的 Cache API 假件 —— 以 url 當鍵,足夠回答「存了沒」。 */
-function makeCaches(putErrors) {
+/** 最小可用的 Cache API 假件 —— 以 url 當鍵,足夠回答「存了沒」。
+ *
+ * `fetchRef()` 取當下的網路函式。`addAll` **必須真的走網路**,
+ * 否則 install 永遠成功 —— 於是「離線時 shell 沒裝起來」這種情境
+ * 根本到不了,而測試會看起來綠燈。(2026-10-19 實測:第一版的 addAll
+ * 無條件塞 5 個合成的 200 回應,我新加的離線情境因此什麼都沒測到。)
+ */
+function makeCaches(putErrors, fetchRef = () => async () => new Response("shell")) {
   const stores = new Map();
   const store = (name) => {
     if (!stores.has(name)) stores.set(name, new Map());
@@ -52,8 +58,15 @@ function makeCaches(putErrors) {
         },
         async match(req) { return entry(c, req) || undefined; },
         async addAll(list) {
-          list.forEach((p) => c.set(new URL(p, ORIGIN + "/").href,
-                                    new Response("shell", { status: 200 })));
+          // 規格行為:addAll 是【原子】的 —— 任何一個請求失敗或回非 2xx,
+          // 整批就 reject,一個都不會進快取。sw.js 的 install 把它包在
+          // `.catch(() => {})` 裡,所以失敗是完全無聲的。
+          const fetched = await Promise.all(list.map(async (p) => {
+            const res = await fetchRef()(p);
+            if (!res.ok) throw new TypeError(`addAll 失敗:${p} 回 ${res.status}`);
+            return [new URL(p, ORIGIN + "/").href, res];
+          }));
+          fetched.forEach(([u, res]) => c.set(u, res));
         },
         async keys() { return [...c.keys()].map((u) => ({ url: u })); },
       };
@@ -92,15 +105,24 @@ function load(cachesObj, fetchFn) {
 }
 
 /** 派送一次 fetch 事件,回傳 {responded, status} 與事後的快取內容。 */
-async function dispatchFetch({ url, mode = "no-cors", method = "GET", status }) {
+async function dispatchFetch({ url, mode = "no-cors", method = "GET", status,
+                               installStatus = 200 }) {
   const putErrors = [];
-  const cachesObj = makeCaches(putErrors);
-  const listeners = load(cachesObj, makeFetch(status));
+
+  // install 與之後那次 fetch 要能用【不同】的網路狀態,否則測不了
+  // 「shell 已經裝好了、然後才離線」—— 而那正是離線使用 PWA 的唯一情境。
+  // 兩者共用一個 makeFetch(0) 的話,install 的 addAll 會先 reject,快取是空的,
+  // 於是「離線但快取命中」根本到不了。
+  let phase = installStatus;
+  const net = async (...a) => makeFetch(phase)(...a);
+  const cachesObj = makeCaches(putErrors, () => net);
+  const listeners = load(cachesObj, net);
 
   // 先讓 install 把 shell 放進去,重現真實的初始狀態
   for (const fn of listeners.install || []) {
     await new Promise((done) => fn({ waitUntil: (p) => Promise.resolve(p).then(done, done) }));
   }
+  phase = status;
   const shellSize = (await (await cachesObj.open([...cachesObj.stores.keys()][0])).keys()).length;
 
   let responded = null;
@@ -109,10 +131,17 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status }) 
     fn({ request: req, respondWith: (p) => { responded = p; } });
   }
 
-  let outStatus = null, threw = null;
+  let outStatus = null, threw = null, resolvedUndefined = null, respType = null;
   if (responded) {
-    try { outStatus = (await responded)?.status ?? null; }
-    catch (e) { threw = String(e); }
+    try {
+      const r = await responded;
+      // ⚠ 必須和「沒攔截」分得開。原本只記 status,而 `undefined?.status ?? null`
+      // 也是 null —— 於是「respondWith 收到 undefined」(瀏覽器會直接報網路錯誤)
+      // 和「SW 放行給網路」在測試看起來一模一樣。
+      resolvedUndefined = r === undefined || r === null;
+      outStatus = r?.status ?? null;
+      respType = r?.type ?? null;        // Response.error() 的 type 是 "error"
+    } catch (e) { threw = String(e); }
   }
   await new Promise((r) => setTimeout(r, 20));   // c.put 是 fire-and-forget,等它落地
 
@@ -121,6 +150,8 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status }) 
   return {
     intercepted: responded !== null,
     status: outStatus,
+    respType,
+    resolvedUndefined,
     threw,
     cachedNow: after.length - shellSize,
     cachedUrl: after.includes(url),
@@ -149,5 +180,20 @@ console.log(JSON.stringify({
     cross_origin: await dispatchFetch({ url: "https://query1.finance.yahoo.com/v8/x", status: 200 }),
     // 非 GET 不處理
     post: await dispatchFetch({ url: ORIGIN + "/later-added.png", method: "POST", status: 200 }),
+
+    // ── 離線:這整條路徑在 2026-10-19 之前【從來沒有任何情境走過】 ──────────
+    //    makeFetch(0) 這個機制一直都在,但沒有一個情境用它。
+    //    第二意見審閱時被點出來(他當時以為是 Promise 真值的 bug,
+    //    那是我在交接文件裡把程式碼抄錯了;但「離線沒測過」這點完全正確)。
+    //
+    // ③ 離線 + 快取命中 → 必須回快取裡那一份
+    static_offline_hit: await dispatchFetch({ url: ORIGIN + "/icon-192.png", status: 0 }),
+    // ③ 離線 + 快取沒有 → respondWith 不得收到 undefined,也不得 reject
+    static_offline_miss: await dispatchFetch({ url: ORIGIN + "/later-added.png", status: 0 }),
+    // ② 離線導覽 + 該網址沒快取 → 要退回 SHELL 裡的 ./index.html
+    navigate_offline: await dispatchFetch({ url: ORIGIN + "/deep/link", mode: "navigate", status: 0 }),
+    // ② 離線導覽 + 連 install 都失敗(快取全空)→ 仍然不得收到 undefined
+    navigate_offline_no_shell: await dispatchFetch({
+      url: ORIGIN + "/", mode: "navigate", status: 0, installStatus: 0 }),
   },
 }, null, 1));

@@ -3,7 +3,7 @@
 //  策略:HTML 網路優先(部署新版立即生效)· 靜態檔快取優先 · 資料 API 不快取
 //  ⚠ 每次改動 index.html 後,把下面版本號 +1(v4→v5),舊快取才會被清掉!
 // ============================================================================
-const CACHE = "cwgauge-v14";
+const CACHE = "cwgauge-v15";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
@@ -55,7 +55,19 @@ self.addEventListener("fetch", (e) => {
           if (cacheable(res)) store(req, res);             // 別把 404 頁面存成離線首頁
           return res;
         })
-        .catch(() => caches.match(req).then((r) => r || caches.match("./index.html")))
+        // 離線 → 先找這個網址、再退回離線首頁。
+        // ⚠ 最後那個 `|| Response.error()` 不是裝飾:install 的 addAll 是原子的,
+        //    而它整批失敗時 `.catch(() => {})` 會無聲吞掉 —— 於是「使用者第一次
+        //    開 PWA 時就離線」或「Pages 部署空窗期」會留下一個【完全空的快取】。
+        //    那時兩次 match 都是 undefined,respondWith 就收到 Promise<undefined>,
+        //    而規格說那不是 Response 就直接算網路錯誤。
+        //    分支 ③ 本來就有這層兜底,② 沒有 —— 兩個分支不一致遲早會變成 bug。
+        //    (2026-10-19 由 sw_bridge 的 navigate_offline_no_shell 實測到。)
+        .catch(() =>
+          caches.match(req)
+            .then((r) => r || caches.match("./index.html"))
+            .then((r) => r || Response.error())
+        )
     );
     return;
   }
@@ -70,8 +82,13 @@ self.addEventListener("fetch", (e) => {
           return res;
         })
         // 離線且這個檔案不在快取裡(例如 SHELL 漏了它)→ 至少別讓整個
-        // respondWith 以 reject 收場,那會變成瀏覽器的網路錯誤頁。
-        .catch(() => caches.match(req).then((r) => r || Response.error()))
+        // respondWith 以 reject 收場,那會變成一個沒人接手的失敗。
+        //
+        // ⚠ 這裡【不要】再 caches.match(req) 一次。這條分支是快取優先 ——
+        //    能走到 fetch 就表示外層那次 match 已經 miss 了,再查一次必然還是
+        //    miss。那段是死碼。(2026-10-19 突變測試發現:把它拿掉後所有測試
+        //    行為完全相同 —— 突變「逃掉」是因為兩種寫法等價,不是測試不夠力。)
+        .catch(() => Response.error())
     )
   );
 });

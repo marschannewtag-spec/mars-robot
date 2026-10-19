@@ -366,3 +366,85 @@ def test_documented_pytest_flags_work_with_only_declared_deps(doc: str, cmd: str
         f"pytest 回報參數錯誤:\n{(proc.stderr or proc.stdout)[-400:]}\n"
         "→ 把它需要的套件加進 ops/requirements.txt,或修掉文件裡的指令。"
     )
+
+
+# --------------------------------------------------------------------------
+# fetch_data.load() 的快取不得被消費端的原地改動污染(2026-10-19)
+#
+# 年度健檢的 144 格網格原本每格都重讀三個 CSV —— 432 次讀檔、26 秒。
+# 加 lru_cache 之後快了,但引入一個比慢嚴重得多的風險:
+# `total_return_perf()` 對取回來的 DataFrame 做 `sh["ym"] = ...`(**原地改**)。
+# 直接回快取物件的話,那個原地改會污染快取,之後每一格拿到的都是被改過的東西,
+# 結果會**依呼叫順序而改變** —— 而年度報告的數字正是靠它們算出來的。
+# --------------------------------------------------------------------------
+
+
+def test_load_is_cached_but_callers_cannot_poison_it(tmp_path: Path, monkeypatch) -> None:
+    import fetch_data
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / fetch_data.SOURCES["shiller"].filename).write_text(
+        "Date,SP500,Dividend\n1990-01-01,100,2\n1990-02-01,101,2\n",
+        encoding="utf-8", newline="\n")
+    monkeypatch.setattr(fetch_data, "RAW_DIR", raw)
+
+    first = fetch_data.load("shiller", refresh_if_missing=False)
+    first["ym"] = "汙染"                       # 消費端的原地改(annual_review 真的這樣做)
+    first.iloc[0, first.columns.get_loc("SP500")] = -999
+
+    second = fetch_data.load("shiller", refresh_if_missing=False)
+    assert "ym" not in second.columns, (
+        "消費端新增的欄位跑進了下一次 load() 的結果 —— 快取被污染,"
+        "之後每一格拿到的東西會依呼叫順序而不同"
+    )
+    assert second["SP500"].iloc[0] == 100, "消費端改掉的值污染了快取"
+
+
+def test_load_really_is_cached(tmp_path: Path, monkeypatch) -> None:
+    """控制組:證明快取真的有生效,否則上面那條只是在測一個沒開的功能。"""
+    import fetch_data
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    path = raw / fetch_data.SOURCES["vix"].filename
+    path.write_text("DATE,CLOSE\n1990-01-02,17.2\n", encoding="utf-8", newline="\n")
+    monkeypatch.setattr(fetch_data, "RAW_DIR", raw)
+
+    calls = {"n": 0}
+    real = fetch_data.pd.read_csv
+
+    def counting(*a, **k):
+        calls["n"] += 1
+        return real(*a, **k)
+
+    monkeypatch.setattr(fetch_data.pd, "read_csv", counting)
+    fetch_data.load("vix", refresh_if_missing=False)
+    fetch_data.load("vix", refresh_if_missing=False)
+    fetch_data.load("vix", refresh_if_missing=False)
+    assert calls["n"] == 1, f"同一個檔讀了 {calls['n']} 次 —— 快取沒有生效"
+
+
+def test_rewriting_the_file_invalidates_the_cache(tmp_path: Path, monkeypatch) -> None:
+    """`refresh()` 寫入新檔之後必須讀得到新內容。
+
+    快取鍵含 mtime 就是為了這件事。少了它,每日健檢抓到新資料卻仍然
+    讀到舊的 —— 而那會是一個完全無聲的錯誤。
+    """
+    import fetch_data
+
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    path = raw / fetch_data.SOURCES["vix"].filename
+    monkeypatch.setattr(fetch_data, "RAW_DIR", raw)
+
+    path.write_text("DATE,CLOSE\n1990-01-02,17.2\n", encoding="utf-8", newline="\n")
+    assert len(fetch_data.load("vix", refresh_if_missing=False)) == 1
+
+    os.utime(path, None)   # 確保 mtime 一定不同(同一秒內寫兩次也要分得開)
+    path.write_text("DATE,CLOSE\n1990-01-02,17.2\n1990-01-03,18.0\n",
+                    encoding="utf-8", newline="\n")
+    os.utime(path, (path.stat().st_atime, path.stat().st_mtime + 1))
+    assert len(fetch_data.load("vix", refresh_if_missing=False)) == 2, (
+        "檔案換了,load() 還是回舊內容 —— 抓到新資料卻用舊的,無聲錯誤"
+    )

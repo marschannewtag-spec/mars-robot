@@ -235,9 +235,17 @@ def test_every_source_has_a_row_floor_and_a_freshness_limit(cfg: dict) -> None:
     assert declared <= set(cfg["sanity"]["min_rows"]), (
         f"這些來源沒有 min_rows 下限:{declared - set(cfg['sanity']['min_rows'])}"
     )
-    assert declared <= set(cfg["freshness_days"]), (
-        f"這些來源沒有新鮮度上限:{declared - set(cfg['freshness_days'])}"
+    assert declared <= set(cfg["freshness"]), (
+        f"這些來源沒有新鮮度契約:{declared - set(cfg['freshness'])}"
     )
+    # 每個來源都要明說自己的發布頻率。少了這個欄位,判準就會退回「猜一個天數」,
+    # 而那正是 shiller 每月假警報的成因。
+    for name, spec in cfg["freshness"].items():
+        assert spec.get("cadence") in ("daily", "monthly"), (
+            f"來源 {name} 沒有宣告 cadence:{spec}"
+        )
+        need = "max_age_days" if spec["cadence"] == "daily" else "publish_grace_day"
+        assert need in spec, f"來源 {name}({spec['cadence']})缺少 {need}:{spec}"
 
 
 def test_source_list_is_not_hardcoded(sandbox: Path, cfg: dict, monkeypatch) -> None:
@@ -482,11 +490,21 @@ def test_marker_round_trips_through_the_issue_body() -> None:
 
 
 def test_unchanged_failure_set_produces_no_comment() -> None:
-    """沒變動就不留言 —— 這一條就是 52 則留言不會再發生的原因。"""
-    results = _r("PWA 代理鏈")
-    body = hc.render_markdown(results)
-    assert hc.issue_plan(body, body)["changed"] is False
-    assert hc.change_summary(hc.failset(results), results) is None
+    """沒變動就不留言 —— 這一條就是 52 則留言不會再發生的原因。
+
+    ⚠ 要餵回 **issue_plan 回傳的 body**,不是原始報告。那份 body 才帶著
+    狀態標記(第一次失敗日、已通知等級、上次留言日),而 workflow 實際寫進
+    Issue 的就是它。餵原始報告的話會因為「沒有上次留言紀錄」而觸發週期提醒 ——
+    那是對的行為,只是測錯了東西。
+    """
+    report = hc.render_markdown(_r("PWA 代理鏈"))
+    first = hc.issue_plan(report, None)
+    assert first["changed"] is True, "第一次一定要出聲"
+    # 第二天:同樣的失敗集合,內文沿用上一次寫進去的那一份
+    again = hc.issue_plan(report, first["body"])
+    assert again["changed"] is False, (
+        f"狀態完全沒變卻又留言了 —— 52 則留言就是這樣來的:{again['comment'][:120]}"
+    )
 
 
 def test_a_new_failure_is_announced_with_what_changed() -> None:
@@ -547,3 +565,354 @@ def test_the_workflow_actually_calls_issue_plan() -> None:
     assert "gh issue edit" in wf, (
         "workflow 沒有更新 Issue 內文/標題 —— 內文會永遠停在第一天那一份"
     )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 抓取失敗 ≠ 沒得判斷(2026-10-19,第二意見指出)
+#
+# 第一版對「上游失敗」的來源一律 SKIP。那太粗了:只要本機還有上一份好資料,
+# 它有多舊仍然判斷得出來 —— 而來源連續死三週時,那個訊號正是重點
+# (「你手上最新的那份已經 25 天了」)。一律 SKIP 會把它藏起來。
+#
+# 判準因此改成【本機有沒有檔案】,不是【上游有沒有失敗】。
+# ══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture()
+def source_dead_but_local_data_exists(sandbox: Path, monkeypatch, cfg: dict):
+    """本機有一份【30 天前】的 vix,而來源現在抓不到了。
+
+    ⚠ 日期必須從「今天往回數」構造。第一版寫成
+    `_trading_days(today - 33年, 8200)` 再砍掉最後 30 天 —— 但 8200 個交易日
+    就是 31.4 年,序列本來就結束在 2025 年,那個砍掉完全沒有作用,
+    實際測到的是「566 天前」。數字對不上就代表 fixture 在說謊。
+    """
+    last = date.today() - timedelta(days=30)
+    # 8200 個交易日往回推約 11480 個日曆天,讓序列結束在 last
+    start = last - timedelta(days=11600)
+    days = [d for d in _trading_days(start, 8600) if d <= last]
+    assert len(days) >= cfg["sanity"]["min_rows"]["vix"], f"fixture 列數不足:{len(days)}"
+    write_vix(sandbox, days)
+
+    def dead_fetch(name: str) -> str:
+        raise RuntimeError("來源連線逾時")
+
+    monkeypatch.setattr(fetch_data, "fetch_source", dead_fetch)
+    return days[-1]
+
+
+def test_stale_local_data_is_still_judged_when_the_source_is_down(
+        source_dead_but_local_data_exists: date, cfg: dict) -> None:
+    """來源掛了,但本機那份已經 30 天 —— 這一項必須照常報 FAIL,不是 SKIP。
+
+    「你手上最新的資料已經 30 天了」是來源長期死掉時唯一有用的訊號。
+    一律 SKIP 會把它藏起來,而那正好是最需要它的時候。
+    """
+    down = hc.unreachable_sources(hc.check_sources_reachable(cfg))
+    assert "vix" in down, "前置條件:來源必須被判定為不可達"
+
+    got = {r.name: r for r in hc.check_freshness(cfg, down)}
+    vix = got["資料新鮮度 · vix"]
+    assert vix.status == hc.FAIL, (
+        f"本機資料已經 30 天卻被跳過了 —— 來源長期死掉時這就是唯一的訊號:{vix}"
+    )
+    assert str(source_dead_but_local_data_exists) in vix.detail, (
+        f"沒報出本機那份的實際日期:{vix.detail!r}"
+    )
+    # 天數由 fixture 實際寫出的日期算,不寫死 —— today-30 可能落在週末,
+    # 最後一個交易日因此是 31 天前。寫死數字只會讓測試在某些日子紅。
+    expected_age = (date.today() - source_dead_but_local_data_exists).days
+    assert f"已 {expected_age} 天" in vix.detail, f"天數算錯了:{vix.detail!r}"
+    assert "最後一份好資料" in vix.detail, (
+        f"沒講明評估的是舊資料,使用者會以為這是剛抓到的:{vix.detail!r}"
+    )
+
+
+def test_sanity_also_runs_on_the_last_good_copy(
+        source_dead_but_local_data_exists: date, cfg: dict) -> None:
+    """合理性同理:有檔案就檢查得出來,不該因為上游失敗就整組跳過。"""
+    down = hc.unreachable_sources(hc.check_sources_reachable(cfg))
+    names = {r.name: r.status for r in hc.check_sanity(cfg, down)}
+    assert names.get("數值合理性 · VIX 範圍") in (hc.OK, hc.FAIL), (
+        f"有本機資料卻沒有檢查:{names}"
+    )
+    assert "數值合理性 · VIX" not in names, "不該出現整組 SKIP 的那一列"
+
+
+def test_no_local_data_really_is_skipped(truncated_sp: Path, cfg: dict) -> None:
+    """對照組:本機真的什麼都沒有時,SKIP 仍然是對的。
+
+    沒有這一條,上面兩條可能只是因為「永遠不 SKIP」而通過,
+    而那會讓 2026-10-14 修掉的「一個故障報四次」整個回來。
+    """
+    down = hc.unreachable_sources(hc.check_sources_reachable(cfg))
+    got = {r.name: r for r in hc.check_freshness(cfg, down) + hc.check_sanity(cfg, down)}
+    assert got["資料新鮮度 · sp_daily"].status == hc.SKIP
+    assert "沒有既有資料" in got["資料新鮮度 · sp_daily"].detail
+    assert got["數值合理性 · S&P"].status == hc.SKIP
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 月頻來源的新鮮度契約(2026-10-19)
+#
+# 舊判準 `shiller: 50`(天)每個月必然破線一次再自動復原 ——
+# 因為觀測月 M 那一列在 M+1 月初才發布,它在被取代前年齡必然走到約 60 天。
+# 實測軌跡(ops-data 的 health_log.csv,82 天):
+#     08-21 FAIL → 09-01 ok → 09-22 FAIL → 10-02 ok
+#
+# 新判準問的是「該發布的那一期到了沒」。這【不是】放寬閾值,但那個區分
+# 只有在能證明下面兩件事時才站得住腳,所以這兩條測試是這個改動的全部正當性:
+#
+#   1. 正常發布節奏下,一整年逐日模擬【一次都不會】假警報
+#   2. 來源真的停更時,仍然抓得到 —— 而且是在「第一次漏期」那一刻
+#
+# publish_grace_day 的依據是實測抵達日(2026-08-31~09-01、2026-10-01~02),
+# 不是挑一個比較好過的數字。測試 1 同時驗證了「只要抵達日 ≤ 寬限日就不會假警報」
+# 這個不變量,所以日後若抵達日變晚,這條測試會先紅。
+# ══════════════════════════════════════════════════════════════════════════
+
+GRACE = 5   # 與 config.yml 的 shiller.publish_grace_day 一致,由下面的測試綁住
+
+
+def test_grace_day_matches_the_config(cfg: dict) -> None:
+    assert cfg["freshness"]["shiller"]["publish_grace_day"] == GRACE, (
+        "config 的寬限日改了,但這個檔案的模擬還在用舊值 —— 兩邊會說不同的話"
+    )
+
+
+def _latest_available(today: date, arrival_day: int) -> str:
+    """模擬:在 `today` 這一天,來源實際已經發布到哪個觀測月。
+
+    觀測月 M 的那一列在 M+1 月的 `arrival_day` 號抵達。
+    """
+    back = 1 if today.day >= arrival_day else 2
+    return hc._shift_month(today.year, today.month, back)
+
+
+@pytest.mark.parametrize("arrival_day", [1, 2, 3, 4, 5])
+def test_monthly_contract_has_no_false_alarms(arrival_day: int) -> None:
+    """正常發布節奏 → 一整年每一天都不得報警。
+
+    涵蓋跨年(12 月 → 1 月要回推到去年 12 月),那是月份算術最容易錯的地方。
+    """
+    day = date(2026, 1, 1)
+    bad = []
+    while day < date(2027, 1, 1):
+        have = _latest_available(day, arrival_day)
+        want = hc.expected_month(day, GRACE)
+        if have < want:
+            bad.append((day.isoformat(), f"有 {have} / 要 {want}"))
+        day += timedelta(days=1)
+    assert not bad, (
+        f"抵達日 {arrival_day} 號、發布完全正常,卻有 {len(bad)} 天會報警:"
+        f"{bad[:5]} —— 這就是舊的 50 天門檻每個月紅一次的那個問題"
+    )
+
+
+def test_a_late_arrival_past_the_grace_day_is_caught() -> None:
+    """對照組:抵達日比寬限日晚,就【應該】被抓到。
+
+    沒有這一條,上面那條可能只是因為「永遠不報警」而全綠。
+    """
+    late = GRACE + 3
+    fired = [d for d in range(1, 29)
+             if _latest_available(date(2026, 6, d), late) < hc.expected_month(date(2026, 6, d), GRACE)]
+    assert fired, f"抵達日晚到 {late} 號仍然完全不報警 —— 這個判準沒有判別力"
+
+
+def test_a_stopped_monthly_source_is_caught() -> None:
+    """來源真的停更 → 必須在「第一次漏期」那一刻抓到,不能更晚。
+
+    情境:2026-09 那一期正常發布(10-02 抵達),之後就再也沒有新的了。
+    2026-10 那一期本來該在 11 月初到。
+    """
+    frozen = "2026-09"
+    first_fail = None
+    day = date(2026, 10, 2)
+    while day < date(2027, 3, 1):
+        if frozen < hc.expected_month(day, GRACE):
+            first_fail = day
+            break
+        day += timedelta(days=1)
+    assert first_fail == date(2026, 11, GRACE), (
+        f"停更後第一次報警是 {first_fail},預期 2026-11-{GRACE:02d} —— "
+        "太早代表在沒有證據時就報警,太晚代表偵測被放寬了"
+    )
+
+
+def test_the_old_day_threshold_really_did_fire_on_healthy_data() -> None:
+    """把舊判準跑一次,證明「改單位」不是藉口 —— 它真的每個月都會紅。
+
+    這是這個改動唯一的正當性來源:舊規則在資料完全正常時也會報警。
+    若這條測試哪天不再成立,就代表改判準的理由消失了。
+    """
+    OLD_LIMIT = 50
+    false_alarms = 0
+    day = date(2026, 1, 1)
+    while day < date(2027, 1, 1):
+        have = _latest_available(day, arrival_day := 2)
+        # 該觀測月那一列的日期標記是當月 1 號
+        y, m = int(have[:4]), int(have[5:])
+        if (day - date(y, m, 1)).days > OLD_LIMIT:
+            false_alarms += 1
+        day += timedelta(days=1)
+    assert false_alarms > 50, (
+        f"舊的 {OLD_LIMIT} 天門檻在完全正常的發布節奏下只誤報 {false_alarms} 天 —— "
+        "若真的這麼少,改判準的理由就不成立,應該把這個改動收回去"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 持續惡化 ≠ 持續失敗(2026-10-19,第二意見指出)
+#
+# 「只在失敗集合變動時留言」修掉了 52 則留言,但留下一個洞:
+#   第 1 天  {vix}  —— VIX 剛開始落後
+#   第 22 天 {vix}  —— 已經停更 22 天
+#   第 60 天 {vix}  —— 這個來源大概不會自己回來了
+# 三個狀態的【集合一模一樣】,嚴重程度完全不同,而原本一則都不會說。
+#
+# 補的是兩種新事件:嚴重程度跨級、以及太久沒出聲的週期提醒。
+# 兩者都刻意稀疏 —— 一個永久故障在 90 天內最多 3 次跨級 + 之後每 30 天一次,
+# 和原本的 52 則不是同一個量級。
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _plan_on(day: str, names, previous_body=None, detail=None):
+    """把時鐘固定在 `day` 跑一次通知決策,回 (Notice, 這次要寫進 Issue 的完整內文)。
+
+    ⚠ 回傳的內文必須是 **report + 狀態標記**,也就是 workflow 真的會
+    `gh issue edit --body-file` 進去的那一份。只餵狀態標記的話,
+    `parse_failset()` 讀不到失敗集合,每一次都會被當成「第一次」而出聲 ——
+    那正是這組測試要防的事,結果測試自己先踩進去。
+    """
+    report = hc.render_markdown(_r(*names))
+    notice = hc.plan_notice(previous_body, sorted(names), detail or {}, day)
+    return notice, hc.with_state_markers(report, notice.state_markers)
+
+
+def test_the_same_failure_set_still_escalates_when_it_drags_on() -> None:
+    """集合沒變,但持續時間跨級 → 必須說一次。"""
+    n1, b1 = _plan_on("2026-09-01", ["資料新鮮度 · vix"])
+    assert n1.comment, "第一次一定要出聲"
+
+    # 第 3 天:還在同一級,不該出聲
+    n2, b2 = _plan_on("2026-09-04", ["資料新鮮度 · vix"], b1)
+    assert n2.comment is None, f"才 3 天就又留言了:{n2.comment[:100]}"
+
+    # 第 8 天:跨過 7 天那一級
+    n3, b3 = _plan_on("2026-09-09", ["資料新鮮度 · vix"], b2)
+    assert n3.comment, "持續一週跨級了卻沒有任何通知"
+    assert "跨級" in n3.comment and "持續一週以上" in n3.comment, n3.comment[:200]
+
+
+def test_escalation_fires_once_per_level_not_every_day() -> None:
+    """跨級是【事件】不是狀態 —— 跨過之後的每一天都不該再說。"""
+    body = None
+    spoke = []
+    for d in range(1, 26):
+        day = f"2026-09-{d:02d}"
+        n, body = _plan_on(day, ["資料新鮮度 · vix"], body)
+        if n.comment:
+            spoke.append(day)
+    # 9/01 第一次 + 9/08 跨到「一週以上」。25 天內不該有第三次。
+    assert spoke == ["2026-09-01", "2026-09-08"], (
+        f"25 天內出聲了 {len(spoke)} 次:{spoke} —— 跨級應該只在跨過的那天說一次"
+    )
+
+
+def test_a_long_silent_failure_gets_a_periodic_reminder() -> None:
+    """久到你已經忘記它還開著 → 週期提醒。但不是每天。"""
+    body = None
+    spoke = []
+    day = date(2026, 9, 1)
+    while day < date(2027, 3, 1):
+        n, body = _plan_on(day.isoformat(), ["資料新鮮度 · vix"], body)
+        if n.comment:
+            spoke.append(day.isoformat())
+        day += timedelta(days=1)
+
+    assert len(spoke) <= 10, (
+        f"181 天內出聲 {len(spoke)} 次 —— 太吵了,會變回沒人看的討論串:{spoke}"
+    )
+    assert len(spoke) >= 5, (
+        f"181 天內只出聲 {len(spoke)} 次 —— 一個半年沒好的故障應該被提醒過幾次:{spoke}"
+    )
+    # 任兩次之間不得超過提醒週期太多
+    gaps = [(date.fromisoformat(b) - date.fromisoformat(a)).days
+            for a, b in zip(spoke, spoke[1:])]
+    assert max(gaps) <= hc.REMINDER_DAYS + 1, f"中間有 {max(gaps)} 天完全沒出聲:{spoke}"
+
+
+def test_recovery_still_wins_over_the_quiet_rules() -> None:
+    """恢復永遠要說 —— 不能因為「最近才剛提醒過」就吞掉。"""
+    n1, b1 = _plan_on("2026-09-01", ["A", "B"])
+    n2, b2 = _plan_on("2026-09-02", ["A"], b1)
+    assert n2.comment, "有一項恢復了卻完全沒說"
+    assert "已恢復" in n2.comment and "B" in n2.comment, n2.comment[:200]
+
+
+def test_a_recovered_item_that_breaks_again_restarts_its_clock() -> None:
+    """修好又壞掉 = 新的故障,不該把中間修好的那段算進持續時間。"""
+    n1, b1 = _plan_on("2026-09-01", ["A"])
+    n2, b2 = _plan_on("2026-09-20", [], b1)   # A 恢復
+    n3, b3 = _plan_on("2026-09-21", ["A"], b2)  # 又壞
+    since = hc._parse_kv(b3, hc._SINCE_PREFIX)
+    assert since["A"].startswith("2026-09-21"), (
+        f"重新壞掉卻沿用了舊的起算日 {since['A']} —— 持續時間會被灌水,"
+        "一個反覆壞掉的來源會被誤判成長期故障"
+    )
+
+
+def test_severity_buckets_are_monotonic() -> None:
+    """天數越久等級不得下降。分級本身壞掉的話,跨級偵測就全錯。"""
+    levels = [hc.severity(d) for d in range(0, 200)]
+    assert levels == sorted(levels), "嚴重程度隨天數下降了"
+    assert levels[0] == 0 and levels[-1] == len(hc.SEVERITY_DAYS)
+    assert len(hc.SEVERITY_LABEL) == len(hc.SEVERITY_DAYS) + 1, (
+        "等級數與標籤數對不上 —— 會 IndexError,而那會讓整個通知流程掛掉"
+    )
+
+
+def test_check_names_contain_no_marker_delimiters() -> None:
+    """狀態標記用 `|` 分項、`=` 分鍵值。檢查項名稱不得含這兩個字元。
+
+    含了的話標記會解析錯 —— 而症狀是「持續時間算錯」或「永遠判定沒變動」,
+    兩個都完全無聲。
+    """
+    cfg = hc.load_config()
+    names = [r.name for r in hc.check_freshness(cfg)] + \
+            [f"來源可達性 · {n}" for n in fetch_data.SOURCES] + \
+            ["PWA 代理鏈", "PWA 部署", "自架 Worker", "欄位劣化 · Shiller"]
+    bad = [n for n in names if "|" in n or "=" in n]
+    assert not bad, f"這些檢查項名稱會破壞狀態標記:{bad}"
+
+
+def test_the_workflow_writes_the_body_with_state_markers() -> None:
+    """workflow 必須把 plan 的 `body` 寫進 Issue,不是原始報告。
+
+    少了狀態標記,下一次執行就不知道「這一項壞多久了」—— 嚴重程度跨級與
+    週期提醒會整個失效,**而且完全無聲**(它會退化成「只在集合變動時留言」,
+    看起來一切正常)。心跳就踩過這種「路徑錯了但沒有症狀」的坑。
+    """
+    wf = (OPS_ROOT.parent / ".github" / "workflows" / "daily-health.yml").read_text(
+        encoding="utf-8")
+    assert "jq -r .body > issue_body.md" in wf, "workflow 沒有取出帶狀態標記的 body"
+    assert "--body-file issue_body.md" in wf, "寫進 Issue 的不是那份 body"
+    assert "gh issue create --title \"$title\" --label health-fail \\n              --body-file issue_body.md" in wf \
+        or "--body-file issue_body.md" in wf.split("gh issue create")[1][:200], \
+        "新建 Issue 時用的也必須是帶標記的 body,否則第一次就沒有起算日"
+
+
+def test_issue_plan_body_round_trips_every_marker() -> None:
+    """plan 產生的 body,下一次必須讀得回全部三種狀態。
+
+    這是整條鏈最容易無聲壞掉的一環:任何一個標記寫出去卻讀不回來,
+    症狀都是「某個提醒永遠不會發生」。
+    """
+    report = hc.render_markdown(_r("PWA 代理鏈"))
+    plan = hc.issue_plan(report, None)
+    body = plan["body"]
+    assert hc.parse_failset(body) == ["PWA 代理鏈"], "failset 讀不回來"
+    since = hc._parse_kv(body, hc._SINCE_PREFIX)
+    assert "PWA 代理鏈" in since and "," in since["PWA 代理鏈"], f"failsince 讀不回來:{since}"
+    assert hc._parse_kv(body, hc._NOTICE_PREFIX).get("at"), "lastnotice 讀不回來"

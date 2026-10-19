@@ -150,3 +150,78 @@ def test_cache_name_is_versioned(sw_src: str) -> None:
     m = re.search(r'const CACHE\s*=\s*"cwgauge-v(\d+)"', sw_src)
     assert m, "CACHE 不是 cwgauge-vN 格式 —— activate 的清理邏輯靠這個命名"
     assert int(m.group(1)) >= 13, "版本號不該往回退,舊快取會清不掉"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 離線路徑 —— 2026-10-19 之前【從來沒有任何情境走過】
+#
+# `makeFetch(0)`(丟 TypeError("offline"))這個機制一直都在 sw_bridge 裡,
+# 但沒有一個情境用它。也就是 SW 兩個分支的 `.catch(...)` 完全沒被執行過,
+# 而那正是「使用者離線時打開 PWA」唯一會走的路。
+#
+# 補這組時又抓到橋接器自己在說謊:假的 `addAll` 無條件塞 5 個合成的 200,
+# 從來不呼叫 fetch —— 所以「install 失敗、快取是空的」這種情境根本到不了,
+# 新加的測試會看起來綠燈卻什麼都沒測。改成真的走網路、且原子地 reject 之後,
+# 才量到分支 ② 會把 `undefined` 交給 respondWith()。
+#
+# ⚠ 判準必須是 `resolvedUndefined`,不能只看 `status`。
+#   `undefined?.status ?? null` 也是 None —— 和「SW 放行給網路」長得一模一樣。
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_offline_with_a_cached_copy_serves_the_cache(run: dict) -> None:
+    """離線 + 快取有 → 回快取那一份。這是 PWA 離線可用的全部意義。"""
+    s = run["scenarios"]["static_offline_hit"]
+    assert s["intercepted"], "離線時 SW 完全沒攔截 —— 那離線就等於沒有 PWA"
+    assert s["status"] == 200, f"快取裡明明有,卻沒有拿出來用:{s}"
+    assert not s["resolvedUndefined"]
+
+
+def test_offline_without_a_cached_copy_still_returns_a_response(run: dict) -> None:
+    """離線 + 快取沒有 → 必須回一個 Response(錯誤回應也算),不得是 undefined。
+
+    `respondWith()` 收到非 Response 的話,規格直接算網路錯誤,
+    而且那是一個沒人接手的失敗 —— 和「SW 不介入」在外觀上分不出來。
+    """
+    s = run["scenarios"]["static_offline_miss"]
+    assert not s["resolvedUndefined"], f"respondWith() 收到了 undefined:{s}"
+    assert s["threw"] is None, f"respondWith() 收到的 promise 被 reject:{s['threw']}"
+    assert s["respType"] == "error", (
+        f"離線且快取沒有時應該回 Response.error(),實際是 {s['respType']}:{s}"
+    )
+
+
+def test_offline_navigation_falls_back_to_the_offline_homepage(run: dict) -> None:
+    """離線導覽到一個沒快取過的深層網址 → 退回 SHELL 裡的 ./index.html。"""
+    s = run["scenarios"]["navigate_offline"]
+    assert s["status"] == 200, f"離線導覽沒有退回離線首頁:{s}"
+    assert not s["resolvedUndefined"]
+
+
+def test_offline_navigation_with_an_empty_cache_is_not_undefined(run: dict) -> None:
+    """install 整批失敗(使用者第一次開就離線 / 部署空窗期)→ 快取是空的。
+
+    `addAll` 是原子的,而 install 的 `.catch(() => {})` 會把失敗無聲吞掉。
+    那時分支 ② 的兩次 match 都是 undefined,若沒有最後那層兜底,
+    `respondWith()` 就會收到 `Promise<undefined>`。
+
+    分支 ③ 本來就有 `Response.error()`,② 原本沒有 —— 兩個分支不一致。
+    """
+    s = run["scenarios"]["navigate_offline_no_shell"]
+    assert not s["resolvedUndefined"], (
+        f"respondWith() 收到了 undefined —— 分支 ② 缺少兜底:{s}"
+    )
+    assert s["respType"] == "error", f"應該回 Response.error():{s}"
+
+
+def test_the_bridge_really_can_fail_an_install(run: dict) -> None:
+    """控制組:證明「install 失敗」這個情境真的做得出來。
+
+    沒有這一條的話,上面那條可能只是因為假的 addAll 永遠成功而恆真 ——
+    第一版就是那樣,我差點把一個什麼都沒測的測試當成通過。
+    """
+    empty = run["scenarios"]["navigate_offline_no_shell"]
+    primed = run["scenarios"]["navigate_offline"]
+    assert empty["status"] != primed["status"], (
+        "install 成功與失敗兩個情境給出一樣的結果 —— 假的 addAll 可能根本沒走網路"
+    )
