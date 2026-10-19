@@ -1008,13 +1008,34 @@ def plan_notice(previous_body: str | None, names: list[str],
     last_notice = _parse_kv(previous_body, _NOTICE_PREFIX).get("at")
     known_before = parse_failset(previous_body)
 
+    # ⚠ 「它從那天開始壞」和「我們從那天開始數」必須分開。
+    #    原本是 `since[n] = s or today` —— 沒有前次標記時起點就是今天,
+    #    內文印「(自 2026-10-20 起,0 天)」。第一次失敗時那是對的,
+    #    但 Issue 被關掉重開(標記活在內文裡,一關就沒了)、標記被編輯壞、
+    #    或 first_time 遷移時,一個已經壞 60 天的項目會被寫成「今天才壞」,
+    #    而且嚴重程度跟著從 0 重新數 —— **長期故障於是永遠不會跨級**。
+    #
+    #    刻意【不】去猜真正的起點(例如回頭翻 health_log)。我們真的不知道,
+    #    猜一個數字會讓通知頻率建立在編造的基礎上。要做的是把「不知道」
+    #    講出來 —— 報告事實,不做結論。
     since: dict[str, str] = {}
+    since_known: dict[str, bool] = {}
     notified_lv: dict[str, int] = {}
     for n in names:
         raw = prev.get(n, "")
         s, _, lv = raw.partition(",")
-        since[n] = s or today
+        # 標記壞掉(不是 ISO 日期)也算不知道。`_days_between` 對它回 0,
+        # 配上「印成今天」就變成一個看起來很確定的假事實。
+        known = bool(s) and _as_date(s) is not None
+        since[n] = s if known else today
+        since_known[n] = known
         notified_lv[n] = int(lv) if lv.isdigit() else 0
+
+    def since_phrase(n: str, lead: str = "") -> str:
+        if not since_known[n]:
+            return (f"(**本次統計自 {since[n]} 起** —— 先前沒有紀錄,"
+                    f"實際開始的時間可能更早)")
+        return f"(自 {since[n]} 起,{lead}{_days_between(since[n], today)} 天)"
 
     now_lv = {n: severity(_days_between(since[n], today)) for n in names}
 
@@ -1037,7 +1058,7 @@ def plan_notice(previous_body: str | None, names: list[str],
         if escalated:
             lines += ["**持續時間跨級**(集合沒變,但嚴重程度變了):", ""]
             lines += [f"- ⏱ {n} — {SEVERITY_LABEL[now_lv[n]]}"
-                      f"(自 {since[n]} 起,已 {_days_between(since[n], today)} 天)"
+                      + since_phrase(n, "已 ")
                       for n in escalated] + [""]
         if overdue and not (added or gone or escalated or first_time):
             # last_notice 可能是 None —— 舊版寫的 Issue 只有 failset 標記、
@@ -1048,8 +1069,7 @@ def plan_notice(previous_body: str | None, names: list[str],
                       ["**這個 Issue 先前沒有記錄上次通知的時間** —— 以下是現況,"
                        f"之後狀態沒變化時最多每 {REMINDER_DAYS} 天提醒一次。", ""])
         lines += ["**目前失敗的全部項目:**", ""]
-        lines += [f"- **{n}** — {detail.get(n, '')}"
-                  f"(自 {since[n]} 起,{_days_between(since[n], today)} 天)"
+        lines += [f"- **{n}** — {detail.get(n, '')}" + since_phrase(n)
                   for n in names] or ["- (無)"]
         lines += ["", "---",
                   "逐日軌跡在 `ops-data` 分支的 `ops/data/health_log.csv`(append-only)。",

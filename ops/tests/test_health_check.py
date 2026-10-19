@@ -1087,3 +1087,91 @@ def test_a_200_with_missing_markers_is_still_a_failure(
     r, n = _deploy_run(monkeypatch, cfg, [_Resp(200, "<html>舊版</html>")])
     assert r.status == hc.FAIL and r.failed, r.detail
     assert n == 1, "內容不對不是『問不到』,不該重試"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 「自 X 起」是已知的起點,還是我們才開始數的那天(2026-10-20)
+#
+# `plan_notice()` 裡:
+#
+#     since[n] = s or today
+#
+# 沒有前次標記時,起點就是今天,內文印「(自 2026-10-20 起,0 天)」。
+# 那在**第一次失敗**時是對的,但這幾種情況下它是假的:
+#
+#   · Issue 被關掉又重開 —— 標記活在 Issue 內文裡,一關就沒了
+#   · `failsince` 標記被手動編輯壞、或被舊版寫壞
+#   · `first_time`(整個 Issue 先前沒有任何紀錄)
+#
+# 這幾種情況下,一個已經壞了 60 天的項目會被寫成「自今天起,0 天」——
+# 而且嚴重程度跟著從 0 重新數,**一個長期故障於是永遠不會跨級**。
+#
+# 這就是本專案那條線的又一次:
+# **「它從那天開始壞」和「我們從那天開始數」必須長得不一樣。**
+#
+# ⚠ 刻意【不】改變嚴重程度的計算。我們**真的不知道**它壞多久了,
+#   猜一個數字只會讓通知頻率建立在編造的基礎上。要做的是把「不知道」
+#   講出來 —— 報告事實,不做結論。
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_known_start_date_is_reported_as_a_known_start_date() -> None:
+    """控制組:有前次標記時,照常印「自 X 起,N 天」,不准加雜訊。
+
+    少了這一條,「永遠印不確定」會是讓下面幾條全綠的最省事寫法,
+    而那會讓真正知道起點的那些項目也變得不可信。
+    """
+    _, b1 = _plan_on("2026-09-01", ["資料新鮮度 · vix"])
+    n2, _ = _plan_on("2026-09-23", ["資料新鮮度 · vix"], previous_body=b1)
+    assert n2.comment, "22 天應該要跨級出聲"
+    assert "自 2026-09-01 起" in n2.comment, n2.comment
+    assert "22 天" in n2.comment, n2.comment
+    assert "先前沒有紀錄" not in n2.comment, \
+        f"起點是已知的,卻說成不知道:\n{n2.comment}"
+
+
+def test_a_lost_marker_does_not_claim_the_failure_started_today() -> None:
+    """Issue 被關掉重開(標記沒了)→ 不可以寫成「自今天起,0 天」。
+
+    那是把「我們不知道它壞多久了」說成「它今天才壞」,
+    而這兩件事該做的處置完全不同。
+    """
+    n, _ = _plan_on("2026-10-20", ["資料新鮮度 · vix"])
+    assert n.comment
+    assert "先前沒有紀錄" in n.comment, (
+        "沒有前次標記時,內文必須講明這個起點只是「開始統計的那天」:\n"
+        + n.comment
+    )
+    assert "自 2026-10-20 起,0 天" not in n.comment, (
+        "把未知的起點印成「自今天起,0 天」—— "
+        f"讀的人會以為它今天才壞:\n{n.comment}"
+    )
+
+
+def test_an_item_whose_marker_is_corrupt_is_also_marked_unknown() -> None:
+    """標記壞掉(不是 ISO 日期)也算不知道,不是「今天」。
+
+    `_days_between` 對解析不出來的輸入回 0 —— 那是通知路徑刻意的設計,
+    但配上「印成今天」就變成一個看起來很確定的假事實。
+    """
+    body = ("報告\n\n<!-- failsince: 資料新鮮度 · vix=壞掉的日期,0 -->\n"
+            "<!-- failset: 資料新鮮度 · vix -->\n")
+    n, _ = _plan_on("2026-10-20", ["資料新鮮度 · vix"], previous_body=body)
+    if n.comment:
+        assert "自 壞掉的日期 起,0 天" not in n.comment, n.comment
+
+
+def test_the_unknown_marker_disappears_once_a_real_start_is_recorded() -> None:
+    """安全網:第一次之後標記就存下來了,第二次起必須變成已知。
+
+    少了這一條,「永遠不知道」會讓這個警語變成每一則通知都有的背景噪音,
+    而一個永遠亮著的警告等於沒有警告。
+    """
+    n1, b1 = _plan_on("2026-10-20", ["資料新鮮度 · vix"])
+    assert "先前沒有紀錄" in n1.comment
+    n2, _ = _plan_on("2026-11-20", ["資料新鮮度 · vix"], previous_body=b1)
+    assert n2.comment, "31 天應該要跨級出聲"
+    assert "自 2026-10-20 起" in n2.comment, n2.comment
+    assert "先前沒有紀錄" not in n2.comment, (
+        "第一次就已經把起點存進標記了,第二次不該再說不知道:\n" + n2.comment
+    )
