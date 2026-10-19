@@ -14,8 +14,21 @@ pandas>=2.2,<3
 numpy>=1.26,<3
 requests>=2.31,<3
 PyYAML>=6.0,<7
+# 直接相依,不是間接:test_reporting.py 用它比對「執行環境 vs 本檔宣告」。
+# pytest 本來就會帶進來,但靠別人的相依樹拿到自己要用的東西,
+# 正是 pytest-cov 那次的形狀 —— 要用就自己宣告。
+packaging>=23,<27
 
-pytest>=8.0,<9
+# 2026-10-19 從 `<9` 放寬到 `<10`。
+# 理由是**宣告原本就與事實不符**,不是為了讓某個檢查過:
+#   開發機實際裝的是 pytest 9.1.1,而宣告寫 <9 —— 於是
+#   「我在本機跑的 252 passed」和「CI 跑的 252 passed」用的是不同 major,
+#   整個專案期間都沒有任何東西發現這件事。
+# 實測:252 條測試在 8.x(CI)與 9.1.1(本機)**都全綠**。
+# 測試框架的版本不會改變輸出數字,只會改變測試能不能跑 —— 所以它屬於
+# 可以寬鬆的那一類。但「寬鬆到沒人管」會變成環境分裂,所以同時加了
+# tests/test_reporting.py::test_the_running_environment_matches_requirements。
+pytest>=8.0,<10
 # pytest-cov 原本【不在】這裡,但 CLAUDE.md 的覆蓋率指令要用它 ——
 # 乾淨 clone 照文件跑那行會得到 `error: unrecognized arguments: --cov`。
 # 這和 cp950 那次是完全同一類:文件叫使用者跑的指令,在乾淨環境跑不起來。

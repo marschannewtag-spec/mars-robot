@@ -436,9 +436,12 @@ def test_check_order_is_load_bearing(sandbox: Path, cfg: dict, monkeypatch) -> N
 
     monkeypatch.setattr(fetch_data, "fetch_source", fake_fetch)
     # 代理 / PWA / Worker 那幾項會打真的網路,這裡只關心前三組
-    monkeypatch.setattr(hc, "check_proxies", lambda cfg: [])
+    # `**kw`:check_proxies 會收到 mirror_ok —— 這個 stub 不在意它是什麼,
+    # 但簽章變了就該在這裡看得出來,所以不用 *args 吞掉位置參數
+    monkeypatch.setattr(hc, "check_proxies", lambda cfg, **kw: [])
     monkeypatch.setattr(hc, "check_pwa_deploy", lambda cfg: [])
     monkeypatch.setattr(hc, "check_worker", lambda cfg: [])
+    monkeypatch.setattr(hc, "check_published_mirror", lambda cfg: [])
 
     assert not list(sandbox.iterdir()), "前置條件:raw 目錄必須是空的(模擬乾淨 runner)"
     results = hc.run_all()

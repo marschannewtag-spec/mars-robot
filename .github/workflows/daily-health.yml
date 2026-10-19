@@ -94,6 +94,24 @@ jobs:
           PYTHONIOENCODING: utf-8
         run: python src/fetch_signals.py
 
+      # PWA 讀的資料鏡像。這一步【取代了免費 CORS 代理】——
+      # 瀏覽器抓不到 Yahoo/CBOE(沒有 ACAO 標頭),而免費代理在 2026-10 全死,
+      # 於是趨勢腿每天默默退回 Shiller 月均價(與回測基準不同的定義)。
+      # 現在由這裡在 server 端抓好(沒有 CORS 問題),推到 ops-data,
+      # 瀏覽器直接讀 raw.githubusercontent.com(送 ACAO: *)。
+      #
+      # ⚠ 必須排在「執行健檢」之後 —— 它讀的是健檢剛落地的 data/raw/*.csv。
+      #
+      # `continue-on-error`:這一層失敗時 PWA 會沿用分支上的舊版鏡像,
+      # 而「舊版有多舊」由健檢的 `PWA 資料鏡像` 兩項負責報告(讀線上那一份)。
+      # 讓它有能力把每日健檢變紅燈的話,一次暫時性失敗就會蓋掉資料源的真實訊號。
+      - name: 產生 PWA 資料鏡像(失敗不影響健檢結果)
+        continue-on-error: true
+        working-directory: ops
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python src/publish_pwa.py
+
       # 健檢全綠時 --markdown 不輸出內容,補一行說明,讓演練模式也有東西可讀
       - name: 補齊報告內容(健檢正常時)
         if: steps.check.outputs.code == '0'
@@ -209,6 +227,8 @@ jobs:
           cp ops/data/manifest.json   "$tmp/" 2>/dev/null || true
           cp ops/data/health_log.csv  "$tmp/" 2>/dev/null || true
           cp ops/data/signals.json    "$tmp/" 2>/dev/null || true
+          mkdir -p "$tmp/pwa"
+          cp ops/data/pwa/*            "$tmp/pwa/" 2>/dev/null || true
 
           git fetch origin ops-data 2>/dev/null \
             && git checkout -f -B ops-data origin/ops-data \
@@ -219,9 +239,13 @@ jobs:
           # signals.json 產生失敗時上面那步不會有檔案,cp 失敗就沿用分支上的舊版 ——
           # 舊資料好過沒資料,PWA 會自己把年齡標出來
           cp "$tmp"/signals.json   ops/data/ 2>/dev/null || true
+          mkdir -p ops/data/pwa
+          cp "$tmp"/pwa/*          ops/data/pwa/ 2>/dev/null || true
 
           git add -f ops/data/manifest.json ops/data/health_log.csv 2>/dev/null || true
           git add -f ops/data/signals.json 2>/dev/null || true
+          # 鏡像是 PWA 的第一順位來源 —— 這一行沒推上去,使用者就讀到舊資料
+          git add -f ops/data/pwa 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "資料無變化,跳過 commit"
           else

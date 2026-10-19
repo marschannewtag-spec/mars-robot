@@ -17,5 +17,9 @@ data/health_log.csv
 # workflow 用 `git add -f` 推到 ops-data,不受這裡影響。
 data/signals.json
 
+# PWA 讀的資料鏡像,同理 —— 每日重新產生,只住在 ops-data。
+# 留在 main 的話 PWA 會有兩份來源,而使用者讀到哪一份取決於網址,不取決於程式。
+data/pwa/
+
 # 年度報告由 annual-review.yml 產生並推到 ops-data 分支,同理不留在 main。
 reports/

@@ -24,7 +24,7 @@ freshness:
     max_age_days: 7      # Yahoo 日K,正常 0-1 天
   vix:
     cadence: daily
-    max_age_days: 7      # GitHub finance-vix,正常 1-3 天
+    max_age_days: 7      # CBOE 官方日K,正常 1-3 天
   shiller:
     cadence: monthly
     publish_grace_day: 5
@@ -49,6 +49,22 @@ pwa:
     - "fetchT"
     - "readCache"
     - "ddspan"
+    - "SP_MIRROR"          # 2026-10-19 起趨勢腿的第一順位來源;沒了就是退回代理鏈
+
+  # PWA 真的去讀的那兩個檔(由 ops/src/publish_pwa.py 每日產生、推到 ops-data)。
+  #
+  # ⚠ 這兩個網址必須與 index.html 的 `SP_MIRROR` / `VIX_URL` 一致 —— 由
+  #   tests/test_publish_pwa.py::test_config_mirror_urls_match_the_pwa 綁住。
+  #   漂移的後果與代理清單漂移完全一樣:健檢盯著一個 PWA 沒在讀的檔案,
+  #   而 PWA 在讀的那個沒人看著。
+  mirror:
+    sp_url: "https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/sp_monthly.json"
+    vix_url: "https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/vix_daily.csv"
+    # 健檢讀到的是【上一次執行】推上去的那一份(本次的 publish 在後面才跑),
+    # 所以要容得下一個排程週期 + 週末 + 一次 outage。
+    max_age_days: 5
+    min_sp_months: 13       # SMA12 需要 13 個月才算得出第一個訊號
+    min_vix_months: 132     # 歷史圖 96 個月 + 滾動 z 分數 36 個月
 
 # PWA 實際在用的免金鑰代理鏈。
 # 這是整套健檢最有價值的一項 —— allorigins 就是這樣無聲死掉、

@@ -448,3 +448,66 @@ def test_rewriting_the_file_invalidates_the_cache(tmp_path: Path, monkeypatch) -
     assert len(fetch_data.load("vix", refresh_if_missing=False)) == 2, (
         "檔案換了,load() 還是回舊內容 —— 抓到新資料卻用舊的,無聲錯誤"
     )
+
+
+# --------------------------------------------------------------------------
+# 執行環境 vs requirements.txt(2026-10-19)
+# --------------------------------------------------------------------------
+
+def test_the_running_environment_matches_requirements() -> None:
+    """跑這些測試的環境,必須符合 requirements.txt 的宣告。
+
+    ## 為什麼這條測試值得存在
+
+    2026-10-19 實測:`requirements.txt` 寫 `pytest>=8.0,<9`,而開發機裝的是
+    **9.1.1**。CI 跑 `pip install -r ops/requirements.txt`,所以拿到 8.x ——
+    也就是說「我在本機報告的 252 passed」和「CI 的 252 passed」**從來不是
+    同一個 major**,而整個專案期間沒有任何東西發現這件事。
+
+    這和 `pytest-cov` 那次是完全同一個形狀:文件宣稱的環境與實際跑的環境
+    不一致,而驗證本身站在錯的那一邊,於是驗證什麼都沒驗到。
+    CLAUDE.md 的推論條目:**量測本身也會站錯環境**。
+
+    ## 它擋住的不只是打錯字
+
+    相依策略目前是「釘到下一個 major」而不是完整 lock
+    (取捨見 `reports/2026-10-19-dependency-locking-for-chatgpt.md`)。
+    範圍的意思是「我們會跑到還沒測過的未來版本」—— 那個取捨要成立,
+    **至少**得保證此刻跑的東西在宣告範圍內。不然範圍只是註解。
+
+    ## 刻意是硬失敗,不是警告
+
+    一個「環境不符」的警告會被滑過去,而它造成的後果(本機綠、CI 紅,
+    或更糟:本機綠、CI 綠、但兩邊測的不是同一件事)極難歸因。
+    修法很短:`pip install -r ops/requirements.txt`。
+    """
+    from importlib.metadata import PackageNotFoundError, version
+
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    req_path = OPS_ROOT / "requirements.txt"
+    specs = [
+        line.strip()
+        for line in req_path.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    assert specs, "requirements.txt 解析不出任何相依 —— 這條測試會變成空轉"
+
+    problems = []
+    for spec in specs:
+        r = Requirement(spec)
+        try:
+            installed = version(r.name)
+        except PackageNotFoundError:
+            problems.append(f"{r.name}:宣告 {r.specifier},但【沒有安裝】")
+            continue
+        if not r.specifier.contains(Version(installed), prereleases=True):
+            problems.append(f"{r.name}:已裝 {installed},不在宣告的 {r.specifier} 內")
+
+    assert not problems, (
+        "執行環境與 requirements.txt 不符:\n  "
+        + "\n  ".join(problems)
+        + "\n\n本機綠而 CI 紅(或兩邊測的根本不是同一件事)就是從這裡開始的。"
+        + "\n修法:pip install -r ops/requirements.txt"
+    )

@@ -372,7 +372,7 @@ def check_column_degradation(cfg: dict) -> list[Result]:
     return out
 
 
-def check_proxies(cfg: dict) -> list[Result]:
+def check_proxies(cfg: dict, mirror_ok: bool = True) -> list[Result]:
     """PWA 實際在用的免金鑰代理鏈。
 
     這是整套健檢最有價值的一項。allorigins 就是這樣無聲死掉的 —— 它照樣回應
@@ -387,6 +387,24 @@ def check_proxies(cfg: dict) -> list[Result]:
 
     只有在**全部**代理都死掉時才算失敗 —— 那才是 PWA 真的退回月頻的時候。
     部分失效只記錄不報警,否則一個長期死掉的代理會讓你天天收到通知。
+
+    ⚠ 2026-10-19:嚴重程度改成【取決於鏡像】(`mirror_ok`)。
+    ---------------------------------------------------------------
+    這一項從 2026-08-28 起連紅,因為 corsproxy.io 轉付費了,而它是清單上
+    唯一的代理。同一天起,PWA 的趨勢腿改成先讀本專案自己發布的資料鏡像
+    (ops-data 分支,見 publish_pwa.py)—— 代理鏈退到第三順位。
+
+    **這不是放寬閾值。** 放寬閾值是「把紅線往外挪,讓同一件壞事不再觸發」;
+    這裡改的是**嚴重程度跟著後果走**:代理全死且鏡像正常 = 使用者看到的數字
+    完全正確,備援少了一層;代理全死且鏡像也壞 = 使用者真的會看到月均價定義
+    的數字,那是 FAIL。
+
+    判準寫得可驗證,而且**仍然會紅**:
+      鏡像壞 + 代理全死 -> FAIL   (test_proxy_failure_is_fail_when_the_mirror_is_broken)
+      鏡像好 + 代理全死 -> SKIP   (test_proxy_failure_is_not_an_alarm_while_the_mirror_serves)
+      代理活著           -> OK
+    SKIP 不會進報告的「異常項目」,但仍然完整出現在 `<details>` 的全部結果裡 ——
+    所以「看得到」和「被叫起來」這兩件事被分開了,而那正是這次要修的東西。
     """
     target = cfg["proxy_probe_target"]
     origin = cfg["pwa"]["url"].rstrip("/")
@@ -416,10 +434,18 @@ def check_proxies(cfg: dict) -> list[Result]:
 
     joined = " | ".join(detail)
     if not alive:
+        if mirror_ok:
+            return [Result(
+                "PWA 代理鏈", SKIP,
+                f"所有免金鑰代理都失效,但**不影響使用者看到的數字** —— "
+                f"趨勢腿由本專案的資料鏡像供應(第一順位)。代理鏈是第三順位備援。"
+                f"鏡像若也壞掉,這一項會立刻變回 FAIL。{joined}",
+            )]
         return [Result(
             "PWA 代理鏈", FAIL,
-            f"**所有免金鑰代理都失效** —— PWA 的趨勢腿會退回 Shiller 月頻"
-            f"(月均價定義,與回測基準不同,畫面會顯示警示列)。{joined}",
+            f"**所有免金鑰代理都失效,而資料鏡像也不可用** —— PWA 的趨勢腿會"
+            f"退回 Shiller 月頻(月均價定義,與回測基準不同,畫面會顯示警示列)。"
+            f"{joined}",
         )]
 
     dead_unexpected = [
@@ -433,6 +459,124 @@ def check_proxies(cfg: dict) -> list[Result]:
             f"但備援耗損了 —— 若剩下的也掛掉,PWA 就會退回月頻。{joined}",
         )]
     return [Result("PWA 代理鏈", OK, f"可用 {alive}。{joined}")]
+
+
+def _mirror_last_day(sp_json: dict) -> str | None:
+    """從 sp_monthly.json 取最後一筆的 UTC 日期。"""
+    try:
+        ts = sp_json["chart"]["result"][0]["timestamp"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not ts:
+        return None
+    return datetime.fromtimestamp(int(ts[-1]), timezone.utc).strftime("%Y-%m-%d")
+
+
+def check_published_mirror(cfg: dict) -> list[Result]:
+    """PWA 真的讀得到的那兩個檔,現在是什麼狀態。
+
+    為什麼這一項必須存在
+    --------------------
+    2026-10-19 起趨勢腿與 VIX 腿的**第一順位**都是本專案發布到 ops-data 的
+    鏡像(見 publish_pwa.py)。這條路把「免費 CORS 代理全死」這個問題拿掉了,
+    但同時把一個新的單點故障放進來:**鏡像本身**。
+
+    而它的死法會是靜默的。publish 步驟是 `continue-on-error`(它不該有能力
+    讓每日健檢變紅燈),心跳 commit 在沒有差異時會跳過 —— 所以
+    「publish 掛了」和「今天沒有新資料」在 workflow 的顏色上長得一模一樣。
+    PWA 那端也不會叫:它會靜靜退到第二、第三順位,畫面照樣有數字。
+
+    所以這裡**不讀本機檔案,讀線上那一份** —— 問的是使用者的瀏覽器此刻
+    拿得到什麼,不是「我們剛剛算出了什麼」。這兩件事在 publish 成功但
+    push 失敗的時候會不一樣,而那正是要抓的情況。
+
+    ⚠ 讀到的是【上一次執行】推上去的那一份(本次的 publish 在後面才跑),
+    所以容忍度要容得下一個排程週期 + 週末。`mirror.max_age_days` 預設 5。
+    """
+    mcfg = cfg["pwa"]["mirror"]
+    out: list[Result] = []
+
+    # --- S&P 月序列 ---
+    try:
+        r = requests.get(mcfg["sp_url"], headers=UA, timeout=20)
+        if r.status_code != 200:
+            out.append(Result("PWA 資料鏡像 · S&P", FAIL,
+                              f"HTTP {r.status_code} —— PWA 會退到代理鏈/月頻"))
+        else:
+            payload = r.json()
+            months = len(payload.get("chart", {}).get("result", [{}])[0]
+                         .get("timestamp", []) or [])
+            last = _mirror_last_day(payload)
+            if months < mcfg["min_sp_months"]:
+                out.append(Result(
+                    "PWA 資料鏡像 · S&P", FAIL,
+                    f"只有 {months} 個月,低於下限 {mcfg['min_sp_months']} —— "
+                    f"PWA 的 spFromYahoo 會丟掉它並退到下一層"))
+            elif last is None:
+                out.append(Result("PWA 資料鏡像 · S&P", FAIL,
+                                  "格式不符:取不到 chart.result[0].timestamp"))
+            else:
+                age = _days_between(last, date.today())
+                if age > mcfg["max_age_days"]:
+                    out.append(Result(
+                        "PWA 資料鏡像 · S&P", FAIL,
+                        f"最後一筆 {last},已 {age} 天"
+                        f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了,"
+                        f"使用者看到的是舊資料"))
+                else:
+                    out.append(Result("PWA 資料鏡像 · S&P", OK,
+                                      f"{months} 個月,最後 {last}({age} 天前)"))
+    except Exception as exc:  # noqa: BLE001
+        out.append(Result("PWA 資料鏡像 · S&P", FAIL, f"讀取失敗:{exc}"))
+
+    # --- VIX 日序列 ---
+    try:
+        r = requests.get(mcfg["vix_url"], headers=UA, timeout=20)
+        if r.status_code != 200:
+            out.append(Result("PWA 資料鏡像 · VIX", FAIL,
+                              f"HTTP {r.status_code} —— PWA 會完全沒有 VIX 腿"))
+        else:
+            df = pd.read_csv(io.StringIO(r.text))
+            need = ["DATE", "HIGH", "CLOSE"]
+            missing = [c for c in need if c not in df.columns]
+            if missing:
+                out.append(Result(
+                    "PWA 資料鏡像 · VIX", FAIL,
+                    f"缺欄位 {missing} —— buildVixMonthly 讀不到,"
+                    f"VIX 腿會整個消失"))
+            else:
+                months = df["DATE"].astype(str).str.slice(0, 7).nunique()
+                last = str(df["DATE"].iloc[-1]) if len(df) else ""
+                age = _days_between(last, date.today())
+                if months < mcfg["min_vix_months"]:
+                    out.append(Result(
+                        "PWA 資料鏡像 · VIX", FAIL,
+                        f"只有 {months} 個月,低於下限 {mcfg['min_vix_months']}"
+                        f"(圖要 96 個月 + 滾動 z 分數要 36 個月)—— 歷史圖會自己變短"))
+                elif age > mcfg["max_age_days"]:
+                    out.append(Result(
+                        "PWA 資料鏡像 · VIX", FAIL,
+                        f"最後一筆 {last},已 {age} 天"
+                        f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了"))
+                else:
+                    out.append(Result("PWA 資料鏡像 · VIX", OK,
+                                      f"{len(df)} 列 / {months} 個月,"
+                                      f"最後 {last}({age} 天前)"))
+    except Exception as exc:  # noqa: BLE001
+        out.append(Result("PWA 資料鏡像 · VIX", FAIL, f"讀取失敗:{exc}"))
+
+    return out
+
+
+def mirror_is_serving(results: list[Result]) -> bool:
+    """鏡像這兩項是不是都沒失敗。
+
+    代理鏈的嚴重程度要看這個 —— 見 check_proxies 的說明。
+    刻意用「沒有 FAIL」而不是「全部 OK」:鏡像項目目前不會產生 SKIP,
+    但若將來多了一個無法判斷的情況,「判不出來」不該被當成「壞了」
+    而把代理鏈推成紅燈。
+    """
+    return not any(r.failed for r in results if r.name.startswith("PWA 資料鏡像"))
 
 
 def check_pwa_deploy(cfg: dict) -> list[Result]:
@@ -491,7 +635,11 @@ def run_all() -> list[Result]:
     results += check_freshness(cfg, down)
     results += check_sanity(cfg, down)
     results += check_column_degradation(cfg)
-    results += check_proxies(cfg)
+    # 鏡像必須排在代理鏈【之前】—— 代理鏈的嚴重程度取決於鏡像有沒有在供應
+    # (見 check_proxies 的說明)。倒過來的話代理鏈會永遠以為鏡像是好的。
+    mirror = check_published_mirror(cfg)
+    results += mirror
+    results += check_proxies(cfg, mirror_ok=mirror_is_serving(mirror))
     results += check_pwa_deploy(cfg)
     results += check_worker(cfg)
     return results
@@ -608,19 +756,39 @@ def _parse_kv(body: str | None, prefix: str) -> dict[str, str]:
     return out
 
 
-def _days_between(a: str | None, b: str | None) -> int:
-    """兩個 ISO 日期差幾天。任一邊缺或壞 → 0。
+def _as_date(x: str | date | None) -> date | None:
+    """ISO 字串或 date → date。其餘 → None。"""
+    if isinstance(x, date):
+        return x
+    if not x:
+        return None
+    try:
+        return date.fromisoformat(x)
+    except (ValueError, TypeError):
+        return None
+
+
+def _days_between(a: str | date | None, b: str | date | None) -> int:
+    """兩個日期差幾天。任一邊缺或壞 → 0。
 
     回 0 而不是拋:這條路上的日期來自【上一次寫進 Issue 內文的標記】,
     而那是外部狀態 —— 被人手動編輯、被舊版寫壞、或根本還不存在都有可能。
     一個解析不出來的日期不該讓整個健檢的通知流程掛掉。
+
+    ⚠ 2026-10-19 加上 `date` 型別。原本只吃 ISO 字串,而傳進一個
+    `date.today()` 會在 `date.fromisoformat()` 拋 TypeError 之後
+    被上面那層「壞的就回 0」吞掉 —— **於是檢查永遠算出 0 天,永遠不會紅**。
+    `check_published_mirror` 的新鮮度判準就是這樣整條變成空轉的,
+    而它看起來完全正確。由 test_mirror_check.py 的 age 兩條測試抓到。
+
+    「回 0 比較安全」對通知路徑是對的(外部狀態不可信),對**量測**路徑
+    是錯的(型別寫錯會變成無聲的永遠通過)。兩種用途共用一個函式,
+    就必須讓它對兩種輸入都真的算得出來。
     """
-    if not a or not b:
+    da, db = _as_date(a), _as_date(b)
+    if da is None or db is None:
         return 0
-    try:
-        return (date.fromisoformat(b) - date.fromisoformat(a)).days
-    except (ValueError, TypeError):
-        return 0
+    return (db - da).days
 
 
 def severity(days: int) -> int:

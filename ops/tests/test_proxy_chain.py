@@ -119,3 +119,99 @@ def test_a_dead_proxy_is_not_silently_tolerated_forever(cfg: dict) -> None:
         "每一個代理都被列進 known_dead_proxies —— 這項檢查已經沒有任何判別力了。"
         "代理真的全死時正確的做法是讓它紅燈(並填 worker_url),不是把它標成已知"
     )
+
+
+# --------------------------------------------------------------------------
+# 嚴重程度必須跟著後果走(2026-10-19)
+#
+# 代理鏈從 2026-08-28 起連紅,因為 corsproxy.io 轉付費了。同一天之後 PWA 的
+# 趨勢腿改成先讀本專案發布的資料鏡像,代理鏈退到第三順位 —— 於是「代理全死」
+# 這件事對使用者看到的數字已經沒有影響。
+#
+# 把它直接改成不報警 = 關掉警報。所以判準改成**取決於鏡像有沒有在供應**,
+# 而下面三條就是那個判準的全部內容。**最重要的是第一條** —— 它證明
+# 這個改動不是「讓紅燈變綠」:鏡像壞掉時它仍然是 FAIL。
+# --------------------------------------------------------------------------
+
+def _dead_proxy_cfg(cfg: dict) -> dict:
+    """取真實 config,只把探測目標換成一定會失敗的位址。"""
+    out = dict(cfg)
+    out["proxy_probe_target"] = "https://127.0.0.1:1/never"
+    return out
+
+
+def _probe(monkeypatch, cfg: dict, *, mirror_ok: bool, alive: bool):
+    import health_check as hc
+
+    class FakeResp:
+        status_code = 200 if alive else 401
+        text = '{"chart":{"result":[]}}' if alive else "nope"
+
+    monkeypatch.setattr(hc.requests, "get", lambda *a, **k: FakeResp())
+    return hc.check_proxies(_dead_proxy_cfg(cfg), mirror_ok=mirror_ok)[0]
+
+
+def test_proxy_failure_is_fail_when_the_mirror_is_broken(cfg: dict, monkeypatch) -> None:
+    """鏡像壞 + 代理全死 → **FAIL**。
+
+    這一條是整個改動的安全網。少了它,「嚴重程度取決於鏡像」就只是
+    「永遠不報警」的另一種寫法 —— 而那等於把警報關掉。
+    """
+    import health_check as hc
+
+    r = _probe(monkeypatch, cfg, mirror_ok=False, alive=False)
+    assert r.status == hc.FAIL
+    assert r.failed
+    assert "鏡像也不可用" in r.detail
+    assert "Shiller" in r.detail, "必須說出使用者會看到什麼 —— 月均價定義的數字"
+
+
+def test_proxy_failure_is_not_an_alarm_while_the_mirror_serves(
+    cfg: dict, monkeypatch
+) -> None:
+    """鏡像好 + 代理全死 → 不是 FAIL,但**仍然看得到**。
+
+    SKIP 不會進報告的「異常項目」,卻會完整出現在 `<details>` 的全部結果裡。
+    「看得到」和「被叫起來」必須是兩件事 —— 連紅 54 天的 Issue 就是把這兩件
+    事綁在一起的後果。
+    """
+    import health_check as hc
+
+    r = _probe(monkeypatch, cfg, mirror_ok=True, alive=False)
+    assert not r.failed
+    assert r.status == hc.SKIP
+    assert "不影響使用者看到的數字" in r.detail
+    assert "會立刻變回 FAIL" in r.detail, "必須寫出它什麼時候會再變紅"
+
+
+def test_a_live_proxy_is_still_ok_regardless_of_the_mirror(
+    cfg: dict, monkeypatch
+) -> None:
+    """代理活著 → OK,與鏡像狀態無關。
+
+    控制組:證明上面兩條的差異真的來自 `mirror_ok`,而不是來自探測結果。
+    """
+    import health_check as hc
+
+    for mirror_ok in (True, False):
+        r = _probe(monkeypatch, cfg, mirror_ok=mirror_ok, alive=True)
+        assert r.status == hc.OK, "mirror_ok=%s 時代理活著卻不是 OK" % mirror_ok
+
+
+def test_mirror_is_serving_treats_skip_as_serving() -> None:
+    """`mirror_is_serving` 看的是「有沒有 FAIL」,不是「有沒有全 OK」。
+
+    「判不出來」不該被當成「壞了」而把代理鏈推成紅燈 —— 那會製造假警報,
+    而假警報比漏報更致命。
+    """
+    import health_check as hc
+
+    ok = [hc.Result("PWA 資料鏡像 · S&P", hc.OK, "")]
+    skipped = [hc.Result("PWA 資料鏡像 · S&P", hc.SKIP, "")]
+    failed = [hc.Result("PWA 資料鏡像 · VIX", hc.FAIL, "")]
+    assert hc.mirror_is_serving(ok)
+    assert hc.mirror_is_serving(skipped)
+    assert not hc.mirror_is_serving(failed)
+    assert not hc.mirror_is_serving(ok + failed), "任一項壞掉就不算在供應"
+    # 不相關的項目不該影響判斷
+    assert hc.mirror_is_serving(ok + [hc.Result("PWA 代理鏈", hc.FAIL, "")])

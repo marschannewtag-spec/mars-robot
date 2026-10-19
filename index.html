@@ -300,7 +300,7 @@
     <p style="margin-top:8px">① <b>每日 · 自有 Worker</b>(選填網址)— 自架 Cloudflare Worker,最優先、最穩定。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>③ <b>每日 · Yahoo ^GSPC</b>(<b>預設、免金鑰</b>)— 經 CORS 代理抓 Yahoo 指數,讓趨勢腿反映到昨收。會依序試 <code>query1/query2</code> 兩個主機 × <code>corsproxy.io</code> 代理。<b>2026-10 實測:免費代理已全部失效</b>(corsproxy.io 轉為需 API key、allorigins 持續逾時已移除),③ 目前實質上不會成功,會直接退到 ④。要恢復每日新鮮度請填 ① 或 ②。<br>④ <b>月頻 · Shiller</b>(最終退回)— 全部失敗時的保底,永遠可用。</p>
     <p style="margin-top:9px;color:var(--faint)">目前實際來源顯示在上方「資料更新」欄。③為跨網域抓取,若你的瀏覽器/代理擋下會自動往下退,功能不會壞,只是少了每日新鮮度。每個請求都有逾時(單次 7 秒、整段 12 秒上限),死掉的來源不會拖住頁面。免費代理偶有不穩;要最穩定就填①或②。</p>
     <div style="display:flex;gap:8px;margin-top:13px">
-      <input id="workerurl" type="text" autocomplete="off" spellcheck="false" placeholder="(推薦)你的 Cloudflare Worker 網址 — 最長久穩定" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
+      <input id="workerurl" type="text" autocomplete="off" spellcheck="false" placeholder="(選填)你的 Cloudflare Worker 網址 — 進階覆寫" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
       <button id="saveworker" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
     </div>
     <p id="workerstatus" style="margin-top:9px"></p>
@@ -309,12 +309,32 @@
       <button id="savekey" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
     </div>
     <p id="keystatus" style="margin-top:9px"></p>
-    <p style="margin-top:9px;color:var(--faint)">兩者皆只存你裝置本機(localStorage),不上傳。<b>Worker 是最推薦的長久解</b>:自架一支 Cloudflare Worker(永久免費、你掌控),貼上其網址即為最優先來源。留空則依序試免費代理→月頻。</p>
+    <p style="margin-top:9px;color:var(--faint)">兩者皆只存你裝置本機(localStorage),不上傳。<b>兩個都留空就好</b> —— 2026-10 起趨勢腿預設讀本專案每日自動更新的資料鏡像(每日、免金鑰、免代理)。這兩欄只是進階覆寫:填了就優先用你指定的來源。</p>
   </div>
 </details>
 
 <script>
-const VIX_URL="https://raw.githubusercontent.com/datasets/finance-vix/main/data/vix-daily.csv";
+// ---- 資料來源 --------------------------------------------------------------
+//
+// 【2026-10-19 架構改動】趨勢腿與 VIX 腿都改成先讀【本專案自己發布的鏡像】。
+//
+// 原本的路:瀏覽器 -> 免費 CORS 代理 -> Yahoo / GitHub 鏡像。
+// 問題:Yahoo 不送 Access-Control-Allow-Origin,所以瀏覽器非經代理不可;
+//       而 2026-10-19 實測免費代理【全部失效】(corsproxy.io 轉付費回 401),
+//       於是趨勢腿每天默默退回 Shiller 月均價 —— 那個定義與回測基準不同,
+//       在 17.3% 的月份會給出不同的現金建議。連紅 47 天沒人知道。
+//
+// 現在的路:每日 workflow 在 server 端抓(沒有 CORS 問題),寫成下面這兩個檔
+//           推到 ops-data 分支,瀏覽器直接讀 raw.githubusercontent.com ——
+//           那個網域送 `Access-Control-Allow-Origin: *`(2026-10-19 實測)。
+//           不需要代理、不需要金鑰、不需要自架 Cloudflare Worker。
+//
+// 格式刻意【不是】新格式:sp_monthly.json 是 Yahoo chart JSON 的子集,
+// vix_daily.csv 的欄位是原上游的子集 —— 所以 spFromYahoo() 與
+// parseCSV()+buildVixMonthly() 一行都沒改。只有「bytes 從哪來」變了。
+// 產生端在 ops/src/publish_pwa.py,契約由 ops/tests/test_publish_pwa.py 釘住。
+const VIX_URL="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/vix_daily.csv";
+const SP_MIRROR="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/sp_monthly.json";
 const SP_URL ="https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv";
 const LS="cwgauge_v2";
 const KEY_LS="cwgauge_apikey";
@@ -435,10 +455,11 @@ function spFromYahoo(json){
   return months.map(k=>({ym:k,price:byMonth[k]}));
 }
 // 取得 S&P 月序列(由新鮮到穩定,逐層自動退回):
-//   有自架 Worker → 每日
-//   有 key       → 即時 SPY/TwelveData
-//   否則         → 每日 Yahoo^GSPC(經 CORS 代理,免金鑰)
-//   都失敗       → Shiller 月頻(永遠可用)
+//   有自架 Worker → 每日(使用者明確設定)
+//   有 key       → 即時 SPY/TwelveData(使用者明確設定)
+//   兩者皆無     → 【本專案鏡像】每日、免金鑰、免代理 ← 預設路徑
+//   鏡像也不行   → 每日 Yahoo^GSPC(經 CORS 代理;2026-10 實測代理已全死)
+//   都失敗       → Shiller 月頻(永遠可用,但【月均價】定義,畫面會標示)
 // 註:曾有的 Stooq 層已移除 — 實測它不送 CORS 標頭,經代理則回傳擋爬蟲的 HTML,永遠失效。
 async function fetchSP(force){
   const key=getKey(), worker=getWorker(), opt=force?{cache:"reload"}:{};
@@ -450,6 +471,19 @@ async function fetchSP(force){
       if(spArr.length>=13) return {spArr, src:"每日 · 自有Worker"};
       throw new Error("Worker 資料不足");
     }catch(err){ /* 退到下一層 */ }
+  }
+  // 1) 本專案的資料鏡像 —— 免金鑰、免代理的預設路徑。
+  //    每日 workflow 在 server 端抓 Yahoo ^GSPC 全段日K,只發每月最後一個
+  //    交易日(spFromYahoo 做的就是按月取最後一筆,所以結果完全相同,
+  //    而檔案從 421 KB 掉到 19 KB)。推到 ops-data,這裡直接讀。
+  //    排在使用者自己設定的 Worker / API key 之後 —— 那兩個是明確的使用者意圖。
+  if(!worker && !key){
+    try{
+      const j=await fetchT(SP_MIRROR,opt,8000).then(r=>{if(!r.ok)throw 0;return r.json()});
+      const spArr=spFromYahoo(j);
+      if(spArr.length>=13) return {spArr, src:"每日 · 本專案鏡像"};
+      throw new Error("鏡像資料不足");
+    }catch(err){ /* 退到下一層 —— 鏡像壞掉時下面的代理鏈仍然會試 */ }
   }
   if(key){
     try{
@@ -883,8 +917,9 @@ function refreshWorkerStatus(){
   const w=getWorker();
   if($("workerurl")) $("workerurl").value=w;
   if($("workerstatus")){
-    $("workerstatus").textContent = w? "✓ 已設定 — 趨勢腿使用你的 Worker(每日)" : "未設定 — 將依序試免費代理 → 月頻";
-    $("workerstatus").style.color = w? "var(--teal)" : "var(--faint)";
+    $("workerstatus").textContent = w? "✓ 已設定 — 趨勢腿使用你的 Worker(每日)" : "未設定 — 使用本專案資料鏡像(每日,建議保持留空)";
+    // 留空現在是【正常且建議】的狀態,不再是「還沒設定好」—— 兩種都是綠的
+    $("workerstatus").style.color = "var(--teal)";
   }
 }
 if($("saveworker")) $("saveworker").onclick=()=>{
