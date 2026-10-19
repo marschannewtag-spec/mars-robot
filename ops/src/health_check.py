@@ -665,6 +665,71 @@ def check_published_mirror(cfg: dict) -> list[Result]:
     return out
 
 
+def check_published_signals(cfg: dict) -> list[Result]:
+    """線上那份 `signals.json` 還新不新、PWA 讀不讀得懂。
+
+    為什麼需要這一項(2026-10-20)
+    ------------------------------
+    體制層是整套監控裡**唯一沒有人盯著**的那一塊:
+
+      workflow 顏色   產生它的步驟是 `continue-on-error`,連續失敗一個月
+                      也不會讓每日健檢變色
+      PWA 畫面        會顯示資料年齡、超過 7 天轉琥珀色 —— `實測`屬實
+                      (index.html `SIGNALS_STALE_DAYS`),但那要使用者
+                      **自己打開頁面並讀那行小字**才看得到
+      既有健檢項目    `PWA 資料鏡像` 只看 sp_monthly.json 與 vix_daily.csv,
+                      完全沒有看 signals.json
+
+    也就是「沒消息就是好消息」在這一塊是空的:它壞掉時什麼消息都不會有。
+
+    ⚠ **刻意不併進 `check_published_mirror()`**,也不計入 `mirror_is_serving()`。
+      那個函式的回傳值決定代理鏈的嚴重程度,而體制層與代理鏈毫無關係 ——
+      併進去會讓一個輔助讀數有能力把趨勢腿的判定推成紅燈。
+
+    檢查的是**消費者真正需要的東西**:`renderRegime()` 在
+    `!dom || !warn || !warn.flags.length` 時會直接 return,整塊面板不顯示。
+    所以少了那幾個欄位不是「資料不完整」,是**面板整個消失**,
+    而消失與「這塊本來就沒有」在畫面上長得一模一樣。
+    """
+    scfg = cfg["pwa"]["signals"]
+    name = "PWA 體制訊號"
+    try:
+        r = _get_live(scfg["url"])
+        if r.status_code != 200:
+            return [Result(name, FAIL,
+                           f"HTTP {r.status_code} —— PWA 的體制層面板會整塊不顯示")]
+        payload = r.json()
+    except Exception as exc:  # noqa: BLE001
+        return [Result(name, FAIL, f"讀取失敗:{exc}")]
+
+    gen = _as_date(str(payload.get("generated_at", ""))[:10])
+    if gen is None:
+        return [Result(name, FAIL,
+                       f"`generated_at` 不是日期"
+                       f"({payload.get('generated_at')!r})—— "
+                       f"PWA 算不出資料年齡,那行提醒會永遠不出現")]
+
+    # 消費者的前置條件:renderRegime() 少了任何一個就整塊 return
+    dom = payload.get("dominance")
+    warn = payload.get("warning")
+    flags = (warn or {}).get("flags")
+    missing = [k for k, v in (("dominance", dom), ("warning", warn),
+                              ("warning.flags", flags)) if not v]
+    if missing:
+        return [Result(name, FAIL,
+                       f"缺 {missing} —— renderRegime() 會直接 return,"
+                       f"**整塊體制層面板不顯示**,而那和「本來就沒有」"
+                       f"在畫面上長得一樣")]
+
+    age = _days_between(gen, today_utc())
+    limit = scfg["max_age_days"]
+    if age > limit:
+        return [Result(name, FAIL,
+                       f"最後一筆 {gen},已 {age} 天(上限 {limit})—— "
+                       f"產生體制訊號那一步連續失敗,或心跳沒推上去")]
+    return [Result(name, OK, f"{gen}({age} 天前),{len(flags)} 條警訊")]
+
+
 def mirror_is_serving(results: list[Result]) -> bool:
     """鏡像這兩項是不是都沒失敗。
 
@@ -738,6 +803,9 @@ def run_all() -> list[Result]:
     # (見 check_proxies 的說明)。倒過來的話代理鏈會永遠以為鏡像是好的。
     mirror = check_published_mirror(cfg)
     results += mirror
+    # ⚠ 刻意【不】併進 mirror 那個清單:`mirror_is_serving()` 決定代理鏈的
+    #    嚴重程度,而體制層是輔助讀數,不該有能力把趨勢腿的判定推成紅燈。
+    results += check_published_signals(cfg)
     results += check_proxies(cfg, mirror_ok=mirror_is_serving(mirror))
     results += check_pwa_deploy(cfg)
     results += check_worker(cfg)

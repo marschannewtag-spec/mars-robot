@@ -66,6 +66,23 @@ pwa:
     min_sp_months: 13       # SMA12 需要 13 個月才算得出第一個訊號
     min_vix_months: 132     # 歷史圖 96 個月 + 滾動 z 分數 36 個月
 
+  # 體制層輔助讀數(ops/src/fetch_signals.py 產生,推到 ops-data)。
+  #
+  # ⚠ 為什麼要有這一項:產生它的 workflow 步驟是 `continue-on-error`
+  #   ——「輔助讀數不該有能力讓每日健檢變紅燈」,那個決定是對的。
+  #   但它的副作用是:那一步【連續失敗一個月】在 workflow 顏色上也看不出來,
+  #   而 PWA 端只會在使用者自己打開頁面時顯示一行小小的琥珀色提醒。
+  #   於是「體制層停更」是整套監控裡唯一沒有人盯著的靜默故障。
+  #
+  # ⚠ max_age_days 必須與 index.html 的 `SIGNALS_STALE_DAYS` **相同**。
+  #   兩個數字分岔 = 同一個問題有兩個答案(與 markets.ok 門檻分岔同形狀)。
+  #   由 tests/test_signals_mirror.py::test_the_two_staleness_thresholds_agree 綁住。
+  #   一天抽風不算故障(檔案才 1 天),7 天才算 —— 這一層本來就只有
+  #   「持續壞掉」值得通知。
+  signals:
+    url: "https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/signals.json"
+    max_age_days: 7
+
 # PWA 實際在用的免金鑰代理鏈。
 # 這是整套健檢最有價值的一項 —— allorigins 就是這樣無聲死掉、
 # 導致趨勢腿默默退回月頻長達不知多久,而畫面上完全看不出來。
