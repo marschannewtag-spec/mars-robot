@@ -297,8 +297,8 @@
   <summary><span>⚙ 資料來源(預設每日 · 免金鑰 · 自動退回)</span><span>＋</span></summary>
   <div class="fine">
     <p>趨勢腿資料來源,由新鮮到穩定<b>自動逐層退回</b>,不會斷線:</p>
-    <p style="margin-top:8px">① <b>每日 · 自有 Worker</b>(選填網址)— 自架 Cloudflare Worker,最優先、最穩定。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>③ <b>每日 · Yahoo ^GSPC</b>(<b>預設、免金鑰</b>)— 經 CORS 代理抓 Yahoo 指數,讓趨勢腿反映到昨收。會依序試 <code>query1/query2</code> 兩個主機 × <code>corsproxy.io</code> 代理。<b>2026-10 實測:免費代理已全部失效</b>(corsproxy.io 轉為需 API key、allorigins 持續逾時已移除),③ 目前實質上不會成功,會直接退到 ④。要恢復每日新鮮度請填 ① 或 ②。<br>④ <b>月頻 · Shiller</b>(最終退回)— 全部失敗時的保底,永遠可用。</p>
-    <p style="margin-top:9px;color:var(--faint)">目前實際來源顯示在上方「資料更新」欄。③為跨網域抓取,若你的瀏覽器/代理擋下會自動往下退,功能不會壞,只是少了每日新鮮度。每個請求都有逾時(單次 7 秒、整段 12 秒上限),死掉的來源不會拖住頁面。免費代理偶有不穩;要最穩定就填①或②。</p>
+    <p style="margin-top:8px">① <b>每日 · 自有 Worker</b>(選填網址)— 自架 Cloudflare Worker,最優先。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>③ <b>每日 · 本專案鏡像</b>(<b>預設、免金鑰、免代理</b>)— 本專案的每日自動流程在伺服器端抓 Yahoo ^GSPC 日K,把每月最後一個交易日的收盤發布出來,瀏覽器直接讀。<b>兩欄都留空就走這條</b>,趨勢腿反映到昨收。<br>④ <b>每日 · Yahoo ^GSPC 經 CORS 代理</b>— 只在③抓不到時才試,會依序試 <code>query1/query2</code> 兩個主機 × <code>corsproxy.io</code> 代理。<b>2026-10-19 實測:免費代理已全部失效</b>(corsproxy.io 轉為需 API key、allorigins 持續逾時已移除),留著是因為它哪天可能會回來。<br>⑤ <b>月頻 · Shiller</b>(最終保底)— 前面全部失敗時才用,永遠可用,但那是<b>月均價</b>定義、與回測基準不同,畫面會顯示警示列。</p>
+    <p style="margin-top:9px;color:var(--faint)">目前實際來源顯示在上方「資料更新」欄。③讀的是 <code>raw.githubusercontent.com</code>,它送 <code>ACAO: *</code>,所以不需要代理也不需要金鑰 —— <b>每日新鮮度不必填任何東西就有</b>。④才是跨網域抓取,被你的瀏覽器或代理擋下會自動往下退,功能不會壞。每個請求都有逾時(單次 7 秒、整段 12 秒上限),死掉的來源不會拖住頁面。①②是進階覆寫:只有想要盤中即時、或不想依賴本專案的發布流程時才需要填。</p>
     <div style="display:flex;gap:8px;margin-top:13px">
       <input id="workerurl" type="text" autocomplete="off" spellcheck="false" placeholder="(選填)你的 Cloudflare Worker 網址 — 進階覆寫" style="flex:1;min-width:0;background:#0c1322;border:1px solid var(--line);border-radius:9px;padding:9px 11px;color:var(--text);font:12px var(--mono)">
       <button id="saveworker" style="flex:none;background:var(--teal);color:#04130d;border:none;border-radius:9px;padding:9px 16px;font:700 12px var(--sans);cursor:pointer">儲存</button>
