@@ -389,3 +389,114 @@ def test_an_empty_aggregation_raises_instead_of_publishing_nothing(
     assert summary["errors"].keys() == {"sp", "vix"}
     assert not (tmp_path / publish_pwa.SP_MONTHLY).exists()
     assert not (tmp_path / publish_pwa.VIX_DAILY).exists()
+
+
+# --------------------------------------------------------------------------
+# 6. workflow 契約:產生得出來,不代表它每天真的被產生
+#
+# `test_signals_is_pushed_by_the_daily_workflow` 已經為 signals.json 做過
+# 這件事(理由是心跳踩過「路徑錯了但沒有症狀」)。鏡像現在是 PWA 的
+# **第一順位來源**,而它的整條鏈一直沒有對應的那一條。
+# --------------------------------------------------------------------------
+
+WORKFLOW = TESTS_DIR.parents[1] / ".github" / "workflows" / "daily-health.yml"
+
+
+def _health_steps() -> list[dict]:
+    """每日健檢那個 job 的步驟清單(解析 YAML,不是字串比對)。
+
+    刻意只取 `jobs.health.steps` —— autofix 那個 job 在**另一台 runner** 上,
+    檔案系統不共用。鏡像若跑在那裡,`data/raw/*.csv` 根本不存在。
+    """
+    import yaml
+
+    wf = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    return wf["jobs"]["health"]["steps"]
+
+
+def _step_index(steps: list[dict], needle: str) -> int:
+    """跑了 `needle` 的那一步的序號。找不到或找到多個就**大聲失敗**。
+
+    ⚠ 這道 assert 是在防「掃描式測試恆真」:步驟哪天被刪掉時,
+    順序比較若只是拿到 -1 就會悄悄通過,而那正是最該紅的情況。
+    """
+    hits = [i for i, s in enumerate(steps) if needle in (s.get("run") or "")]
+    assert len(hits) == 1, (
+        f"workflow 裡跑 `{needle}` 的步驟有 {len(hits)} 個,預期恰好 1 個"
+    )
+    return hits[0]
+
+
+def test_the_daily_workflow_actually_publishes_the_mirror() -> None:
+    """鏡像必須真的由每日 workflow 產生。
+
+    這一層的所有測試都證明「`publish_pwa.py` 跑起來會寫出對的東西」,
+    但沒有任何一條證明**它每天真的被跑**。沒被跑的症狀不是壞掉,是
+    **鏡像凍結在最後一次手動執行的那一天** —— HTTP 200、欄位正確、
+    `spFromYahoo()` 解析成功,使用者看到一個長得完全正常的上個月數字。
+    就是「還在回 HTTP 200 的死鏡像」那一節的形狀,只是這次的死因是我們自己。
+    """
+    steps = _health_steps()
+    i = _step_index(steps, "src/publish_pwa.py")
+    assert steps[i].get("working-directory") == "ops", (
+        "publish_pwa.py 用 `src/...` 相對路徑呼叫,working-directory 不是 ops 會直接 404"
+    )
+
+
+def test_publish_runs_after_the_health_check() -> None:
+    """鏡像那一步必須排在健檢**之後**。順序是承重的。
+
+    `publish_pwa.py` 讀 `data/raw/*.csv`,而在乾淨的 runner 上那些檔案
+    **只有** `check_sources_reachable()` 抓成功才會落地
+    (原始 CSV 不進版控,workflow 也只從 ops-data 取回 manifest 與 health_log)。
+
+    排到前面去的話:兩個發布物都 `FileNotFoundError` → `publish()` 兩邊都記
+    errors → 鏡像沿用分支上的舊版 → **每天都沿用,永遠不更新**,
+    而那一步掛著 `continue-on-error` 所以 run 還是綠的。
+
+    ⚠ 這條依賴**在本機完全看不出來**(本機 raw 檔一直在)——
+    和 `test_check_order_is_load_bearing` 釘住 `run_all()` 內部順序
+    是同一個理由,只是這次兩步之間的順序寫在 YAML 裡。
+    """
+    steps = _health_steps()
+    check = _step_index(steps, "src/health_check.py --markdown")
+    publish = _step_index(steps, "src/publish_pwa.py")
+    assert publish > check, (
+        f"鏡像在第 {publish} 步、健檢在第 {check} 步 —— "
+        f"鏡像讀的是健檢剛落地的 data/raw/*.csv,排在前面會讀到不存在的檔案"
+    )
+
+
+def test_the_heartbeat_stages_the_mirror_directory() -> None:
+    """產生了卻沒推上去,PWA 一樣讀不到(signals.json 就踩過這個)。
+
+    鏡像住在 `ops-data`,而心跳步驟是唯一會推那條分支的地方。
+    少了 `git add`,`git diff --cached --quiet` 會判定「資料無變化」而整個
+    跳過 commit —— **連 log 都不會有異狀**。
+    """
+    steps = _health_steps()
+    i = _step_index(steps, "git push origin ops-data")
+    run = steps[i]["run"]
+    assert "git add -f ops/data/pwa" in run, (
+        "心跳沒有把 ops/data/pwa 加進 index —— 鏡像永遠到不了 ops-data 分支"
+    )
+    assert "ops/data/pwa/" in run, (
+        "心跳沒有把產生出來的鏡像複製進 ops-data 的工作目錄"
+    )
+
+
+def test_a_mirror_failure_cannot_turn_the_daily_check_red() -> None:
+    """鏡像那一步失敗時,每日健檢**不得**因此變紅。
+
+    這不是為了讓它「容易綠」。鏡像的真實健康由健檢的 `PWA 資料鏡像`
+    兩項負責(讀線上那一份、有年齡門檻),它們才是承重點。
+    讓產生步驟也能把 run 變紅的話,一次暫時性失敗就會蓋掉**資料源本身**的
+    訊號 —— 而「紅燈看久了就被無視」是這個專案已經實測過的失效模式
+    (連紅 54 天、52 則留言)。
+    """
+    steps = _health_steps()
+    i = _step_index(steps, "src/publish_pwa.py")
+    assert steps[i].get("continue-on-error") is True, (
+        "鏡像產生步驟少了 continue-on-error —— 一次暫時性失敗會把 run 變紅,"
+        "而真正的鏡像健康是由健檢的『PWA 資料鏡像』兩項在看"
+    )
