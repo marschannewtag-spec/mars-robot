@@ -49,7 +49,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from console import force_utf8  # noqa: E402
-from regime import dominance, log_returns, warning_flags  # noqa: E402
+from regime import MIN_OVERLAP, dominance, log_returns, warning_flags  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SIGNALS_PATH = REPO_ROOT / "data" / "signals.json"
@@ -243,15 +243,28 @@ def build_signals() -> dict:
     mkt_status: dict[str, str] = {}
     for name, sym in MARKETS.items():
         closes, st = _try(name, lambda s=sym: fetch_market(s))
-        if closes:
-            rets[name] = log_returns(closes)
-            mkt_status[name] = f"{len(rets[name])} 天"
-        else:
-            mkt_status[name] = st.get("error", "失敗")
-    sources["markets"] = {"ok": len(rets) >= 2, "detail": mkt_status}
+        if not st["ok"]:
+            mkt_status[name] = st["error"]
+            continue
+        # 抓到了,但樣本可能不夠 dominance() 用。那和「抓不到」是兩件事,
+        # 報告上不能長得一樣 —— 原本走 `st.get("error", "失敗")`,於是一個
+        # 成功但空的回應會被記成裸的「失敗」,連 st 自己的 ok:True 都被丟掉。
+        rets[name] = log_returns(closes or {})
+        n = len(rets[name])
+        mkt_status[name] = (f"{n} 天" if n >= MIN_OVERLAP else
+                            f"{n} 天(不足 {MIN_OVERLAP} 天,不計入主體判定)")
 
     dom = dominance(rets)
     warn = warning_flags(cnn, ndc)
+
+    # ⚠ 門檻必須和 dominance() 自己用的那個是同一個,否則
+    # 「來源正常」會和「主體判定算不出來」同時成立 —— 原本寫 `len(rets) >= 2`,
+    # 而 rets 收的是「抓到任何一筆」的市場,dominance() 收的是「重疊樣本
+    # >= MIN_OVERLAP」的市場。兩個市場各回 10 天就會讓 ok:true 配上
+    # n_markets:0、leader:null。這裡直接用它真的採用的市場數,
+    # 不另外數一份 —— 平行計數就是兩個門檻分家的起點。
+    sources["markets"] = {"ok": dom.n_markets >= 2, "n_counted": dom.n_markets,
+                          "detail": mkt_status}
 
     return {
         "schema": 1,

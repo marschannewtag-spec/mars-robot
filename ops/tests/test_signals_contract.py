@@ -294,3 +294,103 @@ def test_core_ladder_constants_are_untouched(html: str) -> None:
            "if(mom<-.08)c=.90; if(mom<-.13)c=1.0; return c;}" in html
     assert "function vixCash(r){let c=0; if(r>.5)c=.24; if(r>1.0)c=.42; " \
            "if(r>1.8)c=.66; if(r>2.6)c=.90; if(r>3.4)c=1.0; return c;}" in html
+
+
+# ── 來源狀態:「沒得判斷」和「也壞了」不可以長得一樣 ─────────────────────
+
+
+def _fake_sources(monkeypatch, series: dict[str, dict[int, float]]) -> None:
+    """只讓 `series` 裡的市場有回應,其餘市場拋例外;CNN / NDC 一律失敗。
+
+    `series` 的鍵是 MARKETS 的顯示名。回 `{}` 代表**抓成功但沒有可用收盤**
+    —— 那是這幾條測試的重點之一,不能和拋例外混在一起。
+    """
+    by_symbol = {fetch_signals.MARKETS[n]: v for n, v in series.items()}
+
+    def fake_market(symbol: str) -> dict[int, float]:
+        if symbol in by_symbol:
+            return by_symbol[symbol]
+        raise RuntimeError("這個市場今天抓不到")
+
+    def boom() -> dict:
+        raise RuntimeError("來源掛了")
+
+    monkeypatch.setattr(fetch_signals, "fetch_market", fake_market)
+    monkeypatch.setattr(fetch_signals, "fetch_cnn", boom)
+    monkeypatch.setattr(fetch_signals, "fetch_ndc", boom)
+
+
+def _series(n: int) -> dict[int, float]:
+    return {1_900_000 + i: 100.0 + (i % 7) for i in range(n)}
+
+
+def test_markets_ok_uses_the_same_threshold_dominance_uses(monkeypatch) -> None:
+    """兩個市場各回 10 天 → 主體判定算不出來,來源狀態就不可以是 ok。
+
+    原本的 `ok: len(rets) >= 2` 數的是「抓到任何一筆」的市場,而
+    `dominance()` 只收重疊樣本 >= MIN_OVERLAP(60)的市場。於是
+    **`ok: true` 會和 `n_markets: 0` / `leader: null` 同時成立** ——
+    一行綠色的來源狀態配一塊空白的面板,而這個專案的紀律是
+    「沒得判斷」和「正常」在報告上必須長得不一樣。
+    """
+    names = list(fetch_signals.MARKETS)[:2]
+    _fake_sources(monkeypatch, {n: _series(10) for n in names})
+
+    payload = fetch_signals.build_signals()
+    dom, mk = payload["dominance"], payload["sources"]["markets"]
+
+    assert dom["n_markets"] == 0 and dom["leader"] is None, (
+        "前提變了:10 天的樣本竟然進得了主體判定,這條測試要重寫"
+    )
+    assert mk["ok"] is False, (
+        f"主體判定採用了 {dom['n_markets']} 個市場、leader 是 "
+        f"{dom['leader']!r},來源狀態卻是 ok:{mk['ok']}"
+    )
+    assert mk["n_counted"] == dom["n_markets"], (
+        "來源狀態自己數了一份市場數,和 dominance() 真的採用的那個不同 —— "
+        "平行計數就是兩個門檻分家的起點"
+    )
+    for n in names:
+        assert "不計入主體判定" in mk["detail"][n], (
+            f"{n} 的樣本不足 {regime.MIN_OVERLAP} 天、已被 dominance() 排除,"
+            f"報告那一格卻寫成 {mk['detail'][n]!r} —— 和一個正常市場長得一樣"
+        )
+
+
+def test_markets_with_enough_history_still_report_ok(monkeypatch) -> None:
+    """控制組:夠長的兩個市場必須還是 ok。
+
+    沒有這一條的話,把 `ok` 寫死成 `False` 也能讓上面那條綠。
+    """
+    names = list(fetch_signals.MARKETS)[:2]
+    _fake_sources(monkeypatch, {names[0]: _series(200),
+                                names[1]: {1_900_000 + i: 100.0 + i * 0.5
+                                           for i in range(200)}})
+
+    payload = fetch_signals.build_signals()
+    dom, mk = payload["dominance"], payload["sources"]["markets"]
+
+    assert dom["n_markets"] == 2, f"前提變了:n_markets 是 {dom['n_markets']}"
+    assert mk["ok"] is True, f"兩個夠長的市場卻回 ok:{mk['ok']}"
+    assert mk["n_counted"] == 2
+
+
+def test_a_successful_but_empty_response_is_not_reported_as_a_failure(
+        monkeypatch) -> None:
+    """抓成功但沒有可用收盤 ≠ 抓不到。
+
+    原本走 `st.get("error", "失敗")`:沒有 error 鍵時回**裸的「失敗」**,
+    於是一個 HTTP 200、`close` 全是 null 的回應(改代號、下市、整段都是假日
+    時真的會這樣)會被記成和斷線一模一樣的字。而 `_try` 自己回的是 ok:True
+    —— 那個判斷被丟掉了。
+    """
+    names = list(fetch_signals.MARKETS)
+    _fake_sources(monkeypatch, {names[0]: {}})
+
+    detail = fetch_signals.build_signals()["sources"]["markets"]["detail"]
+    empty, broken = detail[names[0]], detail[names[1]]
+
+    assert empty != "失敗", "成功但空的回應被記成裸的「失敗」,和斷線分不開"
+    assert "0 天" in empty, f"空回應那一格應該說清楚拿到 0 天:{empty!r}"
+    assert "Error" in broken, f"真的失敗那一格應該帶例外類別:{broken!r}"
+    assert empty != broken, "兩種狀態在報告上長得一樣"
