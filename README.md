@@ -61,6 +61,35 @@ const CACHE = "cwgauge-v5";   // ← 改一次 index.html 就 +1
 由 2000–2002 與 2008 兩段主導。**這個工具是用報酬換回撤,不是兩者兼得。**
 完整基準見 [`ops/CLAUDE.md`](ops/CLAUDE.md) 的「黃金基準」一節。
 
+### 黃金基準不會被悄悄換掉
+
+`ops/tests/fixtures/` 裡有六個檔案:三份**輸入快照**(S&P 日線、VIX 日線、
+Shiller 月線)與兩份**黃金基準**(逐月訊號、績效指標),加上 CBOE 原始片段。
+整套測試拿「現在算出來的」對「黃金基準」比,差異即視為 bug。
+
+那個比法有一個天生的盲點:**同時**改程式與基準、或改輸入再重產基準,
+整組測試會是綠的 —— 沒有任何比對型測試能從結果看出這件事。
+
+所以每個檔案的 sha256 記在 [`ops/tests/fixtures/CHECKSUMS.txt`](ops/tests/fixtures/CHECKSUMS.txt),
+由 `test_golden.py::test_the_frozen_fixtures_have_not_moved` 每次 CI 檢查。
+
+> 它**不是**在禁止重產。Shiller 修訂歷史、CBOE 補回缺漏交易日,都是真的會
+> 發生而且應該被接受的事。被禁止的是**讓它看起來沒發生過** ——
+> 一個兩萬列的 CSV 改幾列,在 review 裡看起來像雜訊;一行 hash 變了不像。
+
+真的需要重產時:
+
+```bash
+python ops/scripts/refresh_fixture_checksums.py
+```
+
+預設**只印出哪些 hash 會變、不寫檔**(要寫加 `--write`)。寫完之後,
+commit 訊息要說清楚三件事:為什麼重產、哪些數字動了、**訊號層有沒有動**
+(訊號層任何差異都是 bug,不是資料修訂)。
+
+hash 算的是行尾正規化後(CRLF → LF)的內容 —— 否則 Windows 與 Linux
+會得到不同答案,而那是環境差異,不是基準漂移。
+
 ---
 
 ## 資料來源(逐層自動退回)
