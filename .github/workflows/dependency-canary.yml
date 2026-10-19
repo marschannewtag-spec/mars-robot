@@ -9,19 +9,27 @@ name: 依賴 canary · 最新版預警
 #   最新組合全綠 → 開一個更新 lock 的 PR;最新組合壞掉 → 開一張預警 Issue,
 #   而正式環境一動也不動。
 #
-# ⚠ 三條邊界,都是刻意的:
+# ⚠ 四條邊界,都是刻意的:
 #
 # 1. **這個 workflow 與 L1 每日健檢完全獨立。** 它不是 health job 的 `needs`,
 #    不讀也不寫 health 的 output,不碰 ops-data 分支。canary 失敗**不得**
 #    讓每日健檢變紅 —— 上游發新版不是「我們的資料壞了」,而一條會為了別人的
 #    發布而亮紅燈的警報,幾週後就會被無視(本 repo 實測過連紅 54 天的後果)。
 #
-# 2. **不自動合併。** 它的終點是一個可審查的 PR。`main` 直接部署到公開的
-#    GitHub Pages,而那是一個會給出投資部位建議的工具 ——「所有必要檢查通過」
-#    不等於「可以無人核可地改變線上建議」。這條邊界寫在 ops/CLAUDE.md,
-#    這裡只是不去碰它。
+# 2. **測的就是要提議的那一份。** 先產生候選鎖定檔,再用
+#    `pip install --require-hashes` 裝【它】,然後才跑測試。
+#    原本的順序是「用範圍裝 → 測 → 事後用 uv 重新產生鎖定檔」,那留下一個洞:
+#    pip 與 uv 是兩個解析器,**測到的組合和釘住的組合可能不是同一個**,
+#    而 PR 說明會寫著「全綠組合」。2026-10-19 實測兩者在同平台的解析結果完全
+#    相同(20 個套件、零版本差異),所以這不是正在發作的故障 —— 但那是賭兩個
+#    第三方工具永遠一致。順序換過來之後,「全綠」就字面上指那份鎖定檔。
+#    順便也驗到了 hash 與 wheel 的可用性,而那正是 L2 將來會做的事。
 #
-# 3. **去重用版本組合,不用 run ID。** 同一個壞掉的組合每週重報一次,
+# 3. **不自動合併。** 它的終點是一個可審查的 PR。`main` 直接部署到公開的
+#    GitHub Pages,而那是一個會給出投資部位建議的工具 ——「所有必要檢查通過」
+#    是合併的必要條件,不是授權。這條邊界寫在 ops/CLAUDE.md,這裡只是不去碰它。
+#
+# 4. **去重用版本組合,不用 run ID。** 同一個壞掉的組合每週重報一次,
 #    就是狼來了。key 的定義見 ops/src/dep_manifest.py::combination_key。
 
 on:
@@ -61,23 +69,52 @@ jobs:
           cache: npm
           cache-dependency-path: ops/package-lock.json
 
-      - name: 解析並安裝最新相容版本
+      # 生成工具釘死版本。不釘的話,鎖定檔的內容會取決於「那天的 uv 是哪一版」
+      # —— 一個為了可重現而存在的檔案,自己的產生過程卻不可重現。
+      - name: 安裝鎖定產生工具
+        run: python -m pip install "uv==0.9.9"
+
+      # 參數與路徑必須與 ops/requirements-ci.lock 的標頭完全一致
+      # (標頭記錄的是產生它的那一行指令),否則每次重新產生都會有一行假 diff。
+      # 刻意**就地覆寫**那個檔案:接下來要安裝與測試的就是這一份候選,
+      # 而最後的 `git diff` 正好就是「要不要開 PR」的判準。
+      # 全程失敗時工作目錄的改動不會被 commit,所以就地覆寫是安全的。
+      - name: 解析最新相容版本 → 候選鎖定檔
         id: resolve
+        continue-on-error: true
+        working-directory: ops
+        run: |
+          set +e
+          python -m uv pip compile requirements.txt requirements-test.txt \
+            --generate-hashes --python-version 3.12 --python-platform linux \
+            --output-file requirements-ci.lock \
+            > "$GITHUB_WORKSPACE/canary_install.log" 2>&1
+          code=$?
+          set -e
+          cat "$GITHUB_WORKSPACE/canary_install.log"
+          exit $code
+
+      # 裝的是上一步剛產生的那一份,而且開 hash 驗證 ——
+      # 和 L2 將來會做的事完全一樣。這一步失敗代表「這份鎖定檔不能用」,
+      # 而那件事必須在開 PR 之前就知道,不是等 PR 的 CI 紅了才知道。
+      - name: 安裝候選鎖定檔(hash 驗證)
+        id: install
+        if: steps.resolve.outcome == 'success'
         continue-on-error: true
         run: |
           set +e
           {
             python -m pip install --upgrade pip
-            pip install -r ops/requirements.txt -r ops/requirements-test.txt
-          } > "$GITHUB_WORKSPACE/canary_install.log" 2>&1
+            pip install --require-hashes -r ops/requirements-ci.lock
+          } >> "$GITHUB_WORKSPACE/canary_install.log" 2>&1
           code=$?
           set -e
-          cat "$GITHUB_WORKSPACE/canary_install.log"
+          tail -40 "$GITHUB_WORKSPACE/canary_install.log"
           echo "pip_version=$(python -m pip --version 2>/dev/null | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
           exit $code
 
       - name: npm ci
-        if: steps.resolve.outcome == 'success'
+        if: steps.install.outcome == 'success'
         run: npm ci --prefix ops
 
       # L2 與 canary 共用同一個入口(ops/scripts/ci_checks.sh)。
@@ -85,7 +122,7 @@ jobs:
       # 而那是一個看起來在把關、實際上在量別的東西的閘門。
       - name: 跑完整檢查(與 L2 同一個入口)
         id: tests
-        if: steps.resolve.outcome == 'success'
+        if: steps.install.outcome == 'success'
         continue-on-error: true
         env:
           PYTHONIOENCODING: utf-8
@@ -101,18 +138,21 @@ jobs:
       - name: 寫 canary manifest
         if: always()
         env:
-          PIP_VERSION: ${{ steps.resolve.outputs.pip_version }}
+          PIP_VERSION: ${{ steps.install.outputs.pip_version }}
           DEP_RESOLVER: canary-latest
           PYTHONIOENCODING: utf-8
         run: |
-          # 解析失敗時 phase=failure,manifest 會標 resolution_complete=false,
-          # 並改用 incomplete key —— 它不是一個真實的版本組合,報告上要分得出來。
-          if [ "${{ steps.resolve.outcome }}" = "success" ]; then
+          # phase 看的是「解析 + 安裝」有沒有都成功。任一失敗就沒有一組可以
+          # 當作「這個版本組合」的完整集合,manifest 會標
+          # resolution_complete=false 並改用 incomplete key ——
+          # 它不是一個真實的版本組合,報告上要分得出來。
+          if [ "${{ steps.install.outcome }}" = "success" ]; then
             phase=success
           else
             phase=failure
           fi
-          # ⚠ 測試那一步被跳過時(解析失敗),**不要**傳 --tests-exit-code。
+
+          # ⚠ 測試那一步被跳過時(解析或安裝失敗),**不要**傳 --tests-exit-code。
           # 第一版寫 `${{ steps.tests.outputs.code || '99' }}`,於是空字串變成 99,
           # 而 manifest 會記成「測試跑過,失敗,exit 99」—— 測試根本沒跑。
           # 「沒得判斷」和「也壞了」在報告上必須長得不一樣,這是本專案
@@ -123,11 +163,11 @@ jobs:
             args+=(--tests-exit-code "${{ steps.tests.outputs.code }}")
           fi
           python ops/src/dep_manifest.py --phase "$phase" \
-            --source "latest(requirements.txt + requirements-test.txt)" \
+            --source "latest(requirements.txt + requirements-test.txt) -> requirements-ci.lock" \
             --requested ops/requirements.txt \
             --requested ops/requirements-test.txt \
             --log "$GITHUB_WORKSPACE/canary_install.log" \
-            --exit-code "${{ steps.resolve.outcome == 'success' && '0' || '1' }}" \
+            --exit-code "${{ steps.install.outcome == 'success' && '0' || '1' }}" \
             --out "$GITHUB_WORKSPACE/canary_manifest.json" \
             --emit-issue --issue-kind canary \
             --issue-title "$GITHUB_WORKSPACE/canary_title.txt" \
@@ -143,12 +183,13 @@ jobs:
             canary_manifest.json
             canary_install.log
             canary_tests.log
+            ops/requirements-ci.lock
           retention-days: 30
           if-no-files-found: warn
 
       # ── 失敗:開/更新預警 Issue,按版本組合去重 ──────────────────────────
       - name: 失敗 → 開或更新 canary Issue
-        if: steps.resolve.outcome != 'success' || steps.tests.outcome != 'success'
+        if: steps.install.outcome != 'success' || steps.tests.outcome != 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -179,21 +220,13 @@ jobs:
               --body "新的版本組合仍然失敗($key)。詳見內文與 artifact。"
           fi
 
-      # ── 成功:若鎖定檔會變,開一個 PR。不合併。 ──────────────────────────
-      - name: 全綠 → 重新產生鎖定檔
+      # ── 成功:若候選鎖定檔與現行不同,開一個 PR。不合併。 ────────────────
+      - name: 全綠 → 鎖定檔有變化嗎
         id: relock
-        if: steps.resolve.outcome == 'success' && steps.tests.outcome == 'success'
+        if: steps.tests.outcome == 'success'
         working-directory: ops
         run: |
-          # ⚠ 生成工具釘死版本。不釘的話,鎖定檔的內容會取決於「那天的
-          # pip-compile/uv 是哪一版」—— 一個為了可重現而存在的檔案,
-          # 自己的產生過程卻不可重現。
-          python -m pip install "uv==0.9.9"
-          # 參數與路徑必須與 ops/requirements-ci.lock 的標頭完全一致,
-          # 否則每次重新產生都會有一行假 diff(標頭記錄的是指令本身)。
-          python -m uv pip compile requirements.txt requirements-test.txt \
-            --generate-hashes --python-version 3.12 --python-platform linux \
-            --output-file requirements-ci.lock
+          # 這裡不再重新產生 —— 工作目錄裡的那一份就是剛剛裝起來並測過的候選。
           if git diff --quiet -- requirements-ci.lock; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "鎖定檔沒有變化 —— 最新版就是目前鎖定的版本"
@@ -216,17 +249,19 @@ jobs:
           git push -f origin "$branch"
 
           {
-            echo "canary 在乾淨環境解析最新相容版本,**全部必要檢查通過**,"
-            echo "所以這份鎖定檔可以升上去。"
+            echo "canary 在乾淨環境產生了這份候選鎖定檔,**用它自己**"
+            echo "(pip install --require-hashes)裝起來,然後跑完整必要檢查 —— 全部通過。"
+            echo ""
+            echo "也就是說:**被測試的組合和這個 PR 釘住的組合是同一個。**"
             echo ""
             echo "- canary run:$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-            echo "- 完整版本組合與測試結果見 artifact \`dependency-canary\`"
+            echo "- 完整版本組合、測試結果與這份鎖定檔見 artifact dependency-canary"
             echo ""
             echo "## 這個 PR 不會自動合併"
             echo ""
-            echo "\`main\` 直接部署到公開的 GitHub Pages,而那是一個會給出投資部位"
+            echo "main 直接部署到公開的 GitHub Pages,而那是一個會給出投資部位"
             echo "建議的工具。「所有必要檢查通過」是合併的**必要**條件,不是授權。"
-            echo "合併前請確認 L2 在這個分支上是綠的(黃金基準 440 個月、\`1e-9\`)。"
+            echo "合併前請確認 L2 在這個分支上是綠的(黃金基準 440 個月、1e-9)。"
           } > pr_body.md
 
           gh pr create --title "chore(deps): 更新 L2 鎖定檔到最新全綠組合" \
@@ -242,6 +277,7 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| 解析最新版 | ${{ steps.resolve.outcome }} |"
+            echo "| 裝候選鎖定檔 | ${{ steps.install.outcome || 'skipped' }} |"
             echo "| 完整檢查 | ${{ steps.tests.outcome || 'skipped' }} |"
             echo "| 鎖定檔有變化 | ${{ steps.relock.outputs.changed || 'n/a' }} |"
             echo ""

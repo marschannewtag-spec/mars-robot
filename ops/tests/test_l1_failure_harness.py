@@ -211,7 +211,7 @@ def test_a_second_consecutive_failure_updates_instead_of_creating(
 CANARY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "dependency-canary.yml"
 
 
-def _canary_manifest_shell(resolve: str, tests_outcome: str, tests_code: str) -> str:
+def _canary_manifest_shell(install: str, tests_outcome: str, tests_code: str) -> str:
     """canary 寫 manifest 那一步的 shell,把 GitHub 運算式代成具體值。
 
     ⚠ 代入是這個 harness 的限制:真正的 runner 才會求值那些 `${{ }}`。
@@ -222,10 +222,15 @@ def _canary_manifest_shell(resolve: str, tests_outcome: str, tests_code: str) ->
             if "--phase" in (s.get("run") or "")]
     assert len(hits) == 1, f"找不到(或有多個)canary 的 manifest 步驟:{len(hits)}"
     shell = hits[0]["run"]
+    # ⚠ 代入的是 **install** 的 outcome,不是 resolve 的。
+    # 2026-10-19 把 canary 改成「先產生候選鎖定檔 → 裝它 → 測它」之後,
+    # manifest 步驟的判準從 resolve 換成 install,而這個 harness 一開始
+    # 還在代 resolve —— 於是 `${{ }}` 原封不動留在 shell 裡,兩條測試立刻紅。
+    # 那正是它該有的反應:這個 harness 綁的是 workflow 的真實內容。
     for expr, value in (
-        ("${{ steps.resolve.outcome == 'success' && '0' || '1' }}",
-         "0" if resolve == "success" else "1"),
-        ("${{ steps.resolve.outcome }}", resolve),
+        ("${{ steps.install.outcome == 'success' && '0' || '1' }}",
+         "0" if install == "success" else "1"),
+        ("${{ steps.install.outcome }}", install),
         ("${{ steps.tests.outcome }}", tests_outcome),
         ("${{ steps.tests.outputs.code }}", tests_code),
     ):

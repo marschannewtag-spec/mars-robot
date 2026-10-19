@@ -443,3 +443,41 @@ def test_the_bom_does_not_leak_into_the_first_requirement() -> None:
     for name in ("requirements.txt", "requirements-test.txt"):
         for pkg in _requirements(OPS_ROOT / name):
             assert pkg.isascii() and pkg == pkg.strip(), f"{name} 解析出髒名字:{pkg!r}"
+
+
+def test_the_canary_tests_the_lock_it_would_propose(canary: dict) -> None:
+    """canary 必須**先產生候選鎖定檔、裝它、再測它**,順序不可以反。
+
+    反過來(用範圍裝 → 測 → 事後重新產生鎖定檔)會留下一個洞:
+    pip 與 uv 是兩個解析器,**被測的組合和被釘住的組合可能不是同一個**,
+    而 PR 說明會寫著「全綠組合」。2026-10-19 實測兩者在同平台解析結果相同
+    (20 個套件、零版本差異),所以那不是正在發作的故障 —— 但它是在賭兩個
+    第三方工具永遠一致,而這個 repo 的歷史就是一連串「賭別人的預設值」。
+    """
+    steps = canary["steps"]
+
+    def idx(needle: str) -> int:
+        hits = [i for i, s in enumerate(steps) if needle in (s.get("run") or "")]
+        assert len(hits) == 1, f"跑 `{needle}` 的步驟有 {len(hits)} 個,預期 1 個"
+        return hits[0]
+
+    compile_at = idx("uv pip compile")
+    # 需求寫完整:PR 說明的文案裡也提到了 `pip install --require-hashes`,
+    # 只比對那個片段會找到兩個步驟。斷言要指向**真的那一行指令**。
+    install_at = idx("pip install --require-hashes -r ops/requirements-ci.lock")
+    tests_at = idx("ci_checks.sh")
+    assert compile_at < install_at < tests_at, (
+        f"順序不對:compile={compile_at} install={install_at} tests={tests_at} —— "
+        f"必須是「產生候選 → 裝候選 → 測候選」"
+    )
+    # 裝的必須是鎖定檔,不是範圍
+    install_run = steps[install_at]["run"]
+    assert "requirements-ci.lock" in install_run
+    assert "pip install -r ops/requirements.txt" not in install_run, (
+        "canary 又改回用範圍安裝了 —— 那會讓「測到的」與「釘住的」分家"
+    )
+    # 開 PR 的判準必須是「工作目錄裡那一份」的 diff,不是再產生一次
+    relock = steps[idx("git diff --quiet -- requirements-ci.lock")]
+    assert "uv pip compile" not in relock["run"], (
+        "在判斷要不要開 PR 的時候又重新產生了一次 —— 那一份沒有被測過"
+    )
