@@ -806,9 +806,33 @@ document.addEventListener("visibilitychange",()=>{
 // 【刻意失敗即靜默】:抓不到就什麼都不顯示。離線、防火牆、GitHub 抽風都會讓
 // fetch 失敗,那些都不是「監控死了」的證據。誤報比漏報更糟 —— 一個會亂叫的
 // 指示燈幾天後就會被無視,那等於沒有。這是次要防線,不是主要防線。
+const OPS_HEARTBEAT="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/heartbeat.txt";
 const OPS_MANIFEST="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/manifest.json";
 const OPS_STALE_DAYS=4;   // 心跳是每日的;4 天容得下週末與單次 outage,離 60 天大限還很遠
-function checkOpsHeartbeat(){
+//
+// 這裡問的是【兩個不同的問題】,2026-10-20 之前混在同一句話裡:
+//
+//   heartbeat.txt 的時間戳  -> 排程本身今天有沒有來報到
+//   manifest 的 fetched_at -> 資料有沒有在前進
+//
+// 健檢連續失敗時,排程是活的、資料是舊的。舊版只看 manifest,於是會說
+// 「監控已 N 天沒有心跳」—— 那句話是錯的,而它指向的修法(去看排程有沒有
+// 被停用)也是錯的。說錯話的警示燈和不會響的警示燈一樣沒用。
+function opsWarn(html){const el=$("opsnote");if(!el)return;el.classList.add("on");el.innerHTML=html;}
+function opsMonitorDead(days){
+  opsWarn("⚠ <b>背後的自動監控已 "+days+" 天沒有心跳。</b>每日資料健檢可能已停止運作"
+    +"（GitHub 會自動停用長期靜置 repo 的排程流程）。<br>"
+    +"上面的數字仍是<b>即時抓的、沒有問題</b> —— 失效的是那層在幫你盯"
+    +"「資料源有沒有默默壞掉」的機制。處理方式見 repo 的 <code>ops/SETUP.md</code> 第 4 項。");
+}
+function opsDataStalled(days){
+  opsWarn("⚠ <b>自動監控仍在運作,但資料已 "+days+" 天沒有前進。</b>"
+    +"心跳正常代表排程沒有被停用 —— 停住的是上游資料源或健檢本身。<br>"
+    +"上面的數字仍是<b>即時抓的</b>,舊的是那份鏡像。詳情見 repo 的健檢 Issue。");
+}
+// monitorAlive=false 代表「問不到心跳」,不是「心跳停了」—— 那種時候只能
+// 沿用舊判準說話,不得升級成更確定的指控。
+function checkOpsDataAge(monitorAlive){
   fetchT(OPS_MANIFEST,null,6000)
     .then(r=>r.ok?r.json():Promise.reject(new Error(r.status)))
     .then(m=>{
@@ -816,14 +840,26 @@ function checkOpsHeartbeat(){
       if(!ts.length)return;
       const days=Math.floor((Date.now()-Math.max.apply(null,ts))/864e5);
       if(days<OPS_STALE_DAYS)return;
-      const el=$("opsnote"); if(!el)return;
-      el.classList.add("on");
-      el.innerHTML="⚠ <b>背後的自動監控已 "+days+" 天沒有心跳。</b>每日資料健檢可能已停止運作"
-        +"（GitHub 會自動停用長期靜置 repo 的排程流程）。<br>"
-        +"上面的數字仍是<b>即時抓的、沒有問題</b> —— 失效的是那層在幫你盯"
-        +"「資料源有沒有默默壞掉」的機制。處理方式見 repo 的 <code>ops/SETUP.md</code> 第 4 項。";
+      if(monitorAlive)opsDataStalled(days);else opsMonitorDead(days);
     })
     .catch(()=>{});   // 刻意吞掉,理由見上
+}
+function checkOpsHeartbeat(){
+  fetchT(OPS_HEARTBEAT,null,6000)
+    .then(r=>r.ok?r.text():Promise.reject(new Error(r.status)))
+    .then(txt=>{
+      const beat=Date.parse(String(txt).trim());
+      if(!isFinite(beat))throw new Error("heartbeat 解析不出來");
+      const days=Math.floor((Date.now()-beat)/864e5);
+      if(days>=OPS_STALE_DAYS){opsMonitorDead(days);return;}
+      checkOpsDataAge(true);
+    })
+    // heartbeat.txt 抓不到(離線、404、內容壞掉)時退回舊判準。
+    // 【失敗即靜默仍然成立】—— 退回去的那條路自己以空 catch 收尾,
+    // 離線時兩邊都失敗,畫面上不會出現任何東西。這一點由
+    // tests/test_ops_heartbeat.py 用 jsdom 真的跑過六個分支驗證,
+    // 不再只是比對 catch 的字串形狀。
+    .catch(()=>checkOpsDataAge(false));
 }
 checkOpsHeartbeat();
 
