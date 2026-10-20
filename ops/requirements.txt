@@ -1,57 +1,54 @@
-# 上界釘到下一個 major 是刻意的。
+﻿# ⚠ 這個檔案開頭有一個 UTF-8 BOM,**請不要把它拿掉。**
 #
+# pip 讀 requirements 檔時,沒有 BOM 就退回用
+# `locale.getpreferredencoding(False)` 解碼。在中文版 Windows 上那是 cp950,
+# 於是下面這些中文註解會讓 `pip install -r` 直接【爆掉】:
+#
+#   UnicodeDecodeError: 'cp950' codec can't decode byte 0xe5 ...
+#   exit 2
+#
+# 2026-10-19 實測(開發機 cp950):原始檔 exit 2、加 BOM exit 0、
+# 純 ASCII exit 0、`PYTHONUTF8=1` exit 0。選 BOM 是因為它留得住註解
+# (註解在這個專案裡是內容,不是裝飾),而且不需要使用者先設環境變數。
+# CI 跑在 UTF-8 的 Linux 上,所以這個 bug 在 CI 永遠不會出現 ——
+# 和 cp950 終端機、pytest-cov、pytest major 是同一個形狀的第四次。
+# 由 tests/test_dependency_policy.py::test_pip_can_read_every_declaration_file 釘住。
+# L1 執行期相依 —— 每日資料健檢、訊號產生、資料鏡像發布真正需要的東西。
+#
+# ⚠ 這個檔案裡【不放測試工具】。2026-10-19 拆開,理由是量出來的:
+# `.github/workflows/daily-health.yml` 的安裝步驟用的就是這個檔案,而安裝失敗
+# 會讓整個 job 紅掉 → 健檢不執行 → `steps.check.outputs.code` 是空的 →
+# 開 Issue 那一步被跳過 → 心跳也沒有新資料可推。也就是:
+# **pytest 裝不起來的那一天,每日資料供應會停,而 Issue 通道完全安靜。**
+# 測試工具不在 L1 的執行路徑上,就不該有能力造成那個後果。
+# 測試工具見 requirements-test.txt;L2 CI 用的精確鎖定見 requirements-ci.lock。
+#
+# 這份清單是用 AST 掃 `src/*.py` 與 `scripts/*.py` 的實際 import 得到的,
+# 不是憑印象分類(2026-10-19 實測):
+#   pandas    engine / backtest / annual_review / fetch_data / health_check / publish_pwa
+#   numpy     engine / backtest / annual_review          ← 直接 import,不是只靠 pandas 帶進來
+#   requests  fetch_data / fetch_signals / health_check
+#   PyYAML    health_check(讀 config.yml)
+#
+# ── 上界釘到下一個 major 是刻意的 ────────────────────────────────────────
 # 黃金基準用 1e-9 精確比對 440 個月,而 CLAUDE.md 明文寫「基準漂移若沒有理由,
 # 那就是 bug」。原本全部是無上界的 `>=`,意思是某天 pip 裝到 pandas 3.0、
 # rolling/pct_change/groupby 的任一邊界行為改了,基準就會漂 ——
 # 而漂移的真正原因會是「裝到新版」,那是最難歸因的一類紅燈,
 # 而且它會偽裝成「程式被改壞了」。
 #
-# 不做完整 lock(pip-compile)的理由:完整 lock 需要有人定期維護,
-# 而這個專案的前提就是沒有人定期維護它。釘到 major 是「自動拿到修補、
-# 但不會在 major 換版的早上突然變紅」的折衷。
-# Node 側已經有 package-lock.json(CI 用 npm ci),Python 側原本沒有等價物。
-#
-# 2026-10-19 追加的一條規則:**宣告的範圍是一個支援承諾,只能寫進真的驗過的
-# major。** 原本不是這樣寫的,於是這個檔案自己有三條假宣告(見下)。
-# 下界幾乎不影響 CI 實際跑什麼(`pip install -r` 永遠解析到範圍內的最新版),
-# 所以收緊下界不是為了改變 CI,是為了讓宣告變成真的。
+# ── 下界是一句支援承諾,只能寫進真的驗過的 major ─────────────────────────
+# 2026-10-19 加的規則。`pip install -r` 永遠解析到範圍內的最新版,所以下界
+# 幾乎不影響 CI 實際跑什麼 —— 它的作用是**宣稱「這些版本我都支援」**,
+# 而那是一句可以被驗證的話。驗不出來的 major 就不要寫進去。
 pandas>=2.2,<3
-# 2026-10-19 從 `>=1.26` 收到 `>=2.1`。兩個獨立理由,都不需要等依賴鎖定的決策:
-#   1. `>=1.26,<3` **跨過 numpy 1→2 那次破壞性改版** —— 同一份檔案在
-#      2024 年初會解析到 1.26,今天解析到 2.x。一份宣告橫跨兩個 major,
-#      等於宣稱兩邊都支援,而從來沒有在 1.x 上跑過這 297 條測試。
+# 從 `>=1.26` 收到 `>=2.1`(2026-10-19),兩個獨立理由:
+#   1. `>=1.26,<3` 跨過 numpy 1→2 那次破壞性改版 —— 同一份檔案在 2024 年初
+#      解析到 1.26、今天解析到 2.x,而這些測試從來沒有在 1.x 上跑過。
 #   2. 下界在**維護者自己的機器上裝不起來**:開發機只有 Python 3.13,
 #      而 `numpy==1.26.4` 沒有 cp313 wheel,source build 需要編譯器。
-# 實測 numpy 2.1.2(開發機)與 2.5.4(乾淨 venv 取範圍上界)下,
-# 440 個月黃金基準在 1e-9 都零漂移。驗過的是 2.x,所以宣告只寫 2.x。
+# 實測 2.1.2(開發機)與 2.5.4(乾淨 venv 取範圍上界)下,440 個月黃金基準
+# 在 1e-9 都零漂移。驗過的是 2.x,所以宣告只寫 2.x。
 numpy>=2.1,<3
 requests>=2.31,<3
 PyYAML>=6.0,<7
-# 直接相依,不是間接:test_reporting.py 用它比對「執行環境 vs 本檔宣告」。
-# pytest 本來就會帶進來,但靠別人的相依樹拿到自己要用的東西,
-# 正是 pytest-cov 那次的形狀 —— 要用就自己宣告。
-# ⚠ 原本寫 `>=23,<27` —— packaging 的版號是 23/24/25/26 各自一個 major,
-# 所以那是**跨四個 major**的宣告,而實測過的只有 26.2。兩次第二意見都沒抓到
-# 這一條(審的人盯著 numpy),它是「同一個形狀再長一次」的例子。
-packaging>=26,<27
-
-# 2026-10-19 從 `<9` 放寬到 `<10`。
-# 理由是**宣告原本就與事實不符**,不是為了讓某個檢查過:
-#   開發機實際裝的是 pytest 9.1.1,而宣告寫 <9 —— 於是
-#   「我在本機跑的 252 passed」和「CI 跑的 252 passed」用的是不同 major,
-#   整個專案期間都沒有任何東西發現這件事。
-# 實測:252 條測試在 8.x(CI)與 9.1.1(本機)**都全綠**。
-# 測試框架的版本不會改變輸出數字,只會改變測試能不能跑 —— 所以它屬於
-# 可以寬鬆的那一類。但「寬鬆到沒人管」會變成環境分裂,所以同時加了
-# tests/test_reporting.py::test_the_running_environment_matches_requirements。
-pytest>=8.0,<10
-# pytest-cov 原本【不在】這裡,但 CLAUDE.md 的覆蓋率指令要用它 ——
-# 乾淨 clone 照文件跑那行會得到 `error: unrecognized arguments: --cov`。
-# 這和 cp950 那次是完全同一類:文件叫使用者跑的指令,在乾淨環境跑不起來。
-# 規則:凡是寫進文件要人執行的指令,它需要的東西就必須在這個檔案裡。
-# 2026-10-19 從 `>=5.0,<8` 收到 `>=7,<8`。`<8` 本身沒問題,問題是下界:
-# 5 / 6 / 7 是三個 major,而實測過的只有 7.1.0。
-# ⚠ **不要把 pytest 的跨 major 實測挪用到這裡** —— pytest 的 `<10` 有
-# 「252 條測試在 8.x 與 9.1.1 都全綠」當依據,pytest-cov 沒有對應的實測。
-# 證據不能轉讓,這是第二意見指出的,而它是對的。
-pytest-cov>=7,<8

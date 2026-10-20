@@ -1051,7 +1051,8 @@ CI 跑 `pip install -r ops/requirements.txt`,所以拿到 8.x。
 反向驗證過它不是空轉:把 `pytest` 範圍改回 `<9`,它立刻 `1 failed`。
 
 刻意是硬失敗而不是警告:警告會被滑過去,而「本機綠、CI 綠、但兩邊測的不是
-同一件事」是最難歸因的狀態。修法只有一行:`pip install -r ops/requirements.txt`。
+同一件事」是最難歸因的狀態。修法:`pip install -r ops/requirements.txt
+-r ops/requirements-test.txt`(2026-10-19 起宣告拆成兩份,見 `ops/DEPENDENCIES.md`)。
 
 `pytest` 的範圍同時改成 `>=8.0,<10`。這**不是**為了讓新測試過 ——
 是宣告原本就與事實不符,而 252 條測試在 8.x 與 9.1.1 **都實測全綠**。
@@ -1426,6 +1427,207 @@ numpy>=2.1,<3        packaging>=26,<27        pytest-cov>=7,<8
 而驗證它的方法不是讀,是去跑。寫不出實測的 major,就不要寫進範圍。
 (對照本檔「沒有被檢查的宣告,就只是註解」—— 這是同一條規則在依賴上的實例。)
 
+### 測試工具的安裝失敗,有能力讓每日資料供應停擺(2026-10-19)
+
+讀 `daily-health.yml` 的失敗路徑得到的(`靜態檢查`,沒有實跑一次真的安裝失敗):
+
+```
+pip install 失敗 → job 紅
+                 → 「執行健檢」被跳過 → steps.check.outputs.code 是【空字串】
+                 → 開 Issue 那一步的條件不含 always() → 被跳過,不開 Issue
+                 → 心跳有 always() 會跑,但沒有新資料
+                    → git diff --cached --quiet → 跳過 commit → 沒有推送
+```
+
+而 `實測`:L1 安裝的就是那份**混著 pytest 的** requirements.txt
+(`daily-health.yml:58`、`ci.yml:51`、`annual-review.yml:37`、autofix)。
+所以:**pytest 的一次解析失敗,會停掉每日資料供應,而 Issue 通道完全安靜。**
+剩下的通知只有 GitHub 自己的 workflow 失敗信,而連續多天還會讓 60 天排程
+停用的計時器開始跑(心跳沒有新資料就不 commit)。
+
+空字串那一段特別值得記:`""` 在 `!= '0'` 下為真、在 `== '0'` 下為假 ——
+**下游每一個條件都會拿到一個沒有人決定過的答案**,而兩個條件會同時「成立」
+各自相反的分支。這和 `_days_between` 把 TypeError 吞成 0 是同一個形狀:
+一個沒有人選過的預設值,靜靜地替判準做了決定。
+
+#### 修法的四個部分
+
+| | 做了什麼 | 為什麼不是別的做法 |
+|---|---|---|
+| 宣告拆開 | `requirements.txt`(runtime)/ `requirements-test.txt`(測試工具) | 測試工具對 L1 的執行路徑毫無貢獻,就不該出現在它的故障範圍裡 |
+| L2 用鎖定 | `requirements-ci.lock`,精確 pin + hash | L2 的工作是當一把不會自己變動的尺;L1 的工作是「裝得起來」 |
+| 失敗變成事件 | `src/dep_manifest.py`,成功與失敗都寫 manifest,失敗自己開 Issue | 只有紅燈信的話,通知通道在最需要的時候是安靜的 |
+| canary | 每週解析最新版跑完整檢查,獨立 workflow | 讓「升上去會不會出事」變成**被觀測的**,而不是被信任的 |
+
+決策與完整證據(每條都標了 `實測` / `靜態檢查` / `推論`)寫在
+**`ops/DEPENDENCIES.md`**。
+
+#### `dep_manifest.py` 只用標準庫,而這是一條不變量
+
+它要在「pandas 裝不起來」的那一刻執行。加 import 之前先問:
+**這一行在安裝失敗之後還跑得動嗎?** 由 `test_dep_manifest.py` 的 AST 掃描
+釘住(連 `console.py` 一起掃 —— 它靠那支印訊息)。
+
+#### 去重 key 裡不能有 run ID
+
+```
+combination_key = sha256(sorted(name==version) + python + platform + resolver)
+```
+
+commit SHA 與 run ID **刻意不在**裡面:放進去的話每次執行都會算出新的 key,
+於是「同一個壞掉的版本組合」每週都被當成新發現 —— 那就是實測過的
+52 則留言的狼來了。manifest 本身仍然記錄 commit 與 run ID。
+測試連「同一組合 + 不同測試結果 → 同一個 key」都釘住了。
+
+#### 把那段 shell 真的跑一次,而不是只讀它
+
+`tests/test_l1_failure_harness.py` 把失敗處理那一步的 `run:` 從 YAML 抽出來,
+用一支會記錄 argv 的假 `gh`、在 tmp 工作區裡真的執行,然後問:
+manifest 寫出來了嗎、Issue 建立了嗎、用的是帶 failset 標記的內文檔嗎、
+token 有沒有洩漏到要貼進公開 repo 的內文裡。
+
+⚠ 我的第一版 harness 用 `bash -c` 跑,**於是它是綠的而 manifest 根本沒寫出來**:
+GitHub 的預設 shell 是 `bash --noprofile --norc -eo pipefail`,少了 `-e`,
+失敗的 python 不會中斷後面的指令,而我的斷言只看 `gh` 的呼叫紀錄。
+第二個 bug 是把 Windows 路徑直接代進 bash —— 反斜線是轉義字元,
+檔案落在一個誰也找不到的地方。
+
+**推論:模擬一段 shell 的時候,連它的 shell 旗標一起模擬。**
+`-e` / `pipefail` 不是風格,它們決定「失敗會不會往下傳」,
+而那正是整段程式碼的語意。
+
+#### 代理探測與鎖定:刻意不一致的地方要有自己的測試
+
+這一輪新增了三處刻意的不一致,每一處都配一條測試,因為**註解擋不住好意的統一**:
+
+| 不一致 | 為什麼 | 釘住它的測試 |
+|---|---|---|
+| L1 用範圍、L2 用鎖定 | 兩層的工作不同(資料供應 vs 不變的量尺) | `test_l1_installs_only_the_runtime_file` / `test_l2_installs_the_lock_with_hash_verification` |
+| canary 不開 pip cache | 它的工作就是「去看現在最新的是什麼」,快取會讓它量到上週 | (文件層,見 workflow 註解) |
+| canary 不用 `health-fail` 標籤 | 預警與故障必須是兩個通道 | `test_the_canary_does_not_reuse_the_health_fail_label` |
+
+#### 一個被兩次第二意見都漏掉的東西
+
+照「宣告範圍是支援承諾」這條判準掃整個檔案,抓到 `packaging>=23,<27` ——
+packaging 的 23/24/25/26 各自是一個 major,所以那是**跨四個 major**的宣告,
+而實測過的只有 26.2。兩次審查都盯著 numpy,沒有人把同一條判準套到別的行。
+
+**推論:一條新判準要立刻拿去掃全部,不是只修觸發它的那一行。**
+
+### `pip install -r ops/requirements.txt` 在使用者的機器上 exit 2(2026-10-19)
+
+寫文件的時候順手把這行指令寫進去,然後**真的跑了一次**:
+
+```
+$ python -m pip install -r requirements.txt
+UnicodeDecodeError: 'cp950' codec can't decode byte 0xe5 in position 5
+decoding with 'cp950' codec failed
+exit 2
+```
+
+pip 讀 requirements 檔時,**沒有 BOM 就退回用
+`locale.getpreferredencoding(False)` 解碼**。中文版 Windows 是 cp950,
+而這個檔案從 2026-10-14 起就有中文註解。也就是:
+
+> **整個專案最基本的那一行指令,在維護者自己的機器上從來沒有成功過。**
+
+而 CI 跑在 UTF-8 的 Linux 上,所以它永遠是綠的。
+
+#### 這是同一個形狀的第四次
+
+| # | 日期 | 宣稱的環境 ≠ 實際的環境 |
+|---|---|---|
+| 1 | 2026-08-09 | 終端機編碼:中文印得出來,emoji 直接 `UnicodeEncodeError` |
+| 2 | 2026-10-14 | `pytest-cov` 不在 requirements,而文件叫人跑 `--cov` |
+| 3 | 2026-10-19 | 宣告 `pytest<9`,開發機裝 9.1.1 —— 本機與 CI 從來不是同一個 major |
+| **4** | **2026-10-19** | **requirements 檔自己讀不進去(cp950)** |
+
+前三次的共通點是「文件說的和事實不一樣」。第四次更尖一點:
+**那個檔案本身就是給一個工具讀的,而那個工具在維護者的 locale 下讀不懂它。**
+
+#### 四個選項,實測過才選
+
+| 做法 | 實測結果 |
+|---|---|
+| 原始檔 | **exit 2** |
+| 開頭加 UTF-8 BOM | exit 0 |
+| 註解改成純 ASCII | exit 0 |
+| `PYTHONUTF8=1 pip install -r ...` | exit 0 |
+
+選 **BOM**:它留得住註解(註解在這個專案裡是內容,不是裝飾),
+而且不需要使用者先設環境變數才能照文件做事。
+
+#### 判準寫成「檔案的位元」,不是「這台機器跑得起來」
+
+```python
+要嘛檔案開頭有 UTF-8 BOM,要嘛整份是純 ASCII
+```
+
+那正好是 pip 在**任何** locale 下都讀得懂的集合。
+
+⚠ 刻意不寫成「在這台機器上 `pip install` 跑得起來」—— CI 的 locale 是 UTF-8,
+那樣寫在 CI 上永遠綠,而這個 bug 只在非 UTF-8 的 locale 出現。
+**這和 2026-10-14 那個「恆真的路徑測試」是同一個錯誤,只是這次我在寫判準
+之前就想到了。** 判準要測在事實產生的地方 —— 這裡的事實是檔案的位元。
+
+#### 加 BOM 的代價,被我自己的對照組抓到
+
+BOM 會讓第一行變成 `\ufeff# ...`,而我們的解析器 `split("#")[0].strip()`
+之後剩下一個 `\ufeff` —— 一個**名字叫 BOM 的假套件**,八條測試立刻紅。
+修法是讀的時候用 `utf-8-sig`(BOM 是給 pip 看的,不是給我們的解析器看的)。
+
+那八條紅燈是我**為了這個代價特地先寫的對照組**
+(`test_the_bom_does_not_leak_into_the_first_requirement`)抓到的。
+**推論:一個修法如果有已知的副作用,先寫一條測那個副作用的測試,再去改。**
+
+### 拆檔案最容易留下的洞:掃描還在,但它少看了一個地方(2026-10-19)
+
+把宣告拆成 `requirements.txt` / `requirements-test.txt` 之後,
+`test_the_running_environment_matches_requirements` **只讀了 runtime 那一份**。
+於是 `pytest` / `pytest-cov` / `packaging` 的版本完全沒有被檢查 ——
+而「pytest 的宣告與事實不符」正是那條測試存在的全部理由。
+
+更糟的是我在那一行留了一句註解寫著「兩份都要看」,**而程式碼沒有**。
+一句假的註解比沒有註解糟:下一個人會相信它而不去看。
+
+反向驗證:把 test 宣告改成 `pytest>=8.0,<9`(與實際安裝的 9.1.1 不符),
+修好之後測試立刻紅 —— 修之前它是綠的。
+
+**推論:拆一個被掃描的檔案時,先去找所有掃它的地方,再動手。**
+掃描式測試不會因為少看一個檔案而壞掉,它只會**少看一個檔案**,
+而那個狀態和「全部都檢查過」在輸出上長得一模一樣。
+
+### 「測過的組合」和「釘住的組合」可以是兩個不同的東西(2026-10-19)
+
+canary 的第一版順序是:**用範圍裝 → 跑測試 → 事後用 `uv` 重新產生鎖定檔 →
+全綠就開 PR**。而 PR 說明會寫著「最新全綠組合」。
+
+洞在於:裝的時候用的是 **pip** 的解析器,產生鎖定檔用的是 **uv** 的。
+兩個不同的工具,**所以被測的那一組和被釘住的那一組不保證是同一個**。
+
+先量再改。同平台、同宣告檔:
+
+```
+pip  --dry-run --report   20 個套件
+uv   pip compile          20 個套件
+只在 pip 裡的:[]   只在 uv 裡的:[]   版本不一致:NONE
+```
+
+**今天完全相同。** 所以這不是一個正在發作的故障 —— 但它是在**賭兩個第三方
+工具永遠一致**,而這個專案的歷史就是一連串「賭別人的預設值」
+(`remote.origin.fetch` 的範圍、pandas 對日期格式的猜測、pip 對 requirements
+檔的編碼退回)。
+
+修法是把順序換成:**產生候選鎖定檔 → 用 `pip install --require-hashes` 裝它
+→ 測它 → 全綠才開 PR**。於是「全綠」字面上就指那份要被提議的檔案。
+附帶好處:它順便驗到了 hash 與 wheel 的可用性 —— 也就是 L2 將來會做的事。
+原本那個順序下,一份「uv 產得出來但 pip 裝不起來」的鎖定檔會一路開成 PR,
+等 PR 的 CI 紅了才知道。
+
+**推論:一個閘門說「我測過了」的時候,要問它測的是不是**正好**是它要放行的
+那個東西。** 中間只要多一次重新產生、重新解析、重新下載,「測過的」與
+「放行的」就是兩個東西了。
+
 ### 突變測試結果 —— 資料鏡像那一輪(2026-10-19)
 
 新寫的程式碼一律要問一次「如果我把它改錯,有沒有測試會紅」。
@@ -1460,6 +1662,40 @@ numpy>=2.1,<3        packaging>=26,<27        pytest-cov>=7,<8
 | M24 | PWA 部署改回裸的一次請求 | `health_check.py` | **抓到**(2 條) |
 | M25 | PWA 部署不檢查 `expect_markers` | `health_check.py` | **抓到** |
 | M26 | 代理探測也改成帶重試(好意的統一) | `health_check.py` | **抓到** |
+
+#### 相依治理那一輪的 16 個突變(2026-10-19 晚)
+
+目標是「決策不能被默默改掉」—— 它們幾乎全部活在 YAML 裡,而 YAML 沒有
+型別也沒有編譯器。**16 個全部被抓到。**
+
+| # | 突變 | 檔案 | 結果 |
+|---|---|---|---|
+| M27 | L1 又把測試工具裝回去 | `daily-health.yml` | **抓到**(2 條) |
+| M28 | 安裝步驟拿掉 `continue-on-error` | `daily-health.yml` | **抓到** |
+| M29 | job output 退回直接取健檢的 code(空字串) | `daily-health.yml` | **抓到** |
+| M30 | 依賴 manifest 的 artifact 拿掉 `always()` | `daily-health.yml` | **抓到** |
+| M31 | 心跳不再帶上依賴 manifest | `daily-health.yml` | **抓到** |
+| M32 | 開 Issue 那步不再要求安裝成功 | `daily-health.yml` | **抓到** |
+| M33 | autofix 不再排除依賴失敗 | `daily-health.yml` | **抓到** |
+| M34 | canary 自動合併 PR | `dependency-canary.yml` | **抓到** |
+| M35 | canary 改用健檢的標籤 | `dependency-canary.yml` | **抓到** |
+| M36 | canary 的 `uv` 不釘版本 | `dependency-canary.yml` | **抓到** |
+| M37 | L2 改用範圍而不是鎖定 | `ci.yml` | **抓到** |
+| M38 | 宣告範圍與鎖定的版本不符 | `requirements.txt` | **抓到**(2 條) |
+| M39 | runtime 宣告拿掉上界 | `requirements.txt` | **抓到** |
+| M40 | 失敗步驟不再產生 Issue 文案 | `daily-health.yml` | **抓到**(4 條) |
+| M41 | 連續同原因失敗也每天留言 | `daily-health.yml` | **抓到** |
+| M42 | manifest 改寫進 PWA 的那一份(schema 混用) | `daily-health.yml` | **抓到**(2 條) |
+| M43 | canary 退回用 `|| '99'` 硬塞 exit code | `dependency-canary.yml` | **抓到**(3 條) |
+| M44 | 「未執行」與「失敗」合併成同一句 | `dep_manifest.py` | **抓到**(2 條) |
+| M45 | `requirements.txt` 的 UTF-8 BOM 被拿掉 | `requirements.txt` | **抓到** |
+| M46 | test 宣告與實際安裝的 pytest 不符 | `requirements-test.txt` | **抓到**(2 條) |
+| M47 | canary 改回用範圍安裝(測的與釘的分家) | `dependency-canary.yml` | **抓到** |
+| M48 | 開 PR 前又重新產生一次鎖定檔 | `dependency-canary.yml` | **抓到** |
+
+M29 與 M40 最重要:前者是「空字串替判準做決定」那個洞本身,
+後者會讓安裝失敗退回成「只有一封紅燈信」。
+M46 驗的是「拆檔案之後掃描有沒有少看一個地方」—— 修之前它是綠的。
 
 **24 抓到 / 2 逃掉**,兩個逃掉的處理方式見下一節 ——
 一個是真的等價(已註明它等價的前提),一個是我餵的輸入分不出來(已補強)。
@@ -1664,19 +1900,21 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 | `engine.py` / `regime.py` / `backtest.py` | 96–99% | 不變 | 不變 | 不變 |
 | **`health_check.py`** | **0%** | 57% | 70% | **83%** |
 | `fetch_data.py` | 39% | 58% | 60% | 66% |
-| `publish_pwa.py` | — | — | — | **81%**(10-19 新增) |
+| `publish_pwa.py` | — | — | — | 82%(10-19 新增) |
+| `dep_manifest.py` | — | — | — | **91%**(10-19 新增) |
 | `fetch_signals.py` | 23% | 39% | 39% | 39% |
 | `annual_review.py` | 39% | 39% | 39% | 38% |
 | `scripts/compute_golden.py` | 0% | 0% | 0% | 0%(人工一次性腳本,可接受) |
-| **TOTAL** | 39% | 55% | 61% | **64%** |
+| **TOTAL** | 39% | 55% | 61% | **70%** |
 
 測試數:129 → 140(SW)→ 161(健檢 + 契約)→ 195(通知 / 代理鏈 / 資料落後)
 → 228(離線 SW / 月頻契約 / 嚴重程度 / DOM 契約 / 快取污染)
-→ **297**(資料鏡像 / CBOE 來源 / 代理嚴重程度 / 執行環境符合宣告 /
+→ **365**(資料鏡像 / CBOE 來源 / 代理嚴重程度 / 執行環境符合宣告 /
 來源退回鏈 / 鏡像各自獨立發布 / 鏡像日期合法性 / 軌跡表頭 / 鏡像的 workflow 契約 /
-鏡像讀取重試 / PWA 部署 / 探測不重試的不一致)。
+鏡像讀取重試 / PWA 部署 / 探測不重試的不一致 / **相依治理**
+(宣告拆分 · 鎖定檔契約 · L1 失敗路徑 · canary 獨立性 · 失敗 shell 的真實執行))。
 
-10-19 那一輪的 26 個突變:**24 個被抓到**,2 個逃掉 ——
+10-19 那幾輪共 48 個突變:**46 個被抓到**,2 個逃掉 ——
 一個是等價突變(有保存期限,見上),一個是我的測試太弱(已補強)。
 
 `health_check.py` 是 227 行、整套「沒消息就是好消息」的偵測器,**而沒有任何
@@ -1702,6 +1940,15 @@ cd ops && python -m pytest tests -q --cov=src --cov=scripts --cov-report=term-mi
 ```bash
 cd ops && python -m pytest tests/ -q
 ```
+
+⚠ **乾淨環境要裝兩份宣告**(2026-10-19 起執行期與測試工具是分開的):
+
+```bash
+pip install -r ops/requirements.txt -r ops/requirements-test.txt
+```
+
+只裝第一份的話 pytest 根本不在 —— 而那正是這份文件記錄過兩次的那一類坑
+(文件叫使用者跑的指令,在乾淨環境跑不起來)。理由與決策見 `ops/DEPENDENCIES.md`。
 
 改 `index.html` 的**任何**內容 → 把 `sw.js` 的 `CACHE = "cwgauge-vN"` 版本號 +1。
 

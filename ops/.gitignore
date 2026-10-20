@@ -21,5 +21,11 @@ data/signals.json
 # 留在 main 的話 PWA 會有兩份來源,而使用者讀到哪一份取決於網址,不取決於程式。
 data/pwa/
 
+# 依賴安裝的稽核軌跡,同理 —— 每次執行重新產生,只住在 ops-data。
+# ⚠ 它必須被忽略:心跳用 `git add -f` 推它,而留在 main 的那一份會是「某次
+# 在誰的機器上跑出來的版本組合」,而這整層存在的理由就是歸因。
+# 一份過期的歸因資料比沒有更誤導。
+data/deps/
+
 # 年度報告由 annual-review.yml 產生並推到 ops-data 分支,同理不留在 main。
 reports/

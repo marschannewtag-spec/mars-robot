@@ -901,9 +901,38 @@ def test_the_workflow_writes_the_body_with_state_markers() -> None:
         encoding="utf-8")
     assert "jq -r .body > issue_body.md" in wf, "workflow 沒有取出帶狀態標記的 body"
     assert "--body-file issue_body.md" in wf, "寫進 Issue 的不是那份 body"
-    assert "gh issue create --title \"$title\" --label health-fail \\n              --body-file issue_body.md" in wf \
-        or "--body-file issue_body.md" in wf.split("gh issue create")[1][:200], \
-        "新建 Issue 時用的也必須是帶標記的 body,否則第一次就沒有起算日"
+
+    # 2026-10-19:原本是取「第一個 gh issue create 之後的 200 個字元」。
+    # 依賴安裝失敗那條路徑加進來之後,第一個 create 變成那一條,於是這條測試
+    # 開始對著錯的區段在比。改成兩條更嚴的斷言,**涵蓋範圍比原本大**:
+    #
+    #   1. 每一個 gh issue create / edit 都必須用 --body-file,不准用 --body。
+    #      行內 --body 代表內文是當場拼出來的字串,那份字串不會帶狀態標記。
+    #   2. 健檢那條路徑用的必須就是 issue_body.md(帶 failsince/lastnotice)。
+    #
+    # 依賴安裝那條路徑用的是 dep_issue_body.md —— 它也帶 failset 標記
+    # (由 dep_manifest.issue_body() 產生,有自己的測試),所以「恢復正常
+    # 自動關閉」對兩條路徑都成立。
+    import re as _re
+
+    # ⚠ 先把 YAML 的註解行拿掉再掃。第一版沒有,於是它比對到的是我自己
+    # 寫在 workflow 裡**解釋 `--issue-plan` 的那段註解**,不是真的那一行指令。
+    # 這個專案已經踩過同一件事(掃 index.html 時比對到自己的 `//` 註解),
+    # 症狀同樣是「測試在看一個不是事實產生處的地方」。
+    code = "\n".join(ln for ln in wf.splitlines()
+                     if not ln.strip().startswith("#"))
+
+    for verb in ("create", "edit"):
+        hits = _re.findall(rf"gh issue {verb}\b((?:.|\n)*?)(?=\n\s*(?:[a-z]|$))", code)
+        assert hits, f"workflow 裡找不到任何 gh issue {verb} —— 這條斷言會變成恆真"
+        for seg in hits:
+            assert "--body-file" in seg, (
+                f"有一處 gh issue {verb} 沒有用 --body-file:{seg[:120]!r} —— "
+                f"行內 --body 的內文不會帶狀態標記"
+            )
+    assert "--body-file issue_body.md" in code.split("--issue-plan")[1], (
+        "健檢那條路徑建立/更新 Issue 時用的不是帶標記的 issue_body.md"
+    )
 
 
 def test_issue_plan_body_round_trips_every_marker() -> None:

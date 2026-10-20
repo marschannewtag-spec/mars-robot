@@ -42,7 +42,12 @@ jobs:
       contents: write # 只用來推 ops-data 分支;main 由分支保護擋住
       issues: write
     outputs:
-      code: ${{ steps.check.outputs.code }}
+      # ⚠ 不是直接取 steps.check.outputs.code。
+      # 依賴安裝失敗時「執行健檢」根本不會跑,那個值會是**空字串** ——
+      # 而空字串在 `!= '0'` 下為真、在 `== '0'` 下為假,於是下游每一個條件
+      # 都會拿到一個沒有人決定過的答案。健康碼必須由一個一定會執行的步驟
+      # 明確寫出來,見「決定本次的健康碼」。
+      code: ${{ steps.code.outputs.code }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,10 +57,97 @@ jobs:
           cache: pip
           cache-dependency-path: ops/requirements.txt
 
-      - name: 安裝相依
+      # ⚠ 這裡【只裝 L1 執行期相依】,不裝 pytest / pytest-cov。
+      #
+      # 2026-10-19 之前兩者在同一份 requirements.txt 裡,也就是說:
+      # **pytest 的一次解析失敗,有能力讓每日資料供應停擺。** 測試工具對這條
+      # 路徑毫無貢獻,就不該出現在它的故障範圍裡。測試工具見
+      # ops/requirements-test.txt,L2 的精確鎖定見 ops/requirements-ci.lock。
+      #
+      # `continue-on-error` 在這裡【不是】為了讓紅燈變綠:它是為了讓後面的
+      # 失敗處理步驟跑得到。原本安裝失敗會直接讓 job 中止,於是開 Issue 那一步
+      # 被跳過(它的條件不含 always()),心跳也沒有新資料可推 ——
+      # 結果是「workflow 紅了但 Issue 安靜、repo 沒有活動」,而那會讓
+      # GitHub 的 60 天排程停用計時器開始跑。健康碼仍然會被設成非零,
+      # 見下面「決定本次的健康碼」。
+      #
+      # log 重導向到一個【這一步自己新建】的檔案,不是重導向到任何下游會讀的
+      # 既有檔案 —— shell 的重導向會在命令執行之前就把目的檔清空,這個專案
+      # 已經被那件事咬過一次(health_log.csv 變成一張沒有表頭的空表)。
+      - name: 安裝 L1 執行期相依(不含測試工具)
+        id: install
+        continue-on-error: true
         run: |
-          python -m pip install --upgrade pip
-          pip install -r ops/requirements.txt
+          set +e
+          {
+            python -m pip install --upgrade pip
+            pip install -r ops/requirements.txt
+          } > "$GITHUB_WORKSPACE/dep_install.log" 2>&1
+          code=$?
+          set -e
+          cat "$GITHUB_WORKSPACE/dep_install.log"
+          echo "pip_version=$(python -m pip --version 2>/dev/null | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+          exit $code
+
+      # 成功路徑也要留軌跡。只在失敗時才記錄的話,出事那天沒有東西可以比對 ——
+      # 而「跟昨天的版本組合差在哪」正是歸因唯一需要的資訊。
+      - name: 記錄實際安裝的版本(成功路徑)
+        if: steps.install.outcome == 'success'
+        env:
+          PIP_VERSION: ${{ steps.install.outputs.pip_version }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          python ops/src/dep_manifest.py --phase success \
+            --source ops/requirements.txt \
+            --requested ops/requirements.txt \
+            --out ops/data/deps/install.json
+
+      # 安裝失敗 → 寫 failure manifest + 開/更新 Issue。
+      # 這一步存在的唯一理由:**安裝失敗必須是一個看得見的健康事件**,
+      # 不能只有一封 GitHub 的 workflow 失敗信。
+      - name: 依賴安裝失敗 → manifest 與 Issue
+        if: steps.install.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PIP_VERSION: ${{ steps.install.outputs.pip_version }}
+          PYTHONIOENCODING: utf-8
+        run: |
+          # dep_manifest.py 只用標準庫,所以它在「pandas 裝不起來」之後仍然跑得動。
+          python ops/src/dep_manifest.py --phase failure \
+            --source ops/requirements.txt \
+            --requested ops/requirements.txt \
+            --log "$GITHUB_WORKSPACE/dep_install.log" \
+            --exit-code 1 \
+            --out ops/data/deps/install.json \
+            --emit-issue \
+            --issue-title "$GITHUB_WORKSPACE/dep_issue_title.txt" \
+            --issue-body "$GITHUB_WORKSPACE/dep_issue_body.md"
+
+          gh label create health-fail --color B60205 \
+            --description "每日健檢偵測到的異常" 2>/dev/null || true
+
+          title=$(cat "$GITHUB_WORKSPACE/dep_issue_title.txt")
+          # 去重沿用既有的那一個不變量:永遠只有一張開放的 health-fail Issue。
+          # 內文帶著 failset 標記(依賴安裝),所以恢復正常那天會被既有的
+          # 「恢復正常 → 關閉 Issue」步驟自動關掉,不會變成孤兒。
+          existing=$(gh issue list --label health-fail --state open --limit 1 \
+                       --json number --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --label health-fail \
+              --body-file "$GITHUB_WORKSPACE/dep_issue_body.md"
+          else
+            # 先讀舊內文再覆蓋 —— 判斷「上次是不是同一個原因」要用舊的那一份。
+            gh issue view "$existing" --json body --jq .body > old_body.md || true
+            gh issue edit "$existing" --title "$title" \
+              --body-file "$GITHUB_WORKSPACE/dep_issue_body.md"
+            # 只在「上次不是依賴安裝失敗」時留言。連續失敗不重複出聲,
+            # 同既有的「失敗集合沒變就不留言」那條規則 —— 每天留一則會把
+            # Issue 洗成沒人看的討論串,而這個專案實測過那個後果(52 則留言)。
+            if ! grep -q "failset: 依賴安裝" old_body.md 2>/dev/null; then
+              gh issue comment "$existing" \
+                --body "依賴安裝失敗,健檢未執行(詳見內文)。"
+            fi
+          fi
 
       # 健檢軌跡累積在 ops-data 分支上,先取回來再追加,否則每天都會從零開始
       # ⚠ 兩個細節都是踩過的:
@@ -76,6 +168,7 @@ jobs:
       #    (append_log 那一邊也補了同一道防線,兩邊獨立,見
       #     test_an_empty_log_file_still_gets_a_header。)
       - name: 取回既有的健檢軌跡
+        if: steps.install.outcome == 'success'
         run: |
           mkdir -p ops/data
           if ! git fetch origin +refs/heads/ops-data:refs/remotes/origin/ops-data 2>/dev/null; then
@@ -95,8 +188,15 @@ jobs:
             mv "$keep/manifest.json" ops/data/manifest.json
           fi
 
+      # ⚠ 條件是明寫的,不是靠「反正它自己會失敗」。
+      # `continue-on-error` 讓安裝失敗的步驟 conclusion 變成 success,
+      # 所以後面的步驟【仍然會執行】。而這一步的 `set +e` 會把
+      # ModuleNotFoundError 變成 code=1 然後自己 exit 0 ——
+      # 也就是會產出一個「1 項異常」的假結果,以及一個空的 health_report.md。
+      # 失敗路徑要明寫,不要讓它看起來像一次正常的健檢。
       - name: 執行健檢
         id: check
+        if: steps.install.outcome == 'success'
         working-directory: ops
         env:
           PYTHONIOENCODING: utf-8
@@ -115,6 +215,7 @@ jobs:
       # 而 signals.json 若過期,PWA 自己會在面板上標出資料年齡。
       - name: 產生體制訊號(輔助層,失敗不影響健檢結果)
         continue-on-error: true
+        if: steps.install.outcome == 'success'
         working-directory: ops
         env:
           PYTHONIOENCODING: utf-8
@@ -133,24 +234,56 @@ jobs:
       # 讓它有能力把每日健檢變紅燈的話,一次暫時性失敗就會蓋掉資料源的真實訊號。
       - name: 產生 PWA 資料鏡像(失敗不影響健檢結果)
         continue-on-error: true
+        if: steps.install.outcome == 'success'
         working-directory: ops
         env:
           PYTHONIOENCODING: utf-8
         run: python src/publish_pwa.py
 
       # 健檢全綠時 --markdown 不輸出內容,補一行說明,讓演練模式也有東西可讀
+      # 健康碼必須由一個【一定會執行】的步驟寫出來。
+      # 安裝失敗時「執行健檢」沒跑,steps.check.outputs.code 是空字串,
+      # 而空字串會讓下游條件得到一個沒人決定過的答案 —— 那正是這次要修的洞。
+      - name: 決定本次的健康碼
+        id: code
+        if: always()
+        run: |
+          if [ "${{ steps.install.outcome }}" != "success" ]; then
+            # 90 是「依賴安裝失敗」的專用碼。health_check.py 的 exit code 是
+            # 失敗項目數(目前最多約 19 項),所以兩者不會混淆。
+            echo "code=90" >> "$GITHUB_OUTPUT"
+            echo "依賴安裝失敗 → 健康碼 90"
+          else
+            echo "code=${{ steps.check.outputs.code }}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 補齊報告內容(健檢正常時)
-        if: steps.check.outputs.code == '0'
+        if: steps.code.outputs.code == '0'
         run: |
           echo "本次健檢全部通過,沒有偵測到任何異常。" > "$GITHUB_WORKSPACE/health_report.md"
 
       # 交給 autofix job 用。jobs 之間不共用檔案系統,只能走 artifact。
       - name: 保存健檢報告
+        if: steps.install.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: health-report
           path: health_report.md
           retention-days: 7
+
+      # 依賴 manifest 在成功與失敗路徑都要保存 —— 失敗那天的那一份才是
+      # 最需要被讀到的。`if: always()` 不是裝飾:少了它,安裝失敗時這個
+      # artifact 會跟著被跳過,而那正是唯一有診斷價值的輸出。
+      - name: 保存依賴 manifest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-manifest
+          path: |
+            ops/data/deps/install.json
+            dep_install.log
+          retention-days: 30
+          if-no-files-found: warn
 
       - name: 確保標籤存在
         env:
@@ -182,8 +315,13 @@ jobs:
       #
       # 判斷邏輯放在 src/health_check.py(有測試),這裡只負責編排 ——
       # 寫在 workflow 的 heredoc 裡就沒辦法測。
+      # ⚠ 條件多了 `steps.install.outcome == 'success'`。
+      # 安裝失敗時這一步【不能】跑:health_report.md 不存在,而且
+      # `--issue-plan` 需要 pandas/yaml —— 也就是需要那個剛剛裝失敗的東西。
+      # 那條路徑的 Issue 由上面的「依賴安裝失敗」步驟負責,用的是只靠標準庫的
+      # dep_manifest.py。
       - name: 異常 → 開或更新 Issue
-        if: steps.check.outputs.code != '0'
+        if: steps.code.outputs.code != '0' && steps.install.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONIOENCODING: utf-8
@@ -230,7 +368,7 @@ jobs:
           fi
 
       - name: 恢復正常 → 關閉 Issue
-        if: steps.check.outputs.code == '0'
+        if: steps.code.outputs.code == '0'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -255,6 +393,8 @@ jobs:
           cp ops/data/signals.json    "$tmp/" 2>/dev/null || true
           mkdir -p "$tmp/pwa"
           cp ops/data/pwa/*            "$tmp/pwa/" 2>/dev/null || true
+          mkdir -p "$tmp/deps"
+          cp ops/data/deps/*           "$tmp/deps/" 2>/dev/null || true
 
           # `A && B || C` 的陷阱:B 失敗時 C 也會跑。這裡 C 是「從目前的 HEAD
           #(也就是 main)開一條新的 ops-data」—— 那會讓接下來的 push 變成非快轉
@@ -274,11 +414,17 @@ jobs:
           cp "$tmp"/signals.json   ops/data/ 2>/dev/null || true
           mkdir -p ops/data/pwa
           cp "$tmp"/pwa/*          ops/data/pwa/ 2>/dev/null || true
+          # 依賴 manifest 走同一條持久化路徑。安裝失敗那天它是**唯一**會變動的
+          # 檔案,所以它也是那天唯一能讓心跳真的 commit 的東西 ——
+          # 而「有 commit」就是排程不被 GitHub 自動停用的條件。
+          mkdir -p ops/data/deps
+          cp "$tmp"/deps/*         ops/data/deps/ 2>/dev/null || true
 
           git add -f ops/data/manifest.json ops/data/health_log.csv 2>/dev/null || true
           git add -f ops/data/signals.json 2>/dev/null || true
           # 鏡像是 PWA 的第一順位來源 —— 這一行沒推上去,使用者就讀到舊資料
           git add -f ops/data/pwa 2>/dev/null || true
+          git add -f ops/data/deps 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "資料無變化,跳過 commit"
           else
@@ -289,17 +435,38 @@ jobs:
       - name: 摘要
         if: always()
         run: |
-          if [ "${{ steps.check.outputs.code }}" = "0" ]; then
+          code="${{ steps.code.outputs.code }}"
+          if [ "$code" = "0" ]; then
             echo "✅ 所有檢查通過" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$code" = "90" ]; then
+            {
+              echo "❌ **依賴安裝失敗,健檢未執行。**"
+              echo ""
+              echo "這不是「資料源壞了」,是「我們今天沒有能力去看資料源」。"
+              echo "已開/更新 health-fail Issue;完整 manifest 見 artifact dependency-manifest。"
+              echo ""
+              echo '```'
+              tail -40 "$GITHUB_WORKSPACE/dep_install.log" 2>/dev/null \
+                || echo "(連安裝 log 都沒有 —— 這本身就是線索)"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
           else
             echo "❌ 偵測到異常,詳見 Issue" >> "$GITHUB_STEP_SUMMARY"
-            cat "$GITHUB_WORKSPACE/health_report.md" >> "$GITHUB_STEP_SUMMARY"
+            # 報告產生那一步若沒有留下輸出,這裡也要留下看得見的錯誤,
+            # 而不是讓摘要變成一片空白。
+            cat "$GITHUB_WORKSPACE/health_report.md" >> "$GITHUB_STEP_SUMMARY" \
+              || echo "⚠️ 找不到 health_report.md —— 報告產生那一步沒有留下輸出" \
+                   >> "$GITHUB_STEP_SUMMARY"
           fi
 
   autofix:
     name: Claude 診斷並開 PR
     needs: health
-    if: needs.health.outputs.code != '0' || inputs.drill
+    # ⚠ 刻意排除 90(依賴安裝失敗)。那條路徑叫 Claude 來沒有意義:
+    # 它自己的 job 也要跑 `pip install`,會在同一個地方失敗;而且它拿到的輸入是
+    # health_report.md,那份報告在安裝失敗時不存在。
+    # 依賴問題的診斷資訊在 dependency-manifest artifact 裡,給人看。
+    if: (needs.health.outputs.code != '0' && needs.health.outputs.code != '90') || inputs.drill
     runs-on: ubuntu-latest
     # 自動修復失敗不該讓整個 run 變紅。這兩層的語意必須分開:
     #   run 顏色 = 自動化本身有沒有壞
@@ -363,7 +530,9 @@ jobs:
       - name: 安裝相依
         if: steps.guard.outputs.enabled == 'true'
         run: |
-          pip install -r ops/requirements.txt
+          # autofix 要跑 pytest,所以它需要【兩份】宣告 —— 這是唯一需要
+          # 測試工具的 job。L1 的健檢 job 不裝它們。
+          pip install -r ops/requirements.txt -r ops/requirements-test.txt
           npm ci --prefix ops
 
       # 釘死 SHA。v1.0.186 —— 遠高於修掉 Issue 注入漏洞的 v1.0.94。
