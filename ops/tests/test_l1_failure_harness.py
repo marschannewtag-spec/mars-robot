@@ -278,3 +278,78 @@ def test_a_real_test_failure_is_recorded_with_its_code(harness, tmp_path: Path) 
     assert m["dedupe_key"].startswith("combo:")
     body = (workspace / "canary_body.md").read_text(encoding="utf-8")
     assert "失敗(exit 1)" in body and "未執行" not in body
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 「恢復正常 → 關閉 Issue」—— 從 2026-08-21 起一次都沒有執行過
+#
+# Issue #2 在 2026-10-19 當下仍然開著(53 則留言),而它報的兩件事
+# (代理鏈全死、VIX 停更)當天都已經修好,本機健檢 exit 0。
+# 也就是說:**接下來唯一擋在「使用者不再收到那封信」前面的,就是這一步。**
+#
+# 它是整個 workflow 裡最久沒有被走過的一條路徑 —— 開了 59 天的 Issue,
+# 代表這段 shell 從寫出來那天起就沒有真的跑過一次。
+# 而它壞掉的症狀是「Issue 永遠不關」,看起來和「系統還在壞」一模一樣。
+# ══════════════════════════════════════════════════════════════════════════
+
+def _close_step_shell() -> str:
+    data = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    hits = [s for s in data["jobs"]["health"]["steps"]
+            if "gh issue close" in (s.get("run") or "")]
+    assert len(hits) == 1, f"找不到(或有多個)關閉 Issue 的步驟:{len(hits)}"
+    return hits[0]["run"]
+
+
+def _gh_stub(bin_dir: Path, calls: Path, open_issues: str) -> None:
+    """假的 gh:`issue list` 回指定的編號清單,其餘只記錄 argv。"""
+    gh = bin_dir / "gh"
+    gh.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\n" "$*" >> "{calls.as_posix()}"\n'
+        'if [ "$1" = "issue" ] && [ "$2" = "list" ]; then\n'
+        f'  printf "{open_issues}"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8", newline="\n")
+    gh.chmod(0o755)
+
+
+def test_recovery_closes_every_open_health_issue(harness, tmp_path: Path) -> None:
+    """有開著的 health-fail Issue 時,每一張都要被關掉並留下說明。"""
+    run, calls, _ = harness
+    _gh_stub(tmp_path / "bin", calls, "2\n")
+    proc = run(_close_step_shell())
+    assert proc.returncode == 0, f"關閉步驟自己失敗了:\n{proc.stdout}\n{proc.stderr}"
+
+    recorded = calls.read_text(encoding="utf-8")
+    assert "issue close 2" in recorded, f"沒有關掉 #2:\n{recorded}"
+    assert "--comment" in recorded, "關掉卻沒有說為什麼 —— 事後看不出是自動關的"
+    assert "--label health-fail --state open" in recorded, (
+        "查的不是「開著的 health-fail」—— 可能關到別人的 Issue,或漏掉該關的"
+    )
+
+
+def test_recovery_closes_all_of_them_not_just_the_first(harness, tmp_path: Path) -> None:
+    """多張時要全部關掉。
+
+    `for` 迴圈只跑第一筆的話,症狀是「有一張永遠留著」,而那張會繼續寄信。
+    """
+    run, calls, _ = harness
+    _gh_stub(tmp_path / "bin", calls, "2\n7\n")
+    proc = run(_close_step_shell())
+    assert proc.returncode == 0, proc.stderr
+    recorded = calls.read_text(encoding="utf-8")
+    assert "issue close 2" in recorded and "issue close 7" in recorded, recorded
+
+
+def test_recovery_with_nothing_open_is_a_no_op(harness, tmp_path: Path) -> None:
+    """沒有開著的 Issue 時,這一步必須安靜地成功。
+
+    這是每天跑的路徑(健檢正常時),所以它不能在空清單上出錯 ——
+    出錯會讓整個 job 紅掉,而那天其實一切正常。
+    """
+    run, calls, _ = harness
+    _gh_stub(tmp_path / "bin", calls, "")
+    proc = run(_close_step_shell())
+    assert proc.returncode == 0, f"空清單讓這一步失敗了:\n{proc.stdout}\n{proc.stderr}"
+    assert "issue close" not in calls.read_text(encoding="utf-8"), "沒有東西該關卻關了"
