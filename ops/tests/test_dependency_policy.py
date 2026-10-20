@@ -212,15 +212,92 @@ def test_the_heartbeat_persists_the_dependency_manifest(health: dict) -> None:
     assert "ops/data/deps/" in run, "沒有把 manifest 複製進 ops-data 的工作目錄"
 
 
-def test_autofix_is_not_triggered_by_a_dependency_failure() -> None:
-    """叫 Claude 來修「pip install 失敗」沒有意義 ——
+def test_autofix_opens_only_for_dependency_failures() -> None:
+    """2026-10-20 **反轉**:只對相依解析/鎖定檔錯誤開門。
 
-    它自己的 job 也要跑 pip install,會在同一個地方失敗;而且它的輸入是
-    health_report.md,那份報告在安裝失敗時不存在。
+    舊版剛好相反 —— 排除 90(依賴安裝失敗)、接受其他所有異常。
+    反轉的理由有兩個方向:
+
+    1. **舊版讓 agent 在資料源異常時被叫起來**,而提示裡又寫著「資料源故障
+       不要動程式碼」。每次上游抽風都燒一次額度去得到「不用改」。
+    2. 舊版排除 90 的兩個技術理由(自己也裝不起來、health_report.md 不存在)
+       **都是真的,但都可以解掉** —— 下面兩條測試就是在釘那兩個解法。
+       它們不是裝飾:任何一條被改回去,這條路就又走不通了。
+
+    開門清單本身(哪些錯誤分類算數)在 `src/autofix_gate.py`,有自己的測試。
+    這裡只釘「workflow 真的去問它了」。
     """
     data = yaml.safe_load((WORKFLOWS / "daily-health.yml").read_text(encoding="utf-8"))
     cond = data["jobs"]["autofix"]["if"]
-    assert "!= '90'" in cond, f"autofix 的條件沒有排除依賴安裝失敗:{cond}"
+    assert "needs.health.outputs.autofix" in cond, (
+        f"autofix 的條件沒有去問開門決策:{cond}")
+    assert "code != '0'" not in cond, (
+        f"還留著「所有非零健康碼都叫 Claude」的舊條件:{cond}")
+
+
+def test_autofix_survives_its_own_install_failing() -> None:
+    """解法一:安裝步驟必須 continue-on-error。
+
+    這個 job 現在只在「相依裝不起來」時被叫起來,所以它自己多半也裝不起來。
+    少了這個旗標,job 會在 agent 開口之前就死掉 —— 而那正是舊版排除 90 的
+    理由。**拿掉它就等於把這整條路再關一次,而且不會有任何測試以外的症狀。**
+    """
+    autofix = _job("daily-health.yml", "autofix")
+    step = _step(autofix, "pip install -r ops/requirements.txt")
+    assert step.get("continue-on-error") is True, (
+        "安裝步驟不是 continue-on-error —— 裝不起來的那天 job 會在 agent "
+        "開口前就結束,而那天正是唯一會叫它的日子")
+
+
+def test_autofix_reads_an_artifact_that_exists_on_the_failure_path() -> None:
+    """解法二:輸入必須是 always() 上傳的那一份。
+
+    `health-report` 的上傳條件是 `steps.install.outcome == 'success'` ——
+    安裝失敗那天它**不存在**,而那是唯一會叫 autofix 的日子。
+    `dependency-manifest` 才是 always() 上傳的。
+    """
+    autofix = _job("daily-health.yml", "autofix")
+    names = [str((s.get("with") or {}).get("name", ""))
+             for s in autofix["steps"]
+             if str(s.get("uses", "")).startswith("actions/download-artifact")]
+    assert "dependency-manifest" in names, (
+        f"autofix 下載的 artifact 是 {names} —— health-report 在安裝失敗那天"
+        "不存在,下載會失敗或拿到空的")
+
+    health = _job("daily-health.yml", "health")
+    up = [s for s in health["steps"]
+          if str(s.get("uses", "")).startswith("actions/upload-artifact")
+          and (s.get("with") or {}).get("name") == "dependency-manifest"]
+    assert len(up) == 1 and up[0].get("if") == "always()", (
+        "dependency-manifest 的上傳條件不是 always() —— 那它在失敗那天也不存在")
+
+
+def test_autofix_always_reports_what_happened() -> None:
+    """**「沒有 token 而安靜跳過」和「修好了」不可以長得一樣。**
+
+    兩者在舊版都是「沒有紅燈」。這是 SKIP 與 PASS 的 exit code 相同
+    那個老問題,換到自動化這一層再出現一次。
+
+    三件事一起才成立,所以一起釘:
+      1. 回報步驟 `if: always()`
+      2. checkout 與 setup-python **無條件** —— 否則沒有 token 時那個
+         步驟自己也跑不起來,而那正是最需要它的場合
+      3. 回報走 `autofix_gate.py report`(去重規則在那裡,有測試)
+    """
+    autofix = _job("daily-health.yml", "autofix")
+
+    report = _step(autofix, "autofix_gate.py report")
+    assert report.get("if") == "always()", (
+        f"回報步驟的條件是 {report.get('if')!r},不是 always()")
+
+    for prefix in ("actions/checkout", "actions/setup-python"):
+        hits = [s for s in autofix["steps"]
+                if str(s.get("uses", "")).startswith(prefix)]
+        assert hits, f"autofix 沒有 {prefix}"
+        assert all(s.get("if") is None for s in hits), (
+            f"{prefix} 有條件 —— 沒有 token 時它不會跑,於是回報步驟也跑不了"
+            "(它需要 repo 裡的 autofix_gate.py 和 python),"
+            "「該跑卻沒跑」就會變成唯一報不出來的狀態")
 
 
 # ══════════════════════════════════════════════════════════════════════════

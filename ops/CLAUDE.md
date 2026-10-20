@@ -365,15 +365,72 @@ vs Yahoo `459.27`(差 0.41%),而該月乖離是 `-0.30%` —— 剛好跨過 0 �
 
 ```
 L1 健檢偵測到異常
-      ↓  輸入是我們自己產生且已淨化的報告,不是外人可控的文字
+      ↓
+   autofix 開門決策(src/autofix_gate.py)   ← 2026-10-20 新增的閘門
+      ↓  只有 resolution / hash_mismatch / hash_missing 三類過得去
+      ↓  輸入是我們自己產生且已淨化的 brief,不是外人可控的文字
    Claude 診斷 + 修復(autofix job)
       ↓  只能推 fix/ 分支
    開 PR
       ↓
-   L2 CI 把關
+   L2 CI 把關                ← 相依裝不起來時,這才是唯一真的驗證
       ↓
    人按合併  ← 刻意留給人
+      │
+      └─ 不論走到哪一步,最後一定有一則明確的狀態回報(六選一)
 ```
+
+### autofix 的門開在哪裡(2026-10-20 決策 T1)
+
+**只對「可重現、CI 驗得出來」的相依解析/鎖定檔錯誤開門。**
+
+| 分類 | 開門? | 理由 |
+|---|---|---|
+| `resolution` / `hash_mismatch` / `hash_missing` | ✅ | 輸入確定、可重現,PR 的 CI 會再驗一次 |
+| `download` | ❌ | 暫時性網路故障,明天就好了 |
+| `build` | ❌ | 編譯工具鏈,是 runner 環境的事 |
+| `not_found` | ❌ | 可能要改 workflow,而 agent 不准改 workflow |
+| `unknown` | ❌ | 判斷不了就不動手 |
+| 任何非 90 的健康碼 | ❌ | 資料源異常不該由 agent 改程式 |
+| **空的健康碼** | ❌ | 空字串代表「沒有人決定過」,不是 0 也不是 90 |
+
+⚠ **這是 2026-10-20 的反轉。** 舊設計剛好相反:排除 90、接受其他所有異常。
+舊版排除 90 的兩個技術理由都是真的,但都解掉了,而**解法本身必須被釘住**
+(任一條被改回去,這條路就又走不通,且沒有症狀):
+
+| 舊障礙 | 解法 | 釘住它的測試 |
+|---|---|---|
+| autofix 自己的 `pip install` 也會失敗 | 該步驟 `continue-on-error`;驗證交給 PR 的 CI | `test_autofix_survives_its_own_install_failing` |
+| `health_report.md` 在安裝失敗時不存在 | 改讀 `always()` 上傳的 `dependency-manifest` | `test_autofix_reads_an_artifact_that_exists_on_the_failure_path` |
+
+⚠ **`npm ci` 刻意不跟著 `continue-on-error`,而且是獨立的一步。** Python 相依
+裝不起來是這個 job 的題目;node 相依裝不起來不是 —— 綁在一起會讓
+「jsdom 沒裝起來」被題目的失敗蓋過去。這是 pytest 曾經和執行期相依同一份
+宣告的同一個形狀。
+
+### 每一次執行都要留下狀態(T1 的另一半)
+
+**「沒有 token 而安靜跳過」和「修好了」在舊版輸出上長得一模一樣 —— 都是沒有
+紅燈。** 這是 SKIP 與 PASS 的 exit code 相同那個老問題,換到自動化這一層。
+
+六個狀態,缺一不可:`opened_pr` / `no_change` / `failed` / `auth_missing` /
+`auth_failed` / `not_eligible`。去重規則:**狀態沒變就不出聲,但開了 PR 一定
+出聲**(那是需要人動手的新事件)。
+
+三件事一起才成立,所以測試也是一起釘的:
+
+1. 回報步驟 `if: always()`
+2. **`checkout` 與 `setup-python` 無條件** —— 否則沒有 token 時回報步驟自己也
+   跑不起來,而「該跑卻沒跑」會變成唯一報不出來的狀態
+3. 回報走 `autofix_gate.py report`,去重規則在那裡(有測試),不寫在 shell 裡
+
+### 認證:三條路,WIF 優先
+
+`wif`(OIDC,repo 裡不存長期金鑰)→ `oauth`(訂閱額度)→ `apikey`(按量)。
+只會傳一組給 action。
+
+⚠ **WIF 換掉的是「怎麼認證」,不是「要不要付費」** —— 模型呼叫照樣計費。
+GitHub 權限與 Anthropic 模型認證是分開處理的兩件事,不要混為一談。
 
 ### 為什麼不從 Issue 觸發
 
