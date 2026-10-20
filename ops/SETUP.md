@@ -7,19 +7,45 @@
 
 ---
 
-## 1. 認證(目前刻意未啟用)
+## 1. 認證(目前未啟用)
 
-**現況:兩個 secret 都沒設,`autofix` job 會乾淨地跳過。**
+**現況:沒有任何認證 secret。**
 
-這是有意的選擇,不是漏做。系統目前運作方式:健檢偵測到異常 → 開 Issue →
-**你手動把 Issue 貼給 Claude Code 處理**。和啟用自動修復的差別只在最後一步是誰按的。
+### ⚠ 2026-10-20 改了兩件事
 
-實測過的降級行為(2026-08-08 drill):整體 run `success`,autofix job 只執行
-guard 那一步就跳過,不浪費 runner 時間、不亮紅燈。
+**(a) autofix 的範圍縮小了。** 它現在**只在相依解析/鎖定檔安裝錯誤**時被叫起來
+(`resolution` / `hash_mismatch` / `hash_missing`),不再在資料源異常時出動。
+舊設計每次上游抽風都燒一次額度,去得到「這不是程式問題,不用改」。
+開門清單在 `src/autofix_gate.py`,有測試。
 
-想啟用的話,有兩條路 —— **建議走免費的那條**。
+**(b) 「沒有 token 而跳過」不再是安靜的。** 以前 autofix job 會乾淨地跳過,
+整體 run 是 `success` —— 而那和「修好了」在輸出上長得一模一樣。現在只要
+**本來該跑卻沒跑**,就會在健檢 Issue 上留下一則(同一個狀態只留一次,不洗版)。
 
-### 🟢 走 Pro/Max 訂閱(不另外收費,建議)
+這是本 repo 的老問題換一個地方出現:SKIP 和 PASS 的 exit code 相同。
+
+想啟用的話有三條路。
+
+### 🔵 走 Workload Identity Federation(OIDC,repo 裡不存長期金鑰)
+
+action 支援用 GitHub 的 OIDC token 去換 Anthropic 的短期憑證,所以這個 repo
+裡**不需要存任何長期金鑰**。需要的 `id-token: write` 權限已經在 workflow 裡了。
+
+到 Anthropic Console 建一條 federation rule,然後設這兩個 repo secret:
+
+| secret | 值 |
+|---|---|
+| `ANTHROPIC_FEDERATION_RULE_ID` | `fdrl_...` |
+| `ANTHROPIC_ORGANIZATION_ID` | 組織的 UUID |
+| `ANTHROPIC_SERVICE_ACCOUNT_ID`(選用) | `svac_...` |
+
+⚠ **WIF 換掉的是「怎麼認證」,不是「要不要付費」。** 模型呼叫照樣按量計費。
+(2026-10-20 的提問文件把「GitHub App token」講成免費方案,那是錯的 ——
+GitHub 權限和 Anthropic 模型認證是兩件分開處理的事。)
+
+它的好處是 repo 裡沒有可以被偷走的長期憑證,不是省錢。
+
+### 🟢 走 Pro/Max 訂閱(不另外收費)
 
 你已經在用 Claude Code,那筆訂閱費已經付了。action 官方支援直接吃訂閱額度:
 
@@ -55,7 +81,13 @@ num_turns: 1   total_cost_usd: 0   duration_ms: 486
 要走這條:到 https://console.anthropic.com/settings/billing 儲值,再把
 `ANTHROPIC_API_KEY` 加回去。一次診斷大約幾萬到十幾萬 token。
 
-但既然訂閱那條是免費的,除非你有理由要把用量分開計帳,否則沒必要。
+但既然訂閱那條不另外收費,除非你有理由要把用量分開計帳,否則沒必要。
+
+### 優先順序
+
+guard 的順序是 **WIF → OAuth → API key**,設了哪個就用哪個,只會傳一組給 action
+(靜態憑證同時存在會互相搶)。三個都沒設 → `enabled=false`,而且**會在 Issue 上
+留一則說「該跑卻沒跑」**。
 
 ### ⚠ 若哪天啟用了,記得驗證
 
