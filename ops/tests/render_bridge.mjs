@@ -91,6 +91,10 @@ const SCENARIOS = {
   // 兩條腿一起落後日曆 —— 2026-10-14 線上實測就是這個(退回 Shiller 後
   // 趨勢腿也掉到 2026-09)。月份看起來一致,反而更像正常,所以更危險。
   both_stale:     (d) => { d.sLast.ym = "2026-09"; d.vLast.ym = "2026-09"; return d; },
+  // 2026-10-20(T3):主訊號現況那一行。兩腿都沒觸發 vs VIX 腿已觸發,
+  // 必須說出不同的話 —— 否則那一行就不是在報告狀態,只是一句裝飾。
+  main_idle:      (d) => d,                                    // uni=0,baseline 就是
+  main_fired:     (d) => { d.vixC = 0.24; d.uni = 0.24; d.rLast = 0.62; return d; },
 };
 
 const build = SCENARIOS[scenario];
@@ -118,4 +122,6 @@ console.log(JSON.stringify({
   vixcash: el("vixcash").textContent,
   // 定義警示列是另一條獨立的訊息,不該被落後警示帶著亮
   defnote_on: el("defnote").classList.contains("on"),
+  // T3:主訊號現況那一行。它在體制面板裡,但由核心寫。
+  mainstate: el("mainstate").textContent,
 }));

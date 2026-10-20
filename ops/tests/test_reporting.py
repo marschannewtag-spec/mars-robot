@@ -214,6 +214,71 @@ def test_sensitivity_section_states_the_axes_are_unverified() -> None:
     assert "沒有被掃到" in src
 
 
+def test_the_grid_reports_robustness_and_refuses_to_recommend() -> None:
+    """2026-10-20 決策 T3 之三:**144 格只用來檢查穩健性,不能拿來選參數。**
+
+    理由有兩個,都寫在決策裡:
+      1. 從一百多組裡挑最佳值,本身就有過度擬合的風險
+      2. VIX 乘數所依據的原始 `lvl1.2` 定義已不可考
+
+    所以這一節要回答的是「現行參數是不是異常脆弱」,四個讀數缺一不可:
+    **鄰域平均、標準差、最低、以及在全網格中的位置**。只報「最佳是哪一格」
+    就變成一份推薦書,而那正是決策不要的東西。
+    """
+    src = (SRC / "annual_review.py").read_text(encoding="utf-8")
+    body = src[src.index("def section_sensitivity"):]
+    body = body[:body.index("\ndef ") if "\ndef " in body else len(body)]
+
+    for label in ("平均", "標準差", "最小", "百分位"):
+        assert label in body, (
+            f"敏感度那一節沒有報「{label}」—— 少了它就看不出現行參數是不是"
+            "落在孤立尖峰上,而那是這一節存在的唯一理由")
+    assert "不建議是否調整" in body, (
+        "那句「本報告不建議是否調整」不見了。會自己調參的系統就是 overfit 機器,"
+        "這條邊界是刻意設計的,不是能力不足")
+
+
+def test_nothing_writes_the_best_grid_cell_back_into_the_parameters() -> None:
+    """**不得自動把最佳組合寫回正式參數。**
+
+    決策寫得很明白:即使網格最佳值是 MA16/mult1.1,也不代表該採用。
+    這條把那句話變成機械保證 —— 用 AST 而不是字串比對,因為模組說明裡
+    本來就要寫「為什麼不自動調參」,字串比對會把那段說明本身判成違規,
+    逼人刪掉最該留的註解。(與 regime 那三條 AST 掃描同一個理由。)
+    """
+    import ast
+
+    tree = ast.parse((SRC / "annual_review.py").read_text(encoding="utf-8"))
+    guarded = {"CURRENT_MA", "CURRENT_MULT"}
+
+    module_level = {n for node in tree.body
+                    if isinstance(node, ast.Assign)
+                    for tgt in node.targets
+                    if isinstance(tgt, ast.Name) and tgt.id in guarded
+                    for n in [tgt.id]}
+    assert module_level == guarded, (
+        f"現行參數不是在模組層一次定義完:{sorted(module_level)}")
+
+    # 函式裡面不准再指派它們 —— 那就是「自己調參」的樣子
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            targets = []
+            if isinstance(inner, ast.Assign):
+                targets = inner.targets
+            elif isinstance(inner, (ast.AugAssign, ast.AnnAssign)):
+                targets = [inner.target]
+            for tgt in targets:
+                if isinstance(tgt, ast.Name) and tgt.id in guarded:
+                    raise AssertionError(
+                        f"{node.name}() 在指派 {tgt.id}(第 {inner.lineno} 行)—— "
+                        "年度報告不得把網格的最佳值寫回正式參數")
+                if (isinstance(tgt, ast.Attribute) and tgt.attr in guarded):
+                    raise AssertionError(
+                        f"{node.name}() 在指派 {tgt.attr}(第 {inner.lineno} 行)")
+
+
 # --------------------------------------------------------------------------
 # 不准再出現「鋪好了但沒接上出海口」的資料管線
 #
