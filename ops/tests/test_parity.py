@@ -11,13 +11,13 @@ scripts/check_pine_parity.py 對匯出的 CSV 做手動比對 —— 見該檔�
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from conftest import require_js_bridge  # noqa: E402
 import engine
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -25,16 +25,15 @@ FIXTURES = TESTS_DIR / "fixtures"
 BRIDGE = TESTS_DIR / "js_bridge.mjs"
 TOL = 1e-9
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None, reason="需要 node 才能執行 JS 橋接器"
-)
 
 
 @pytest.fixture(scope="module")
 def js_result(index_html: Path) -> dict:
     """在 Node 裡跑一次 PWA 的計算,拿回逐月結果。"""
-    if not (TESTS_DIR.parent / "node_modules" / "jsdom").exists():
-        pytest.skip("尚未 npm install jsdom")
+    require_js_bridge(
+        "engine.py 與線上 index.html 的逐月對帳(440 個月、現金水位 / 趨勢腿 / "
+        "VIX 腿 / 風險分數)—— 這是整個專案『螢幕上的數字就是回測過的那個』"
+        "唯一的證據。")
     proc = subprocess.run(
         [
             "node", str(BRIDGE), str(index_html),

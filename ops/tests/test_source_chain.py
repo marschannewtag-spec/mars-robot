@@ -27,18 +27,16 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from conftest import require_js_bridge  # noqa: E402
+
 TESTS_DIR = Path(__file__).resolve().parent
 BRIDGE = TESTS_DIR / "fetchsp_bridge.mjs"
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("node") is None, reason="需要 node 才能執行 JS 橋接器"
-)
 
 ALL_DEAD = {"worker": False, "key": False, "mirror": False,
             "proxy": False, "shiller": False}
@@ -53,8 +51,10 @@ def run_chain(index_html: Path, tmp_path: Path, *, worker=None, key=None,
     `worker=...`(有沒有設定)和 `worker=True`(活不活著)直接撞名,
     三條測試在 TypeError 上失敗。設定與死活是兩個獨立的軸。
     """
-    if not (TESTS_DIR.parent / "node_modules" / "jsdom").exists():
-        pytest.skip("尚未 npm install jsdom")
+    require_js_bridge(
+        "五層來源退回鏈(自有 Worker → TwelveData → 本專案鏡像 → Yahoo 經代理"
+        " → Shiller)。少了它,『某一層默默死掉而畫面照樣有數字』這個本專案"
+        "實際發生過的故障就不再被驗證。")
     scenario = {"worker": worker, "key": key,
                 "alive": {**ALL_DEAD, **(alive or {})}}
     path = tmp_path / "scenario.json"

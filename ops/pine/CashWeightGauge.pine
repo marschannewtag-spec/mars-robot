@@ -28,7 +28,14 @@ indicator("現金水位儀 · Cash-Weight Gauge", shorttitle="CWG", overlay=fals
      max_bars_back=500)
 
 // ---- 參數 -------------------------------------------------------------------
-vixSym   = input.symbol("CBOE:VIX", "VIX 來源", tooltip="歷史較長的替代來源:TVC:VIX")
+// ⚠ vixSym 是這份腳本裡【唯一能改變訊號的輸入】。原本的 tooltip 寫
+//   「歷史較長的替代來源:TVC:VIX」—— 那句話沒有人量過,而且方向是反的:
+//   CBOE 官方 VIX 日K 本來就從 1990-01-02 開始(本 repo 實測 9296 列),
+//   與黃金基準的 440 個月同一個起點。「比它更長」只可能來自另一種建構
+//   方式(VXO 或回推),那是**另一條序列**,不是同一條的延長。
+//   而飆升項吃的是【月內最高】,不同代號的 high 不保證一致 ——
+//   換掉之後數字會變,畫面上看不出來。
+vixSym   = input.symbol("CBOE:VIX", "VIX 來源", tooltip="預設 CBOE:VIX 就是黃金基準用的那一份(CBOE 官方日K,1990-01-02 起,含日內最高)。換代號等於換資料來源:飆升項吃的是月內最高,不同代號的 high 不保證一致,而差異在畫面上看不出來。換過之後請用 ops/scripts/check_pine_parity.py 確認沒有漂移。")
 showLegs = input.bool(true, "顯示兩腿分解")
 
 // 以下常數與 engine.py 逐字對應,不是可調參數 —— 它們是已回測定案的值。

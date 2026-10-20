@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -41,6 +42,25 @@ CONFIG_PATH = OPS_ROOT / "config.yml"
 UA = {"User-Agent": "cash-gauge-ops/1.0 health-check"}
 
 OK, FAIL, SKIP = "OK", "FAIL", "SKIP"
+
+
+def today_utc() -> date:
+    """整份健檢裡「今天」的唯一來源。
+
+    ⚠ 不要用 `date.today()`。那是**執行這段程式的機器的本地日期**,而這個
+    repo 其他每一個時間戳都是 UTC:心跳 commit、Issue 內文的 `at=` 標記、
+    報告檔名、workflow 的排程。在 UTC+8 的開發機上,本地午夜到早上八點
+    之間兩者差一整天。
+
+    這個差會這樣現形:**CI(UTC)永遠綠,開發機每天紅八小時**,
+    而那看起來像「測試不穩」——最容易被當成雜訊關掉的那種紅燈。
+    2026-10-20 `check_published_mirror`(用 `date.today()`)就是這樣跟
+    `check_freshness`(用 UTC)分岔的,由 test_health_check.py 那條
+    算天數的測試在本地凌晨跑出來才看見。
+
+    與 `markets.ok` 門檻分岔同一個形狀:**同一個判斷不能有兩個來源**。
+    """
+    return datetime.now(timezone.utc).date()
 
 # 從外部回應擷取片段時允許的字元。刻意極保守。
 _SAFE_CHARS = re.compile(r"[^A-Za-z0-9 ,.:;/_@=<>()\[\]{}\"'?!+*%-]")
@@ -192,7 +212,7 @@ def check_freshness(cfg: dict, unavailable: set[str] | None = None) -> list[Resu
     """
     out: list[Result] = []
     unavailable = unavailable or set()
-    today = datetime.now(timezone.utc).date()
+    today = today_utc()
     for name, spec in cfg["freshness"].items():
         if not fetch_data.has_local(name):
             # 刻意不帶 source:那個欄位的語意是「這是可達性檢查的結果」,
@@ -544,6 +564,20 @@ def check_published_mirror(cfg: dict) -> list[Result]:
     """
     mcfg = cfg["pwa"]["mirror"]
     out: list[Result] = []
+    today = today_utc()
+
+    # ⚠ 兩條腿的區域變數**刻意不共用名字**(sp_* / vix_*)。
+    #    2026-10-20 之前兩段都叫 `months` / `last` / `age`,而 `age` 只在 S&P
+    #    那一段被指派 —— Python 的區域變數是函式範圍的,所以 VIX 那段比的是
+    #    S&P 的年齡。實測三種後果:VIX 停 300 天報 OK(detail 寫「最後
+    #    2025-12-24(1 天前)」,日期和天數自己對不起來);S&P 提早分支時
+    #    VIX 報「讀取失敗:cannot access local variable 'age'」;S&P 過期時
+    #    把正常的 VIX 拖成假警報。既藏真故障,也造假故障。
+    #
+    #    既有測試看不見它,因為每一條年齡測試都把兩份鏡像一起搬到同一天,
+    #    洩漏來的值剛好等於正確值。同檔案在 404 那條早就寫了「兩項必須獨立
+    #    判斷」,年齡這條沒有人套用。名字分開之後,接錯會是 NameError 而不是
+    #    一個看起來合理的錯數字。
 
     # --- S&P 月序列 ---
     try:
@@ -553,28 +587,29 @@ def check_published_mirror(cfg: dict) -> list[Result]:
                               f"HTTP {r.status_code} —— PWA 會退到代理鏈/月頻"))
         else:
             payload = r.json()
-            months = len(payload.get("chart", {}).get("result", [{}])[0]
-                         .get("timestamp", []) or [])
-            last = _mirror_last_day(payload)
-            if months < mcfg["min_sp_months"]:
+            sp_months = len(payload.get("chart", {}).get("result", [{}])[0]
+                            .get("timestamp", []) or [])
+            sp_last = _mirror_last_day(payload)
+            if sp_months < mcfg["min_sp_months"]:
                 out.append(Result(
                     "PWA 資料鏡像 · S&P", FAIL,
-                    f"只有 {months} 個月,低於下限 {mcfg['min_sp_months']} —— "
+                    f"只有 {sp_months} 個月,低於下限 {mcfg['min_sp_months']} —— "
                     f"PWA 的 spFromYahoo 會丟掉它並退到下一層"))
-            elif last is None:
+            elif sp_last is None:
                 out.append(Result("PWA 資料鏡像 · S&P", FAIL,
                                   "格式不符:取不到 chart.result[0].timestamp"))
             else:
-                age = _days_between(last, date.today())
-                if age > mcfg["max_age_days"]:
+                sp_age = _days_between(sp_last, today)
+                if sp_age > mcfg["max_age_days"]:
                     out.append(Result(
                         "PWA 資料鏡像 · S&P", FAIL,
-                        f"最後一筆 {last},已 {age} 天"
+                        f"最後一筆 {sp_last},已 {sp_age} 天"
                         f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了,"
                         f"使用者看到的是舊資料"))
                 else:
-                    out.append(Result("PWA 資料鏡像 · S&P", OK,
-                                      f"{months} 個月,最後 {last}({age} 天前)"))
+                    out.append(Result(
+                        "PWA 資料鏡像 · S&P", OK,
+                        f"{sp_months} 個月,最後 {sp_last}({sp_age} 天前)"))
     except Exception as exc:  # noqa: BLE001
         out.append(Result("PWA 資料鏡像 · S&P", FAIL, f"讀取失敗:{exc}"))
 
@@ -594,8 +629,8 @@ def check_published_mirror(cfg: dict) -> list[Result]:
                     f"缺欄位 {missing} —— buildVixMonthly 讀不到,"
                     f"VIX 腿會整個消失"))
             else:
-                months = df["DATE"].astype(str).str.slice(0, 7).nunique()
-                last = str(df["DATE"].iloc[-1]) if len(df) else ""
+                vix_months = df["DATE"].astype(str).str.slice(0, 7).nunique()
+                vix_last = str(df["DATE"].iloc[-1]) if len(df) else ""
                 # ⚠ 先確認最後一筆【真的是一個日期】。
                 #    `_days_between` 對解析不出來的輸入回 0(那是為了通知路徑
                 #    設計的),所以一份 DATE 欄全是垃圾、但剛好有 132 個不同
@@ -604,29 +639,116 @@ def check_published_mirror(cfg: dict) -> list[Result]:
                 #    S&P 那一邊靠 `_mirror_last_day()` 回 None 已經擋住了,
                 #    這一邊少了對應的那一道。(與 CLAUDE.md 的推論同一個形狀:
                 #    「失敗時回安全值」在量測路徑上是陷阱。)
-                if _as_date(last) is None:
+                if _as_date(vix_last) is None:
                     out.append(Result(
                         "PWA 資料鏡像 · VIX", FAIL,
-                        f"最後一筆的 DATE 不是日期({last!r})—— "
+                        f"最後一筆的 DATE 不是日期({vix_last!r})—— "
                         f"檔案格式壞了,buildVixMonthly 會算出空的 VIX 腿"))
-                elif months < mcfg["min_vix_months"]:
+                elif vix_months < mcfg["min_vix_months"]:
                     out.append(Result(
                         "PWA 資料鏡像 · VIX", FAIL,
-                        f"只有 {months} 個月,低於下限 {mcfg['min_vix_months']}"
+                        f"只有 {vix_months} 個月,低於下限 {mcfg['min_vix_months']}"
                         f"(圖要 96 個月 + 滾動 z 分數要 36 個月)—— 歷史圖會自己變短"))
-                elif age > mcfg["max_age_days"]:
-                    out.append(Result(
-                        "PWA 資料鏡像 · VIX", FAIL,
-                        f"最後一筆 {last},已 {age} 天"
-                        f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了"))
                 else:
-                    out.append(Result("PWA 資料鏡像 · VIX", OK,
-                                      f"{len(df)} 列 / {months} 個月,"
-                                      f"最後 {last}({age} 天前)"))
+                    vix_age = _days_between(vix_last, today)
+                    if vix_age > mcfg["max_age_days"]:
+                        out.append(Result(
+                            "PWA 資料鏡像 · VIX", FAIL,
+                            f"最後一筆 {vix_last},已 {vix_age} 天"
+                            f"(上限 {mcfg['max_age_days']})—— 發布或心跳推送壞了"))
+                    else:
+                        out.append(Result("PWA 資料鏡像 · VIX", OK,
+                                          f"{len(df)} 列 / {vix_months} 個月,"
+                                          f"最後 {vix_last}({vix_age} 天前)"))
     except Exception as exc:  # noqa: BLE001
         out.append(Result("PWA 資料鏡像 · VIX", FAIL, f"讀取失敗:{exc}"))
 
     return out
+
+
+def _reject_js_hostile(name: str):
+    """`json.loads` 的 `parse_constant` 鉤子 —— 遇到 Infinity / NaN 就拋。
+
+    ⚠ 為什麼不能直接用 `r.json()`:它走 Python 的 `json.loads`,而那**預設
+    吃得下** `Infinity` / `-Infinity` / `NaN`。瀏覽器的 `JSON.parse` 會拋。
+
+    `實測`(2026-10-20):餵一份 `"margin": Infinity` 的 signals.json 給這個
+    檢查,它回 `OK | 2026-10-19(0 天前),1 條警訊` —— 而同一份檔案在 PWA 端
+    會讓 `.then(r=>r.json())` 拋、被 `.catch(()=>{})` 吞掉,**整塊體制層面板
+    消失**。也就是這個檢查用錯的尺在量,而量錯的正好是它要防的那件事。
+
+    `fetch_signals.py` 自己有兩道防線(`jsonable()` + `allow_nan=False`),
+    所以這不是正在發作的故障。但這個檢查讀的是**線上那一份** ——
+    它可能被手改、被舊版寫出、或在傳輸中壞掉。檢查的職責是回答
+    「瀏覽器此刻拿得到什麼」,那就必須用瀏覽器的判準。
+    """
+    raise ValueError(f"JSON 裡有 {name} —— 瀏覽器的 JSON.parse 會直接拋")
+
+
+def check_published_signals(cfg: dict) -> list[Result]:
+    """線上那份 `signals.json` 還新不新、PWA 讀不讀得懂。
+
+    為什麼需要這一項(2026-10-20)
+    ------------------------------
+    體制層是整套監控裡**唯一沒有人盯著**的那一塊:
+
+      workflow 顏色   產生它的步驟是 `continue-on-error`,連續失敗一個月
+                      也不會讓每日健檢變色
+      PWA 畫面        會顯示資料年齡、超過 7 天轉琥珀色 —— `實測`屬實
+                      (index.html `SIGNALS_STALE_DAYS`),但那要使用者
+                      **自己打開頁面並讀那行小字**才看得到
+      既有健檢項目    `PWA 資料鏡像` 只看 sp_monthly.json 與 vix_daily.csv,
+                      完全沒有看 signals.json
+
+    也就是「沒消息就是好消息」在這一塊是空的:它壞掉時什麼消息都不會有。
+
+    ⚠ **刻意不併進 `check_published_mirror()`**,也不計入 `mirror_is_serving()`。
+      那個函式的回傳值決定代理鏈的嚴重程度,而體制層與代理鏈毫無關係 ——
+      併進去會讓一個輔助讀數有能力把趨勢腿的判定推成紅燈。
+
+    檢查的是**消費者真正需要的東西**:`renderRegime()` 在
+    `!dom || !warn || !warn.flags.length` 時會直接 return,整塊面板不顯示。
+    所以少了那幾個欄位不是「資料不完整」,是**面板整個消失**,
+    而消失與「這塊本來就沒有」在畫面上長得一模一樣。
+    """
+    scfg = cfg["pwa"]["signals"]
+    name = "PWA 體制訊號"
+    try:
+        r = _get_live(scfg["url"])
+        if r.status_code != 200:
+            return [Result(name, FAIL,
+                           f"HTTP {r.status_code} —— PWA 的體制層面板會整塊不顯示")]
+        # 刻意不用 r.json() —— 見 _reject_js_hostile() 的說明。
+        payload = json.loads(r.text, parse_constant=_reject_js_hostile)
+    except Exception as exc:  # noqa: BLE001
+        return [Result(name, FAIL, f"讀取失敗:{exc}")]
+
+    gen = _as_date(str(payload.get("generated_at", ""))[:10])
+    if gen is None:
+        return [Result(name, FAIL,
+                       f"`generated_at` 不是日期"
+                       f"({payload.get('generated_at')!r})—— "
+                       f"PWA 算不出資料年齡,那行提醒會永遠不出現")]
+
+    # 消費者的前置條件:renderRegime() 少了任何一個就整塊 return
+    dom = payload.get("dominance")
+    warn = payload.get("warning")
+    flags = (warn or {}).get("flags")
+    missing = [k for k, v in (("dominance", dom), ("warning", warn),
+                              ("warning.flags", flags)) if not v]
+    if missing:
+        return [Result(name, FAIL,
+                       f"缺 {missing} —— renderRegime() 會直接 return,"
+                       f"**整塊體制層面板不顯示**,而那和「本來就沒有」"
+                       f"在畫面上長得一樣")]
+
+    age = _days_between(gen, today_utc())
+    limit = scfg["max_age_days"]
+    if age > limit:
+        return [Result(name, FAIL,
+                       f"最後一筆 {gen},已 {age} 天(上限 {limit})—— "
+                       f"產生體制訊號那一步連續失敗,或心跳沒推上去")]
+    return [Result(name, OK, f"{gen}({age} 天前),{len(flags)} 條警訊")]
 
 
 def mirror_is_serving(results: list[Result]) -> bool:
@@ -702,6 +824,9 @@ def run_all() -> list[Result]:
     # (見 check_proxies 的說明)。倒過來的話代理鏈會永遠以為鏡像是好的。
     mirror = check_published_mirror(cfg)
     results += mirror
+    # ⚠ 刻意【不】併進 mirror 那個清單:`mirror_is_serving()` 決定代理鏈的
+    #    嚴重程度,而體制層是輔助讀數,不該有能力把趨勢腿的判定推成紅燈。
+    results += check_published_signals(cfg)
     results += check_proxies(cfg, mirror_ok=mirror_is_serving(mirror))
     results += check_pwa_deploy(cfg)
     results += check_worker(cfg)
@@ -902,15 +1027,59 @@ def plan_notice(previous_body: str | None, names: list[str],
     """
     prev = _parse_kv(previous_body, _SINCE_PREFIX)
     last_notice = _parse_kv(previous_body, _NOTICE_PREFIX).get("at")
+    # ⚠ 要在算 since 之前就拿到 —— 判斷「今天是不是真的起點」需要知道
+    #    上一輪這一項在不在失敗集合裡。
     known_before = parse_failset(previous_body)
 
+    # ⚠ 「它從那天開始壞」和「我們從那天開始數」必須分開,而且**來歷要存起來**。
+    #
+    #    原本是 `since[n] = s or today` —— 沒有前次標記時起點就是今天,
+    #    內文印「(自 2026-10-20 起,0 天)」。第一次失敗時那是對的,但
+    #    Issue 被關掉重開(標記活在內文的 HTML 註解裡,一關就沒了)、標記被
+    #    編輯壞、或 first_time 遷移時,一個已經壞 60 天的項目會被寫成
+    #    「今天才壞」,嚴重程度跟著從 0 重新數 ——
+    #    **長期故障於是永遠不會跨級**。
+    #
+    #    ⚠ 第一版只靠「存下來的字串解析得出日期嗎」來判斷起點可不可信。
+    #      那有一個洞:推定出來的日期一旦寫回標記,下一輪它就解析得出來了,
+    #      於是**推定值在一個週期之後被洗成事實**。不確定性被洗掉,
+    #      而報告會用一樣的語氣說一件沒有人看過的事。
+    #
+    #    所以來歷存成**獨立的第三欄**:`日期,等級,o|a`
+    #      o = observed  上一輪確實看過這一項是好的,所以今天真的是起點
+    #      a = assumed   我們只是從這天開始數,實際可能更早
+    #    一旦是 a 就永遠是 a —— 它不會因為被寫下來過就變成事實。
+    #    沒有第三欄的是舊版標記:來歷不可考,一律當 assumed。
+    #
+    #    刻意【不】去猜真正的起點(例如回頭翻 health_log)。我們真的不知道,
+    #    猜一個數字會讓通知頻率建立在編造的基礎上。要做的是把「不知道」
+    #    講出來 —— 報告事實,不做結論。
     since: dict[str, str] = {}
+    since_observed: dict[str, bool] = {}
     notified_lv: dict[str, int] = {}
     for n in names:
-        raw = prev.get(n, "")
-        s, _, lv = raw.partition(",")
-        since[n] = s or today
+        parts = prev.get(n, "").split(",")
+        s = parts[0]
+        lv = parts[1] if len(parts) > 1 else ""
+        flag = parts[2] if len(parts) > 2 else ""
+        if _as_date(s) is not None:
+            since[n] = s
+            since_observed[n] = flag == "o"
+        else:
+            # 沒有起點,或存下來的根本不是日期(被手動編輯壞、被舊版寫壞)。
+            # 只有在「上一輪確實看過這一項是好的」時,今天才真的是它的起點。
+            since[n] = today
+            since_observed[n] = (known_before is not None
+                                 and n not in known_before)
         notified_lv[n] = int(lv) if lv.isdigit() else 0
+
+    def since_phrase(n: str, lead: str = "") -> str:
+        d = _days_between(since[n], today)
+        if since_observed[n]:
+            return f"(自 {since[n]} 起,{lead}{d} 天)"
+        # 天數仍然要講 —— 它是一個【下界】,而跨級就是靠它判的。
+        return (f"(**至少 {d} 天** —— 自 {since[n]} 開始統計,"
+                f"先前沒有紀錄,實際開始的時間可能更早)")
 
     now_lv = {n: severity(_days_between(since[n], today)) for n in names}
 
@@ -933,7 +1102,7 @@ def plan_notice(previous_body: str | None, names: list[str],
         if escalated:
             lines += ["**持續時間跨級**(集合沒變,但嚴重程度變了):", ""]
             lines += [f"- ⏱ {n} — {SEVERITY_LABEL[now_lv[n]]}"
-                      f"(自 {since[n]} 起,已 {_days_between(since[n], today)} 天)"
+                      + since_phrase(n, "已 ")
                       for n in escalated] + [""]
         if overdue and not (added or gone or escalated or first_time):
             # last_notice 可能是 None —— 舊版寫的 Issue 只有 failset 標記、
@@ -944,8 +1113,7 @@ def plan_notice(previous_body: str | None, names: list[str],
                       ["**這個 Issue 先前沒有記錄上次通知的時間** —— 以下是現況,"
                        f"之後狀態沒變化時最多每 {REMINDER_DAYS} 天提醒一次。", ""])
         lines += ["**目前失敗的全部項目:**", ""]
-        lines += [f"- **{n}** — {detail.get(n, '')}"
-                  f"(自 {since[n]} 起,{_days_between(since[n], today)} 天)"
+        lines += [f"- **{n}** — {detail.get(n, '')}" + since_phrase(n)
                   for n in names] or ["- (無)"]
         lines += ["", "---",
                   "逐日軌跡在 `ops-data` 分支的 `ops/data/health_log.csv`(append-only)。",
@@ -963,7 +1131,8 @@ def plan_notice(previous_body: str | None, names: list[str],
     #   留著不是防禦性程式碼,是因為它釘住的是語意而不是現況 ——
     #   哪天 speak 的條件多了一條抑制(例如留言頻率上限),沒有它就會
     #   出現「等級前進了但使用者沒被告知」的無聲漏報。
-    new_state = {n: f"{since[n]},{now_lv[n] if speak else notified_lv[n]}" for n in names}
+    new_state = {n: f"{since[n]},{now_lv[n] if speak else notified_lv[n]},"
+                    f"{'o' if since_observed[n] else 'a'}" for n in names}
     return Notice(
         comment=comment,
         state_markers=[

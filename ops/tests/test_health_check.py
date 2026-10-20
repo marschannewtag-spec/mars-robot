@@ -81,7 +81,7 @@ def failed_names(results) -> list[str]:
 
 
 def test_stale_data_is_detected(sandbox: Path, cfg: dict) -> None:
-    days = _trading_days(date.today() - timedelta(days=400), 60)
+    days = _trading_days(hc.today_utc() - timedelta(days=400), 60)
     write_sp(sandbox, days)
     write_vix(sandbox, days)
     (sandbox / fetch_data.SOURCES["shiller"].filename).write_text(
@@ -95,12 +95,12 @@ def test_stale_data_is_detected(sandbox: Path, cfg: dict) -> None:
 
 def test_fresh_data_is_not_flagged(sandbox: Path, cfg: dict) -> None:
     """對照組 —— 少了這條,上面那條可能只是「什麼都報 FAIL」。"""
-    days = _trading_days(date.today() - timedelta(days=90), 60)
+    days = _trading_days(hc.today_utc() - timedelta(days=90), 60)
     write_sp(sandbox, days)
     write_vix(sandbox, days)
     (sandbox / fetch_data.SOURCES["shiller"].filename).write_text(
         f"Date,SP500,Dividend,Long Interest Rate\n"
-        f"{date.today().isoformat()},3000,50,2.5\n",
+        f"{hc.today_utc().isoformat()},3000,50,2.5\n",
         encoding="utf-8", newline="\n")
 
     st = statuses(hc.check_freshness(cfg))
@@ -334,7 +334,7 @@ def truncated_sp(sandbox: Path, monkeypatch):
     「沒壞的來源不該連坐」那條對照組就失去判別力。第一版就是這樣寫壞的。
     """
     # 8200 個交易日 ≈ 32 年,夠過 min_rows 的 8000 下限
-    vix_days = _trading_days(date.today() - timedelta(days=365 * 33), 8200)
+    vix_days = _trading_days(hc.today_utc() - timedelta(days=365 * 33), 8200)
     real_vix = "DATE,OPEN,HIGH,LOW,CLOSE\n" + "".join(
         f"{d.isoformat()},20,22,20,20\n" for d in vix_days)
     shiller = "Date,SP500,Dividend,Long Interest Rate\n" + "".join(
@@ -422,7 +422,7 @@ def test_check_order_is_load_bearing(sandbox: Path, cfg: dict, monkeypatch) -> N
     一開始是空的。這條依賴在本機完全看不出來(本機 raw 檔一直在)——
     有人重排 run_all() 的話,本機測試照樣全綠,線上會爆一整排「檔案不存在」。
     """
-    days = _trading_days(date.today() - timedelta(days=400), 260)
+    days = _trading_days(hc.today_utc() - timedelta(days=400), 260)
 
     def fake_fetch(name: str) -> str:
         if name == "sp_daily":
@@ -590,7 +590,7 @@ def source_dead_but_local_data_exists(sandbox: Path, monkeypatch, cfg: dict):
     就是 31.4 年,序列本來就結束在 2025 年,那個砍掉完全沒有作用,
     實際測到的是「566 天前」。數字對不上就代表 fixture 在說謊。
     """
-    last = date.today() - timedelta(days=30)
+    last = hc.today_utc() - timedelta(days=30)
     # 8200 個交易日往回推約 11480 個日曆天,讓序列結束在 last
     start = last - timedelta(days=11600)
     days = [d for d in _trading_days(start, 8600) if d <= last]
@@ -624,7 +624,7 @@ def test_stale_local_data_is_still_judged_when_the_source_is_down(
     )
     # 天數由 fixture 實際寫出的日期算,不寫死 —— today-30 可能落在週末,
     # 最後一個交易日因此是 31 天前。寫死數字只會讓測試在某些日子紅。
-    expected_age = (date.today() - source_dead_but_local_data_exists).days
+    expected_age = (hc.today_utc() - source_dead_but_local_data_exists).days
     assert f"已 {expected_age} 天" in vix.detail, f"天數算錯了:{vix.detail!r}"
     assert "最後一份好資料" in vix.detail, (
         f"沒講明評估的是舊資料,使用者會以為這是剛抓到的:{vix.detail!r}"
@@ -1087,3 +1087,176 @@ def test_a_200_with_missing_markers_is_still_a_failure(
     r, n = _deploy_run(monkeypatch, cfg, [_Resp(200, "<html>舊版</html>")])
     assert r.status == hc.FAIL and r.failed, r.detail
     assert n == 1, "內容不對不是『問不到』,不該重試"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 「自 X 起」是已知的起點,還是我們才開始數的那天(2026-10-20)
+#
+# `plan_notice()` 裡:
+#
+#     since[n] = s or today
+#
+# 沒有前次標記時,起點就是今天,內文印「(自 2026-10-20 起,0 天)」。
+# 那在**第一次失敗**時是對的,但這幾種情況下它是假的:
+#
+#   · Issue 被關掉又重開 —— 標記活在 Issue 內文裡,一關就沒了
+#   · `failsince` 標記被手動編輯壞、或被舊版寫壞
+#   · `first_time`(整個 Issue 先前沒有任何紀錄)
+#
+# 這幾種情況下,一個已經壞了 60 天的項目會被寫成「自今天起,0 天」——
+# 而且嚴重程度跟著從 0 重新數,**一個長期故障於是永遠不會跨級**。
+#
+# 這就是本專案那條線的又一次:
+# **「它從那天開始壞」和「我們從那天開始數」必須長得不一樣。**
+#
+# ⚠ 刻意【不】改變嚴重程度的計算。我們**真的不知道**它壞多久了,
+#   猜一個數字只會讓通知頻率建立在編造的基礎上。要做的是把「不知道」
+#   講出來 —— 報告事實,不做結論。
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _lines_for(comment: str, item: str) -> str:
+    """只取出提到 `item` 的那幾行。
+
+    ⚠ 一則通知裡有很多項目,而它們的起點來歷可以不同 —— 對整段 comment
+    做 `in` 判斷,會讓**別的項目**的警語冒充成這一項的。
+    (與 pine tooltip 那次 M91 同一個形狀:判準要對準那一項,不是對準
+    整段文字裡有沒有出現某個詞。)
+    """
+    hit = [ln for ln in comment.splitlines() if item in ln]
+    assert hit, f"通知裡完全沒有提到 {item}:\n{comment}"
+    return "\n".join(hit)
+
+
+def _observed_start(day: str, item: str):
+    """造出一個【真的看過】的起點:上一輪這一項是好的,這一輪才壞。
+
+    這是唯一能確定「今天就是它的起點」的情況 —— 上一輪的失敗集合裡
+    沒有它。回傳那一輪的 body。
+    """
+    _, b0 = _plan_on("2026-08-31", ["PWA 代理鏈"])          # 別的項目在壞
+    _, b1 = _plan_on(day, ["PWA 代理鏈", item], previous_body=b0)
+    return b1
+
+
+def test_an_observed_start_is_reported_as_a_plain_date() -> None:
+    """控制組:真的看過起點時,照常印「自 X 起,N 天」,不准加雜訊。
+
+    少了這一條,「永遠印不確定」會是讓下面幾條全綠的最省事寫法,
+    而那會讓真正知道起點的那些項目也變得不可信 ——
+    一個永遠亮著的警語等於沒有警語。
+    """
+    b1 = _observed_start("2026-09-01", "資料新鮮度 · vix")
+    n2, _ = _plan_on("2026-09-23", ["PWA 代理鏈", "資料新鮮度 · vix"],
+                     previous_body=b1)
+    assert n2.comment, "22 天應該要跨級出聲"
+    mine = _lines_for(n2.comment, "資料新鮮度 · vix")
+    assert "自 2026-09-01 起" in mine, mine
+    assert "22 天" in mine, mine
+    assert "先前沒有紀錄" not in mine, \
+        f"起點是真的看過的,卻說成不知道:\n{mine}"
+
+
+def test_an_observed_start_stays_observed_across_runs() -> None:
+    """看過就是看過 —— 之後每一輪都還是「自 X 起」,不會退化成推定。"""
+    b = _observed_start("2026-09-01", "資料新鮮度 · vix")
+    for day in ("2026-09-23", "2026-10-25", "2026-12-20"):
+        n, b = _plan_on(day, ["PWA 代理鏈", "資料新鮮度 · vix"], previous_body=b)
+        if n.comment:
+            mine = _lines_for(n.comment, "資料新鮮度 · vix")
+            assert "自 2026-09-01 起" in mine, (day, mine)
+            assert "至少" not in mine, (day, mine)
+    since = hc._parse_kv(b, hc._SINCE_PREFIX)["資料新鮮度 · vix"]
+    assert since.endswith(",o"), f"來歷欄沒有存成 observed:{since!r}"
+
+
+def test_a_lost_marker_does_not_claim_the_failure_started_today() -> None:
+    """Issue 被關掉重開(標記沒了)→ 不可以寫成「自今天起,0 天」。
+
+    那是把「我們不知道它壞多久了」說成「它今天才壞」,
+    而這兩件事該做的處置完全不同。
+    """
+    n, _ = _plan_on("2026-10-20", ["資料新鮮度 · vix"])
+    assert n.comment
+    assert "先前沒有紀錄" in n.comment, (
+        "沒有前次標記時,內文必須講明這個起點只是「開始統計的那天」:\n"
+        + n.comment
+    )
+    assert "自 2026-10-20 起,0 天" not in n.comment, (
+        "把未知的起點印成「自今天起,0 天」—— "
+        f"讀的人會以為它今天才壞:\n{n.comment}"
+    )
+
+
+def test_an_item_whose_marker_is_corrupt_is_also_marked_unknown() -> None:
+    """標記壞掉(不是 ISO 日期)也算不知道,不是「今天」。
+
+    `_days_between` 對解析不出來的輸入回 0 —— 那是通知路徑刻意的設計,
+    但配上「印成今天」就變成一個看起來很確定的假事實。
+    """
+    body = ("報告\n\n<!-- failsince: 資料新鮮度 · vix=壞掉的日期,0 -->\n"
+            "<!-- failset: 資料新鮮度 · vix -->\n")
+    n, _ = _plan_on("2026-10-20", ["資料新鮮度 · vix"], previous_body=body)
+    if n.comment:
+        assert "自 壞掉的日期 起,0 天" not in n.comment, n.comment
+
+
+def test_an_assumed_start_stays_assumed_across_runs() -> None:
+    """推定出來的起點,**不會因為被寫下來過就變成事實**。
+
+    ⚠ 這是 2026-10-20 第一版漏掉的洞。那一版只靠「存下來的字串解析得出
+    日期嗎」判斷起點可不可信 —— 而推定值一旦寫回標記,下一輪就解析得出來,
+    於是**不確定性在一個週期之後被洗成事實**,報告會用一樣肯定的語氣
+    說一件沒有人看過的事。
+
+    來歷因此存成獨立的第三欄(`日期,等級,o|a`),一旦是 a 就永遠是 a。
+    """
+    n1, b = _plan_on("2026-10-20", ["資料新鮮度 · vix"])
+    assert "先前沒有紀錄" in n1.comment, n1.comment
+
+    seen = 0
+    for day in ("2026-11-20", "2026-12-25", "2027-02-01"):
+        n, b = _plan_on(day, ["資料新鮮度 · vix"], previous_body=b)
+        if n.comment:
+            seen += 1
+            mine = _lines_for(n.comment, "資料新鮮度 · vix")
+            assert "先前沒有紀錄" in mine, (
+                f"{day} 的通知把推定的起點說成了事實:\n{mine}")
+            assert "至少" in mine, (day, mine)
+    assert seen, "後續完全沒有出聲,這條測試沒有驗到任何東西"
+
+    since = hc._parse_kv(b, hc._SINCE_PREFIX)["資料新鮮度 · vix"]
+    assert since.endswith(",a"), f"來歷欄沒有存成 assumed:{since!r}"
+
+
+def test_an_old_two_field_marker_is_treated_as_assumed() -> None:
+    """舊版標記(只有「日期,等級」兩欄)的來歷不可考 —— 一律當推定。
+
+    遷移時寧可說「不知道」也不要替舊資料擔保。那些日期是舊版寫的,
+    而舊版正是會把「我們開始數的那天」寫成起點的那一版。
+    """
+    body = ("報告\n\n<!-- failsince: 資料新鮮度 · vix=2026-08-01,2 -->\n"
+            "<!-- failset: 資料新鮮度 · vix -->\n")
+    n, _ = _plan_on("2026-10-20", ["資料新鮮度 · vix"], previous_body=body)
+    assert n.comment, "沒有 lastnotice 標記時應該會出聲"
+    assert "先前沒有紀錄" in n.comment, (
+        "舊版的兩欄標記被當成「真的看過的起點」:\n" + n.comment)
+    assert "2026-08-01" in n.comment, (
+        "舊版記下來的日期仍然要用(它是個下界),只是不能當成事實:\n"
+        + n.comment)
+
+
+def test_a_rebroken_item_gets_an_observed_start() -> None:
+    """修好又壞掉 = 我們親眼看過它是好的 → 起點是 observed,不加警語。
+
+    這是 observed 這條路徑最重要的真實案例。少了它,整個 o/a 判斷可以
+    永遠回 a 而所有測試照樣綠。
+    """
+    _, b1 = _plan_on("2026-09-01", ["A"])
+    _, b2 = _plan_on("2026-09-20", [], previous_body=b1)      # A 恢復
+    n3, b3 = _plan_on("2026-09-21", ["A"], previous_body=b2)  # 又壞
+    assert n3.comment
+    assert "先前沒有紀錄" not in n3.comment, (
+        "親眼看過它恢復又壞掉,起點卻被當成推定:\n" + n3.comment)
+    since = hc._parse_kv(b3, hc._SINCE_PREFIX)["A"]
+    assert since.startswith("2026-09-21") and since.endswith(",o"), since

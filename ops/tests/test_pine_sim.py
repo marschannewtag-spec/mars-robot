@@ -176,3 +176,72 @@ def test_to_ym_does_not_mistake_bare_years_for_timestamps() -> None:
     """
     to_ym = _to_ym()
     assert list(to_ym(pd.Series([2026, 2025]))) == ["2026-01", "2025-01"]
+
+
+# --------------------------------------------------------------------------
+# vixSym 是這份腳本裡唯一能改變訊號的輸入(2026-10-20)
+#
+# 原本的 tooltip 寫「歷史較長的替代來源:TVC:VIX」。那句話:
+#
+#   1. 沒有人量過 —— 這個 repo 無法查證 TradingView 上哪個代號歷史比較長
+#   2. 方向是反的 —— CBOE 官方 VIX 日K 本來就從 1990-01-02 開始
+#      (`實測` data/raw/vix_daily.csv 9296 列),與黃金基準的 440 個月同一個
+#      起點。「比它更長」只可能來自另一種建構方式(VXO 或回推),
+#      那是另一條序列,不是同一條的延長
+#   3. 它在**鼓勵**使用者去改那個輸入,卻沒說改了會發生什麼:
+#      飆升項吃的是月內最高,不同代號的 high 不保證一致 ——
+#      換掉之後數字會變,而畫面上看不出來
+#
+# 這條測試把 tooltip 綁在**量得到的事實**上:起始日期必須真的是本機資料的
+# 起始日期。哪天資料範圍變了而文案沒跟上,這裡就會紅。
+# --------------------------------------------------------------------------
+
+def test_the_vix_symbol_input_says_what_changing_it_costs() -> None:
+    import re
+
+    src = (OPS_ROOT / "pine" / "CashWeightGauge.pine").read_text(encoding="utf-8")
+    m = re.search(r'vixSym\s*=\s*input\.symbol\("([^"]+)"[^)]*tooltip="([^"]*)"',
+                  src, re.DOTALL)
+    assert m, "找不到 vixSym 的 input.symbol(...tooltip=...)"
+    default, tip = m.group(1), m.group(2)
+
+    assert default == "CBOE:VIX", (
+        f"預設來源變成 {default!r} —— 黃金基準是用 CBOE 官方日K 算的,"
+        "換預設等於換掉整條 VIX 腿的資料")
+
+    # ⚠ 判準不能只找「最高」two 個字 —— tooltip 裡還有一處「含日內最高」
+    #    是在描述預設來源,拿掉風險那句話之後它仍然在,於是測試照樣綠。
+    #    實測:突變 M91(刪掉整句風險說明)第一版**逃掉**了。
+    #    判準要對準那個【宣稱】,不是對準某個字。
+    assert "不保證一致" in tip, (
+        "tooltip 沒說換代號的真正代價:飆升項吃的是【月內最高】,"
+        f"而不同代號的 high 不保證一致 —— {tip!r}")
+    assert "check_pine_parity" in tip, (
+        f"tooltip 沒告訴使用者換完要怎麼驗證有沒有漂移:{tip!r}")
+    assert "歷史較長" not in tip, (
+        "tooltip 又在推薦一個「歷史較長」的替代來源 —— "
+        f"那是沒有量過的宣稱,而且方向是反的:{tip!r}")
+
+
+def test_the_tooltip_start_date_is_the_real_start_date(vix_daily) -> None:
+    """tooltip 寫的起始日期,必須就是本機 VIX 資料真正的第一天。
+
+    文案一旦和資料脫鉤就會慢慢變成謊言,而這份專案已經記過三次
+    「我的描述和程式碼分岔」。綁在量得到的東西上,它就不會。
+    """
+    import re
+
+    import pandas as pd
+
+    src = (OPS_ROOT / "pine" / "CashWeightGauge.pine").read_text(encoding="utf-8")
+    m = re.search(r'vixSym\s*=\s*input\.symbol\([^)]*tooltip="([^"]*)"',
+                  src, re.DOTALL)
+    assert m, "找不到 tooltip"
+    claimed = re.search(r"(\d{4}-\d{2}-\d{2})", m.group(1))
+    assert claimed, f"tooltip 沒有寫出起始日期:{m.group(1)!r}"
+
+    # 用凍結 fixture,不是 data/raw —— 後者不進版控,CI 上根本不存在
+    actual = str(pd.to_datetime(vix_daily[vix_daily.columns[0]]).min().date())
+    assert claimed.group(1) == actual, (
+        f"tooltip 說 VIX 從 {claimed.group(1)} 開始,"
+        f"實際資料從 {actual} 開始")

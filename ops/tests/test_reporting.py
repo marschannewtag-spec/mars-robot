@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 SRC = OPS_ROOT / "src"
@@ -274,6 +276,145 @@ def test_empty_log_does_not_divide_by_zero(tmp_path: Path, monkeypatch) -> None:
     assert "沒有可判讀的紀錄" in body
 
 
+def test_a_zero_byte_log_is_not_reported_as_having_no_records(
+        tmp_path: Path, monkeypatch) -> None:
+    """0 bytes 的軌跡檔 ≠ 只有表頭 ≠ 檔案不存在,而且都不該讓整份報告掛掉。
+
+    0 bytes 是 workflow 的「取回健檢軌跡」失敗時留下的東西:
+    `git show ... > 檔案` 的重導向在 git show 執行【之前】就把目的檔建好了。
+    這種檔案 `exists()` 為真,而 `pd.read_csv` 對它拋 `EmptyDataError` ——
+    **一個輔助檔足以讓整份年度報告產不出來**。
+
+    三種狀態的訊息必須互不相同:報告的讀者要據此決定去查哪裡。
+    """
+    import annual_review
+
+    missing = tmp_path / "nope.csv"
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", missing)
+    body_missing = annual_review.section_data_health().body
+
+    empty = tmp_path / "empty.csv"
+    empty.write_bytes(b"")
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", empty)
+    body_zero = annual_review.section_data_health().body   # 不得拋例外
+
+    header = tmp_path / "header.csv"
+    header.write_text("date,ok,n_checks,failed\n", encoding="utf-8")
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", header)
+    body_header = annual_review.section_data_health().body
+
+    assert "0 bytes" in body_zero, (
+        f"0 bytes 那一種沒有被說出來:{body_zero!r}"
+    )
+    assert len({body_missing, body_zero, body_header}) == 3, (
+        "「檔案不存在」/「0 bytes」/「只有表頭」有兩種以上長得一樣 —— "
+        "讀者會被指去查錯的地方:\n"
+        f"  不存在:{body_missing!r}\n  0 bytes:{body_zero!r}\n"
+        f"  只有表頭:{body_header!r}"
+    )
+
+
+# --------------------------------------------------------------------------
+# workflow 的 git 用法 —— 兩個已知陷阱,掃全部的檔案而不是只修觸發它的那一個
+# --------------------------------------------------------------------------
+
+
+def _workflow_shells() -> dict[str, str]:
+    """每個 workflow 的所有 `run:` 內容合起來(YAML 註解已經不在裡面)。
+
+    刻意讀整個檔案的 run 區塊而不是逐步驟 —— 這幾條掃描問的是
+    「這個 repo 裡還有沒有這種寫法」,不是某一步的行為。
+    """
+    wf_dir = OPS_ROOT.parent / ".github" / "workflows"
+    out: dict[str, str] = {}
+    for path in sorted(wf_dir.glob("*.yml")):
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        runs = []
+        for job in (data.get("jobs") or {}).values():
+            for step in (job.get("steps") or []):
+                if step.get("run"):
+                    runs.append(step["run"])
+        out[path.name] = "\n".join(runs)
+    return out
+
+
+def _uncommented(shell: str) -> list[str]:
+    return [ln for ln in shell.splitlines() if not ln.lstrip().startswith("#")]
+
+
+def test_every_cross_branch_fetch_uses_an_explicit_refspec() -> None:
+    """`git fetch origin <分支>` 不保證建立 `origin/<分支>`。
+
+    `actions/checkout` 把 `remote.origin.fetch` 縮窄成只有當前分支,
+    所以那個指令會 **exit 0** 卻只寫 FETCH_HEAD —— 接著任何
+    `origin/<分支>` 的參照都會失敗,而 exit 0 讓 `if` 走了成功那一支。
+    本機實測過(單分支複製):refspec 是
+    `+refs/heads/main:refs/remotes/origin/main`,`origin/ops-data` 不存在。
+
+    `daily-health.yml` 的心跳修過這一點,`annual-review.yml` 漏掉 ——
+    所以這條掃全部,不是只修觸發它的那一個檔案。
+    """
+    offenders: list[str] = []
+    seen = 0
+    for name, shell in _workflow_shells().items():
+        for line in _uncommented(shell):
+            if "git fetch" not in line:
+                continue
+            seen += 1
+            if "refs/remotes/origin/" not in line:
+                offenders.append(f"{name}: {line.strip()}")
+    assert seen > 0, "掃不到任何 git fetch —— 這條測試會變成恆真"
+    assert not offenders, (
+        "這些 `git fetch` 沒有明確 refspec,不保證建立 remote-tracking ref:\n  "
+        + "\n  ".join(offenders)
+        + "\n寫成 `git fetch origin +refs/heads/X:refs/remotes/origin/X`。"
+    )
+
+
+def test_no_workflow_uses_a_checkout_as_an_or_fallback() -> None:
+    """`A && B || C` 讀起來像 if/else,但 B 失敗時 C 也會跑。
+
+    這裡的 C 一旦是「開一條新分支」,失敗的路徑就會從目前的 HEAD
+    (通常是 main)另起一條,接下來的 push 是非快轉而被拒。
+    """
+    offenders: list[str] = []
+    for name, shell in _workflow_shells().items():
+        for line in _uncommented(shell):
+            if re.search(r"\|\|\s*git\s+(checkout|switch)", line):
+                offenders.append(f"{name}: {line.strip()}")
+    assert not offenders, (
+        "這些地方把「切分支」當成 `||` 的退路:\n  " + "\n  ".join(offenders)
+        + "\n`A && B || C` 不是 if/else —— B 失敗時 C 也會跑。寫成 if/else。"
+    )
+
+
+def test_git_show_never_redirects_straight_onto_its_destination() -> None:
+    """`git show X > 檔案` 的重導向在 git show 執行【之前】就截斷目的檔。
+
+    失敗時留下的是一個 0 bytes 的空殼,而 `exists()` 為真 ——
+    下游會把它當成「有這個檔」去讀。先寫暫存檔、成功才搬過去。
+    """
+    offenders: list[str] = []
+    seen = 0
+    for name, shell in _workflow_shells().items():
+        for line in _uncommented(shell):
+            if "git show" not in line or ">" not in line:
+                continue
+            seen += 1
+            target = line.split(">", 1)[1].strip().strip('"')
+            # 判準是「目的地不是版控樹裡那個固定路徑」。寫死的 repo 相對路徑
+            # (ops/data/...)就是那個陷阱;帶 shell 變數的一律是暫存位置,
+            # 取回成功才會被 mv/cp 到定位。刻意不去列舉變數名 ——
+            # 列舉的話下一個人換個變數名就繞過了。
+            if "$" not in target:
+                offenders.append(f"{name}: {line.strip()}")
+    assert seen > 0, "掃不到任何 `git show ... >` —— 這條測試會變成恆真"
+    assert not offenders, (
+        "這些 `git show` 直接重導向到目的檔,失敗時會留下 0 bytes 的空殼:\n  "
+        + "\n  ".join(offenders)
+    )
+
+
 # --------------------------------------------------------------------------
 # Bug 3 — 文件叫使用者跑的指令,在乾淨環境跑不起來(2026-10-14)
 #
@@ -527,4 +668,736 @@ def test_the_running_environment_matches_requirements() -> None:
         + "\n  ".join(problems)
         + "\n\n本機綠而 CI 紅(或兩邊測的根本不是同一件事)就是從這裡開始的。"
         + "\n修法:pip install -r ops/requirements.txt -r ops/requirements-test.txt"
+    )
+
+
+# --------------------------------------------------------------------------
+# 全 repo 只能有一個「今天」(2026-10-20)
+#
+# `date.today()` 是**執行機器的本地日期**。這個 repo 其他每一個時間戳都是
+# UTC:心跳 commit、Issue 內文的 `at=` 標記、報告檔名、workflow 排程。
+# 在 UTC+8 的機器上,本地午夜到早上八點之間兩者差一整天。
+#
+# 這個差的現形方式最難處理:**CI(UTC)永遠綠,開發機每天紅八小時**,
+# 看起來像「測試不穩」—— 最容易被當成雜訊關掉的那種紅燈。
+# 2026-10-20 `check_published_mirror` 就是這樣跟 `check_freshness` 分岔的,
+# 在本地凌晨跑整組測試才看見。
+#
+# 與 `markets.ok` 門檻分岔同一個形狀:同一個判斷不能有兩個來源。
+# --------------------------------------------------------------------------
+
+def _code_only(path: Path) -> str:
+    """把一份 .py 的註解與字串字面值拿掉,只留真正會執行的 token。
+
+    ⚠ 一定要剝掉 docstring。`health_check.py` 的說明裡**正好**寫著
+    `date.today()`(在講為什麼不要用它),純 grep 會把那段說明判成違規,
+    於是這條測試第一次寫出來就是紅的 —— 然後最自然的反應是放寬判準,
+    而放寬之後它就再也抓不到真的違規了。
+    """
+    import io
+    import tokenize
+
+    kept: list[str] = []
+    src = path.read_text(encoding="utf-8")
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.STRING):
+            continue
+        kept.append(tok.string)
+    return " ".join(kept)
+
+
+_LOCAL_CLOCK = (
+    ("date.today()", "本地日期 —— 請改用 health_check.today_utc()"),
+    ("datetime.today()", "本地日期 —— 請改用 health_check.today_utc()"),
+    ("datetime.utcnow()", "naive datetime,Python 3.12 起已棄用"),
+)
+
+
+def test_no_production_module_measures_time_against_the_local_clock() -> None:
+    """src/ 裡不得出現本地時鐘。"""
+    files = sorted(SRC.glob("*.py"))
+    assert len(files) >= 5, f"掃描沒有掃到東西,只找到 {files}"
+
+    offenders: list[str] = []
+    for f in files:
+        code = _code_only(f)
+        for needle, why in _LOCAL_CLOCK:
+            if needle.replace("(", " ( ").replace(")", " ) ") in code \
+                    or needle in code.replace(" ", ""):
+                offenders.append(f"{f.name}: {needle} —— {why}")
+
+    assert not offenders, (
+        "這些地方用了執行機器的本地時鐘:\n  " + "\n  ".join(offenders)
+        + "\n\nCI 跑在 UTC,所以本地時鐘的分岔在 CI 上永遠看不見 ——"
+        "\n它只會在 UTC+N 的開發機上每天紅 N 小時,看起來像測試不穩。"
+    )
+
+
+def test_the_utc_helper_is_actually_what_the_checks_use() -> None:
+    """安全網:上面那條是掃描式的,必須證明它掃的東西真的存在且被用著。
+
+    少了這條,把 `today_utc()` 整個刪掉會讓掃描測試**變綠**(沒有違規了),
+    而所有日期判斷同時失效 —— 掃描式測試最典型的空轉方式。
+    """
+    import health_check as hc
+
+    assert callable(getattr(hc, "today_utc", None)), "today_utc() 不見了"
+
+    code = _code_only(SRC / "health_check.py")
+    n = code.replace(" ", "").count("today_utc()")
+    assert n >= 3, (
+        f"health_check.py 只呼叫了 today_utc() {n} 次 —— "
+        "新鮮度、鏡像、以及它自己的定義各算一次,少於 3 就代表有判斷繞過了它"
+    )
+
+    from datetime import datetime, timezone
+    assert hc.today_utc() == datetime.now(timezone.utc).date()
+
+
+# --------------------------------------------------------------------------
+# 一個函式裡,A 段指派、B 段讀取(2026-10-20)
+#
+# `check_published_mirror()` 的 VIX 那段比的是 S&P 的 `age`,因為兩段共用
+# 變數名而 `age` 只在 S&P 那段被指派。結果:VIX 停更 300 天報 OK、
+# S&P 一壞 VIX 就報「cannot access local variable 'age'」。詳見 CLAUDE.md。
+#
+# 這個形狀會重複出現,因為「一個函式產出兩項獨立判斷」是這份程式的常見寫法
+# (check_* 幾乎都是)。所以用靜態掃描把整類釘住,而不是只補那一行。
+#
+# ⚠ 判準刻意窄,寧可漏也不要假警報:只在**前一個區塊有條件地**指派、
+#    而後一個區塊完全沒指派時才報。`try: x = f() except: return` 這種
+#    提早離開的寫法不算(走到後面就代表 try body 跑完了)——
+#    `_mirror_last_day()` 和 `dep_manifest.main()` 都是那個形狀,
+#    第一版判準把它們兩個都誤報了。
+# --------------------------------------------------------------------------
+
+def _names(node, ctx) -> set[str]:
+    import ast
+    return {n.id for n in ast.walk(node)
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ctx)}
+
+
+def _terminates(stmts) -> bool:
+    import ast
+    return bool(stmts) and isinstance(
+        stmts[-1], (ast.Return, ast.Raise, ast.Continue, ast.Break))
+
+
+def _definite_stores(stmts) -> set[str]:
+    """沿著「一切順利」那條路徑一定會被綁定的名字。
+
+    條件式裡的指派不算 —— 那正是 `age` 的形狀:它在 try body 的 `else:`
+    分支裡,所以 S&P 走任何一條提早分支時它根本沒有被綁定。
+    """
+    import ast
+    out: set[str] = set()
+    for s in stmts:
+        if isinstance(s, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            out |= _names(s, ast.Store)
+        elif isinstance(s, (ast.With, ast.AsyncWith)):
+            out |= _definite_stores(s.body)
+        elif isinstance(s, ast.If) and s.orelse:
+            out |= _definite_stores(s.body) & _definite_stores(s.orelse)
+        elif isinstance(s, ast.Try) and all(
+                _terminates(h.body) for h in s.handlers):
+            out |= _definite_stores(s.body) | _definite_stores(s.orelse)
+        if _terminates([s]):
+            break
+    return out
+
+
+def _module_level(tree) -> set[str]:
+    """只看模組**最上層**的綁定。
+
+    ⚠ 不可以 `ast.walk(tree)` —— 那會鑽進每個函式 body,於是每個區域變數
+    都被算成模組層級名字,掃描就永遠 0 處。我第一版就是這樣,對著已知的
+    bug 跑出「0 處」,差一點就當成「沒有別的了」收工。
+    """
+    import ast
+    out: set[str] = set()
+    for s in tree.body:
+        if isinstance(s, (ast.Import, ast.ImportFrom)):
+            for a in s.names:
+                out.add(a.asname or a.name.split(".")[0])
+        elif isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(s.name)
+        else:
+            out |= _names(s, ast.Store)
+    return out
+
+
+def _cross_block_leaks(root: Path) -> tuple[list[str], int]:
+    import ast
+    hits: list[str] = []
+    scanned = 0
+    for f in sorted(root.glob("**/*.py")):
+        if "__pycache__" in str(f):
+            continue
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        modlvl = _module_level(tree)
+        for fn in [n for n in ast.walk(tree)
+                   if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]:
+            scanned += 1
+            a = fn.args
+            params = {x.arg for x in a.args + a.kwonlyargs + a.posonlyargs}
+            if a.vararg:
+                params.add(a.vararg.arg)
+            if a.kwarg:
+                params.add(a.kwarg.arg)
+            nested = {d.name for d in ast.walk(fn)
+                      if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                        ast.ClassDef))}
+            blocks = [s for s in fn.body if isinstance(s, (ast.Try, ast.If))]
+            if len(blocks) < 2:
+                continue
+            safe = _definite_stores(fn.body) | params | modlvl | nested
+            seen: set[str] = set()
+            for b in blocks:
+                maybe = _names(b, ast.Store)
+                leaked = (_names(b, ast.Load) & seen) - maybe - safe
+                if leaked:
+                    hits.append(
+                        f"{f.name}:{b.lineno} {fn.name}() 讀到前面區塊"
+                        f"才(有條件地)指派的:{sorted(leaked)}")
+                seen |= maybe
+    return hits, scanned
+
+
+def test_no_function_lets_one_branch_read_another_branchs_variable() -> None:
+    leaks, scanned = _cross_block_leaks(SRC)
+    assert scanned >= 100, f"掃描沒掃到東西,只看到 {scanned} 個函式"
+    assert not leaks, (
+        "這些函式裡,後面的區塊讀到了前面區塊才指派的區域變數:\n  "
+        + "\n  ".join(leaks)
+        + "\n\n一個函式產出兩項獨立判斷時,兩段【不要共用變數名】"
+          "(sp_* / vix_*)——\n接錯會變成 NameError(立刻、大聲),"
+          "而不是一個看起來合理的錯數字。"
+    )
+
+
+def test_the_leak_scan_catches_the_bug_it_was_written_for(tmp_path: Path) -> None:
+    """安全網:掃描必須對**真的那個形狀**會紅,對正確的寫法不會紅。
+
+    少了這一條,掃描可以用十幾種方式無聲地變成空轉(我第一版就是:
+    `_module_level` 用了 `ast.walk`,對已知 bug 跑出 0 處)。
+    """
+    offender = tmp_path / "offender"
+    offender.mkdir()
+    (offender / "m.py").write_text(
+        "def check(cfg):\n"
+        "    out = []\n"
+        "    try:\n"
+        "        if cfg:\n"
+        "            out.append(1)\n"
+        "        else:\n"
+        "            age = 1\n"
+        "            out.append(age)\n"
+        "    except Exception as exc:\n"
+        "        out.append(exc)\n"
+        "    try:\n"
+        "        if age > 5:\n"
+        "            out.append(age)\n"
+        "    except Exception as exc:\n"
+        "        out.append(exc)\n"
+        "    return out\n",
+        encoding="utf-8")
+    leaks, _ = _cross_block_leaks(offender)
+    assert any("age" in x for x in leaks), \
+        f"掃描抓不到它被寫出來要抓的那個形狀:{leaks}"
+
+    innocent = tmp_path / "innocent"
+    innocent.mkdir()
+    (innocent / "m.py").write_text(
+        "def pick(d):\n"
+        "    try:\n"
+        "        ts = d['a']['b']\n"
+        "    except (KeyError, TypeError):\n"
+        "        return None\n"
+        "    if not ts:\n"
+        "        return None\n"
+        "    return ts[-1]\n",
+        encoding="utf-8")
+    leaks2, _ = _cross_block_leaks(innocent)
+    assert not leaks2, (
+        f"`except: return` 的提早離開寫法被誤報了:{leaks2} —— "
+        "假警報會讓這條掃描被放寬,放寬之後它就再也抓不到真的違規")
+
+
+# --------------------------------------------------------------------------
+# 每日健檢停掉的那段日子,不可以算成「沒有失敗」(2026-10-20)
+#
+# `section_data_health()` 原本把統計窗口錨在 **log 自己的最後一筆**上
+# (`cutoff = log["date"].max() - 365 天`)。於是一份在 200 天前就停住的軌跡,
+# 會被當成「它自己的那一年」來統計。
+#
+# `實測`(造一份 60 天全綠、最後一筆在 200 天前的軌跡):
+#
+#     - 紀錄區間:2026-02-02 .. 2026-04-02(60 天 · 共 60 次執行)
+#     - 全綠天數:**60/60**(100.0%)
+#     - 過去一年沒有任何失敗紀錄
+#
+# 每日健檢已經死了 200 天,而這一節報 **100.0%**、「過去一年沒有任何失敗」。
+#
+# 為什麼這是整個系統最貴的一條:整套安全模型是「沒消息就是好消息」——
+# 每日健檢停掉時**不會有 Issue、不會有通知、什麼都不會發生**。
+# 年度健檢是一年一次、人真的會去看「監控自己還活著嗎」的唯一場合,
+# 而它把「沒有紀錄」渲染成了「全綠」。
+#
+# 這就是本專案反覆踩的那條線的最貴一次:
+# **「沒得判斷」和「也壞了」在報告上必須長得不一樣**,而這裡還多一種
+# 「根本沒有人來報到」—— 它被默默排除在分母之外。
+# --------------------------------------------------------------------------
+
+def _trail(tmp_path: Path, *, ends_days_ago: int, n_days: int,
+           ok: int = 1, name: str = "t.csv") -> Path:
+    from datetime import datetime, timedelta, timezone
+    today = datetime.now(timezone.utc).date()
+    last = today - timedelta(days=ends_days_ago)
+    rows = ["date,ok,n_checks,failed"]
+    for i in range(n_days):
+        d = last - timedelta(days=n_days - 1 - i)
+        rows.append(f"{d},{ok},17," + ("" if ok else "資料新鮮度 · vix"))
+    p = tmp_path / name
+    p.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return p
+
+
+def test_a_trail_that_stopped_is_not_reported_as_all_green(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """每日健檢停了 200 天 → 這一節必須講出來,而不是報 100%。"""
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=200, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert "200 天" in body, f"沒有講軌跡已經多久沒有新紀錄:\n{body}"
+    assert "⚠" in body, f"軌跡停了 200 天卻沒有任何警告:\n{body}"
+    assert "過去一年沒有任何失敗紀錄" not in body, (
+        "軌跡停掉時仍然宣稱「過去一年沒有任何失敗紀錄」—— "
+        f"那是把『沒有人來報到』說成『沒有壞』:\n{body}"
+    )
+
+
+def test_the_window_is_anchored_on_today_not_on_the_last_record(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """統計窗口的終點是今天,不是軌跡自己的最後一筆。
+
+    錨在 log 自己的 max 上,等於讓一份停掉的軌跡自己定義「過去一年」——
+    停得越久,它看起來越乾淨。
+    """
+    import annual_review
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=200, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert str(today) in body, f"窗口沒有錨在今天({today}):\n{body}"
+    assert str(today - timedelta(days=365)) in body, \
+        f"沒有講窗口的起點:\n{body}"
+
+
+def test_days_with_no_record_are_their_own_category(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """「窗口內有幾天」和「有紀錄的有幾天」必須是兩個數字。
+
+    只印後者,等於把沒有人來報到的日子從分母裡拿掉 ——
+    而那是整個系統唯一會無聲發生的故障。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=200, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert "60/365" in body or "60 / 365" in body, \
+        f"沒有把「窗口內有紀錄的天數」對著 365 講清楚:\n{body}"
+    assert "**60/60**" in body, \
+        f"全綠比率的分母應該仍然是有紀錄的那 60 天(並標明):\n{body}"
+
+
+def test_a_fresh_trail_does_not_raise_the_stale_warning(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """控制組:軌跡是新的就不准有警告。
+
+    少了這一條,「永遠印警告」會是讓上面三條全部變綠的最省事寫法 ——
+    而一個永遠亮著的警告等於沒有警告。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=0, n_days=60))
+    body = annual_review.section_data_health().body
+
+    assert "⚠" not in body, f"軌跡是新的卻跳警告:\n{body}"
+    assert "**60/60**" in body, body
+
+
+def test_the_stale_warning_names_the_real_cause(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """警告要說出它真正代表什麼 —— 不是資料源壞了,是健檢沒跑或沒推上去。
+
+    這兩件事要做的處置完全不同,而使用者一年只讀這份報告一次。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=30, n_days=10))
+    body = annual_review.section_data_health().body
+
+    assert "沒有在跑" in body or "沒有推" in body, \
+        f"警告沒有講出原因(健檢沒跑 / 沒推上 ops-data):\n{body}"
+
+
+def test_records_older_than_the_window_are_excluded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """超過 365 天的舊紀錄不計入 —— 窗口的起點是今天往回 365 天。
+
+    ⚠ 這一條是補上來的。上面那幾條**抓不到**「窗口錨回 log 自己的最後一筆」:
+    突變 M72 把 `recent` 改回舊寫法,35 條測試全綠。原因是那幾條用的軌跡
+    都短到完全落在兩種窗口裡,兩種算法給出同一批列。
+    要分辨兩者,軌跡必須**跨過窗口邊界**。
+
+    這正是本專案記過的那件事的又一次:測試要讓兩個候選實作給出**不同**的
+    答案,否則它量的不是那個差異。
+    """
+    import annual_review
+    from datetime import datetime, timedelta, timezone
+
+    today = datetime.now(timezone.utc).date()
+    win_start = today - timedelta(days=annual_review.WINDOW_DAYS)
+
+    # 300 天連續紀錄,結束在 200 天前 —— 起點落在窗口之外
+    days = [today - timedelta(days=200 + i) for i in range(300)]
+    inside = [d for d in days if d >= win_start]
+    assert 0 < len(inside) < len(days), \
+        f"前置條件壞了:軌跡沒有跨過窗口邊界({len(inside)}/{len(days)})"
+
+    p = tmp_path / "spanning.csv"
+    p.write_text("date,ok,n_checks,failed\n"
+                 + "".join(f"{d},1,17,\n" for d in sorted(days)),
+                 encoding="utf-8")
+    monkeypatch.setattr(annual_review, "HEALTH_LOG", p)
+    body = annual_review.section_data_health().body
+
+    assert f"**{len(inside)}/{annual_review.WINDOW_DAYS}**" in body, (
+        f"窗口外的 {len(days) - len(inside)} 天被算進來了 —— "
+        f"應該是 {len(inside)}/{annual_review.WINDOW_DAYS}:\n{body}"
+    )
+    assert f"**{len(inside)}/{len(inside)}**" in body, \
+        f"全綠天數的分母不是窗口內的天數:\n{body}"
+    assert str(min(inside)) in body, \
+        f"「有紀錄的日子」的起點不是窗口內的第一天:\n{body}"
+
+
+def test_a_trail_entirely_older_than_the_window_has_nothing_to_judge(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """整份軌跡都在 365 天之外 → 「沒得判讀」,不是「沒有失敗」。
+
+    這條路徑在舊的寫法裡**不可能發生**(窗口跟著 log 自己走,永遠至少
+    涵蓋最後一天),所以它是新加的分支 —— 新分支要有自己的測試,
+    否則它就是一段沒有人走過的程式碼。
+    """
+    import annual_review
+
+    monkeypatch.setattr(annual_review, "HEALTH_LOG",
+                        _trail(tmp_path, ends_days_ago=400, n_days=30))
+    body = annual_review.section_data_health().body
+
+    assert "一筆紀錄都沒有" in body, f"\n{body}"
+    assert "沒得判讀" in body, f"\n{body}"
+    assert "%" not in body, f"沒有紀錄卻還印出了比率:\n{body}"
+
+
+# --------------------------------------------------------------------------
+# 32 條測試可以無聲消失,而測試集照樣回報成功(2026-10-20)
+#
+# `實測`:把 `ops/node_modules/jsdom` 改個名字再跑整組 ——
+#
+#     392 passed, 32 skipped in 26.87s        ← exit 0,CI 綠燈
+#
+# 消失的那 32 條是**唯一會執行 PWA 真實 JavaScript** 的測試:
+#
+#   test_parity.py        10  engine 與 PWA 逐月對帳 —— 整個專案的核心正確性宣稱
+#   test_source_chain.py   9  五層來源退回鏈
+#   test_leg_lag.py       12  兩腿落後的警示列
+#   test_publish_pwa.py    1  發布出去的鏡像與全段日資料等價
+#
+# 也就是說:只要 `setup-node` 或 `npm ci` 從某個 workflow 裡消失(被刪、
+# 被改成 continue-on-error、或 npm 安裝失敗但沒讓步驟紅),
+# **整層 JS 驗證就不存在了,而 CI 會顯示 392 passed 的健康綠燈。**
+#
+# 這正是本 repo 記過最多次的那個形狀的最貴版本:
+# 一個看起來在把關、實際上沒在量任何東西的閘門。
+#
+# `實測`:目前 ci.yml / dependency-canary.yml / daily-health.yml(autofix)
+# 三個跑 pytest 的地方**都有**裝 node —— 底下兩條測試是要讓它們保持這樣。
+# --------------------------------------------------------------------------
+
+_RUNS_TESTS = ("ci_checks.sh", "python -m pytest", "pytest tests/")
+
+
+def _jobs_that_run_tests() -> dict[str, dict]:
+    """找出「真的會跑 pytest」的 job。
+
+    ⚠ 只看步驟自己的欄位(`run:` 與 `with:` 的值),不是整份 YAML 的字串。
+    對整份檔案做 `in` 判斷會把註解也算進去。
+    (與 pine tooltip 的 M91 同一條:判準要對準那個對象。)
+
+    ⚠ 兩種「會跑測試」都要算到:
+      · `run:` 裡直接跑(ci.yml 的 test、canary)
+      · 在 **step 輸入**裡叫別人跑 —— `daily-health.yml` 的 autofix 把
+        「在 `ops/` 下跑 `python -m pytest tests/ -q`」寫在給
+        claude-code-action 的 prompt 裡。第一版判準只看 `run:`,
+        於是那個 job 整個沒被看見,而它同樣需要 node。
+        `實測`:只看 `run:` 時掃到 2 個 job,加上 step 輸入之後是 3 個。
+    """
+    import yaml as _yaml
+
+    wf_dir = OPS_ROOT.parent / ".github" / "workflows"
+    found: dict[str, dict] = {}
+    for path in sorted(wf_dir.glob("*.yml")):
+        doc = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for job_name, job in (doc.get("jobs") or {}).items():
+            steps = job.get("steps") or []
+            runs = [str(s.get("run", "")) for s in steps]
+            inputs = [str(v) for s in steps
+                      for v in (s.get("with") or {}).values()]
+            if any(k in text for text in runs + inputs for k in _RUNS_TESTS):
+                found[f"{path.name}:{job_name}"] = {"steps": steps, "runs": runs}
+    return found
+
+
+def test_every_job_that_runs_tests_also_installs_the_javascript_bridge() -> None:
+    """跑 pytest 的 job 都必須裝 node + jsdom,否則那 32 條會無聲跳過。"""
+    jobs = _jobs_that_run_tests()
+    assert len(jobs) >= 3, (
+        f"掃描沒掃到東西,只找到 {sorted(jobs)} —— "
+        "預期至少 ci / canary / autofix 三個 job 會跑測試")
+
+    problems: list[str] = []
+    for where, info in jobs.items():
+        uses = [str(s.get("uses", "")) for s in info["steps"]]
+        if not any(u.startswith("actions/setup-node") for u in uses):
+            problems.append(f"{where}:沒有 actions/setup-node")
+        if not any("npm ci" in r for r in info["runs"]):
+            problems.append(f"{where}:沒有 npm ci")
+        for s in info["steps"]:
+            if "npm ci" in str(s.get("run", "")) and s.get("continue-on-error"):
+                problems.append(f"{where}:npm ci 是 continue-on-error —— "
+                                "裝不起來也不會紅,而後果是 32 條測試靜默跳過")
+
+    assert not problems, (
+        "這些會跑測試的 job 少了 JavaScript 橋接器:\n  "
+        + "\n  ".join(problems)
+        + "\n\n後果:test_parity / test_source_chain / test_leg_lag 共 32 條"
+          "\n(唯一執行 PWA 真實 JS 的那些)會跳過,而測試集回報 392 passed。"
+    )
+
+
+def _test_sources() -> list[tuple[Path, "ast.Module"]]:
+    """每個測試檔的 AST。
+
+    ⚠ 用 AST,不是文字掃描。第一版用文字,結果連續兩次掃到**自己的說明**:
+    本檔的錯誤訊息裡同時有「skip」和「jsdom」,新開的
+    `test_js_bridge_policy.py` 的 docstring 也是。
+    把掃描器放在它要掃的目錄裡,它一定會讀到描述這條規則的那些句子。
+
+    AST 只看**呼叫節點**與它的字串引數 —— docstring 不是 Call,
+    說明文字自然不在範圍內。判準因此對準了「程式做了什麼」,
+    而不是「檔案裡出現過哪些字」。這是本輪第四次踩到同一條。
+    """
+    import ast
+
+    out = []
+    for f in sorted((OPS_ROOT / "tests").glob("test_*.py")):
+        out.append((f, ast.parse(f.read_text(encoding="utf-8"))))
+    assert len(out) >= 15, f"掃描沒掃到東西,只找到 {len(out)} 個測試檔"
+    return out
+
+
+def _dotted(node) -> str:
+    import ast
+
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _strings_in(node, consts: dict) -> list[str]:
+    """呼叫裡所有看得到的字串 —— 含「引數是個模組層級常數」的情況。"""
+    import ast
+
+    out = []
+    for n in ast.walk(node):
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.append(n.value)
+        elif isinstance(n, ast.Name) and n.id in consts:
+            out.append(consts[n.id])
+    return out
+
+
+def _module_str_consts(tree) -> dict:
+    import ast
+
+    out = {}
+    for s in tree.body:
+        if isinstance(s, ast.Assign) and len(s.targets) == 1 and \
+                isinstance(s.targets[0], ast.Name):
+            vals = [c.value for c in ast.walk(s.value)
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str)]
+            if vals:
+                out[s.targets[0].id] = " ".join(vals)
+    return out
+
+
+# 已知會被用來當「跳過」理由的外部工具。
+#
+# ⚠ 這是一份**清單**,不是通則 —— 新工具要自己加進來。
+#   2026-10-20 實測到它的極限:判準原本只認 node/jsdom,於是突變 M115
+#   (把 bash 關口改回 `pytest.skip("需要 bash")`)**逃掉了**。
+#   同一輪裡第五次踩到「判準對準的範圍不對」:這次是太窄。
+_TOOL_WORDS = ("node", "jsdom", "npm", "bash", "git", "docker")
+
+
+def _is_tool_skip(call, consts: dict) -> str | None:
+    """這個 skip 是不是在處理「某個外部工具不在」?回傳可讀描述或 None。"""
+    import ast
+
+    blob = " ".join(_strings_in(call, consts))
+    for n in ast.walk(call):
+        if isinstance(n, ast.Call) and _dotted(n.func).endswith("which"):
+            return f"用 shutil.which 判斷工具是否存在({blob[:40]})"
+    hit = [w for w in _TOOL_WORDS if w in blob]
+    return f"理由提到 {hit}({blob[:40]})" if hit else None
+
+
+def test_no_test_skips_itself_when_a_required_tool_is_missing() -> None:
+    """沒有任何測試可以因為外部工具不在而**跳過**。
+
+    2026-10-20 的決定:缺席是失敗,不是跳過
+    (`conftest.require_js_bridge()` / `conftest.require_shell()`)。
+    理由在 conftest 裡。
+
+    ⚠ 這條原本寫成「只在 CI 上硬失敗」—— 它自己在本機會 skip,
+      於是**驗證這條規則的測試,本身就是一個沒有人看的 skip**。
+      一個只在別處生效的守門員,在這裡看不出它還活著。
+
+    ⚠ 第二次修正:原本只認 node/jsdom,於是把 bash 關口改回
+      `pytest.skip("需要 bash")` 的突變逃掉了。工具清單見 `_TOOL_WORDS`。
+    """
+    import ast
+
+    offenders: list[str] = []
+    for f, tree in _test_sources():
+        consts = _module_str_consts(tree)
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call):
+                continue
+            name = _dotted(n.func)
+            if not (name.endswith("skip") or name.endswith("skipif")):
+                continue
+            why = _is_tool_skip(n, consts)
+            if why:
+                offenders.append(f"{f.name}:{n.lineno}  {name} —— {why}")
+
+    assert not offenders, (
+        "這些地方還在用「跳過」處理外部工具缺席:\n  "
+        + "\n  ".join(offenders)
+        + "\n\n實測:jsdom 不在時整組會得到「392 passed, 32 skipped」——"
+          "\nexit 0、CI 綠燈,而整層 PWA JavaScript 驗證不存在。"
+          "\n請改用 conftest 的 require_js_bridge() / require_shell()。"
+    )
+
+
+def test_every_bridge_gate_says_what_is_lost() -> None:
+    """每個關口都必須寫出少了它會失去什麼驗證。
+
+    只寫「尚未 npm install jsdom」的話,讀的人知道怎麼修,卻不知道不修會
+    失去什麼 —— 於是最自然的反應是把它改回 skip,而那正是這一輪在修的事。
+    """
+    import ast
+
+    calls = 0
+    thin: list[str] = []
+    for f, tree in _test_sources():
+        consts = _module_str_consts(tree)
+        for n in ast.walk(tree):
+            if not isinstance(n, ast.Call) or _dotted(n.func) != "require_js_bridge":
+                continue
+            calls += 1
+            blob = " ".join(_strings_in(n, consts))
+            if len(blob) < 40:
+                thin.append(f"{f.name}:{n.lineno}  {blob[:50]!r}")
+
+    assert calls >= 5, f"只找到 {calls} 個關口 —— 預期至少 5 個"
+    assert not thin, (
+        "這些關口的說明太短,沒講出失去的是什麼驗證:\n  " + "\n  ".join(thin))
+
+
+# --------------------------------------------------------------------------
+# CI 的測試入口不得被縮窄(2026-10-20)
+#
+# 那些 AST/靜態掃描全都住在 pytest 裡,靠 `ops/scripts/ci_checks.sh` 被帶進
+# CI、canary 與 autofix 三條路。`實測`:`pytest tests/` 會收集到
+# `test_reporting.py` 的 40 條,三個 workflow 都走這個入口。
+#
+# 既有的 `test_the_shared_entrypoint_is_what_both_sides_call` 只斷言
+# 入口內文含有 `python -m pytest tests/`。那個判準**擋不住縮窄**:
+#
+#     python -m pytest tests/test_golden.py     ← 仍然含有那個片段
+#     python -m pytest tests/ -k "golden"       ← 同上
+#
+# 縮窄之後所有掃描都還「存在」,只是不再被執行 —— 而 CI 會是綠的。
+# 和 jsdom 消失同一個形狀,只是發生在更上游:整組測試裡有多少條真的跑,
+# 由一行 shell 決定,而沒有人在看那一行。
+# --------------------------------------------------------------------------
+
+def test_the_ci_entrypoint_runs_the_whole_test_directory() -> None:
+    import re as _re
+
+    entry = OPS_ROOT / "scripts" / "ci_checks.sh"
+    body = entry.read_text(encoding="utf-8")
+    lines = [ln.strip() for ln in _uncommented(body) if "pytest" in ln]
+    assert len(lines) == 1, f"入口裡跑 pytest 的行有 {len(lines)} 條:{lines}"
+    cmd = lines[0]
+
+    assert _re.fullmatch(r'python -m pytest tests/ "\$@"', cmd), (
+        f"測試入口被改成 {cmd!r} —— 它必須原封不動地跑整個 tests/ 目錄。\n"
+        "縮窄成單一檔案或加上 -k,會讓所有靜態掃描『還在但不再執行』,\n"
+        "而 CI 仍然是綠的(與 jsdom 消失同一個形狀,只是更上游)。"
+    )
+
+
+def test_no_workflow_narrows_the_test_run() -> None:
+    """workflow 傳給入口的參數只能影響輸出格式,不能挑測試。"""
+    import re as _re
+
+    narrowing = ("-k", "--ignore", "--deselect", "-m ", "--lf", "--ff", "-x")
+    problems: list[str] = []
+    for where, info in _jobs_that_run_tests().items():
+        for run in info["runs"]:
+            for line in _uncommented(run):
+                if "ci_checks.sh" not in line:
+                    continue
+                args = line.split("ci_checks.sh", 1)[1]
+                for n in narrowing:
+                    if _re.search(r"(^|\s)" + _re.escape(n.strip()) + r"(\s|=|$)", args):
+                        problems.append(f"{where}: {line.strip()[:70]}  ←含 {n.strip()}")
+    assert not problems, (
+        "這些地方在呼叫測試入口時挑掉了一部分測試:\n  " + "\n  ".join(problems)
+        + "\n\n參數只能影響輸出格式(-q / -v / --tb)。"
     )

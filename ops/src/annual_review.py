@@ -17,7 +17,7 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -43,6 +43,18 @@ MA_GRID = list(range(6, 18))
 MULT_GRID = [round(0.6 + 0.1 * i, 1) for i in range(12)]
 CURRENT_MA = 12
 CURRENT_MULT = 1.0
+
+# 資料源穩定度那一節的統計窗口,以及「軌跡自己有多新鮮」的門檻。
+#
+# ⚠ `TRAIL_MAX_AGE_DAYS` 是**運維**門檻,不碰訊號,也不是用來讓任何檢查
+#    變綠的 —— 它只決定「要不要大聲說軌跡停了」。7 天 = 每日排程 + 週末
+#    + 一次失敗重試的餘裕。放寬它只會讓「健檢死掉」更晚被發現。
+#
+# 放在模組常數而不是 config.yml:這兩個值只有這一個消費者,而
+# annual_review.py 目前不讀 config.yml —— 為了一個門檻把整份設定接進來,
+# 會多出一條沒有人在看的漂移路徑。
+WINDOW_DAYS = 365
+TRAIL_MAX_AGE_DAYS = 7
 
 
 @dataclass
@@ -235,23 +247,73 @@ def section_data_health() -> Section:
         return Section("資料源穩定度",
                        "尚無 `data/health_log.csv` —— 每日健檢還沒累積足夠紀錄。\n"
                        "這一節要等每日流程跑滿一段時間才有內容。")
+    if HEALTH_LOG.stat().st_size == 0:
+        # 0 bytes 不等於「還沒有紀錄」。workflow 的「取回健檢軌跡」那一步用
+        # `git show ... > 檔案` 取回軌跡,而重導向在 git show 執行【之前】就把
+        # 目的檔建好了 —— 取回失敗就留下一個空殼。`exists()` 為真,
+        # 而 `pd.read_csv` 對 0 bytes 會拋 EmptyDataError,
+        # **整份年度報告會因為一個輔助檔而產不出來**。
+        # 這裡把它說成它本來的樣子:取回失敗,不是沒有紀錄。
+        return Section("資料源穩定度",
+                       "`data/health_log.csv` 是空檔案(0 bytes)—— 這不是"
+                       "「還沒有紀錄」,\n是**取回軌跡那一步沒有成功**"
+                       "(見 workflow 的「取回健檢軌跡」)。這一節沒得判讀。")
     log = pd.read_csv(HEALTH_LOG)
     log["date"] = pd.to_datetime(log["date"], errors="coerce")
     log = log.dropna(subset=["date"])
     if log.empty:
         return Section("資料源穩定度", "`data/health_log.csv` 存在但沒有可判讀的紀錄。")
 
-    cutoff = log["date"].max() - pd.Timedelta(days=365)
-    recent = log[log["date"] >= cutoff]
+    # ⚠ 窗口錨在【今天】,不是 log 自己的最後一筆。
+    #    原本是 `cutoff = log["date"].max() - 365 天` —— 那等於讓一份停掉的
+    #    軌跡自己定義「過去一年」,**停得越久它看起來越乾淨**。
+    #    實測:一份 60 天全綠、最後一筆在 200 天前的軌跡,被報成
+    #    「全綠天數 60/60(100.0%)· 過去一年沒有任何失敗紀錄」——
+    #    而每日健檢其實已經死了 200 天。
+    #
+    #    為什麼這是最貴的一條:整套安全模型是「沒消息就是好消息」,
+    #    健檢停掉時不會有 Issue、不會有通知、什麼都不會發生。年度健檢是
+    #    人一年一次真的會去看「監控自己還活著嗎」的唯一場合,而它把
+    #    「沒有人來報到」渲染成了「全綠」。
+    today = datetime.now(timezone.utc).date()
+    win_start = today - timedelta(days=WINDOW_DAYS)
+    window_line = f"- 統計窗口:{win_start} .. {today}(今天往回 {WINDOW_DAYS} 天)"
+
+    recent = log[log["date"].dt.date >= win_start]
+    if recent.empty:
+        last_any = log["date"].dt.date.max()
+        return Section("資料源穩定度", "\n".join([
+            window_line,
+            f"- ⚠ **窗口內一筆紀錄都沒有。** 軌跡最後一筆是 {last_any},"
+            f"已 {(today - last_any).days} 天。",
+            "  這不是「沒有失敗」,是**每日健檢沒有在跑、或沒有推上 "
+            "ops-data**。這一節沒得判讀。",
+        ]))
 
     by_day = recent.groupby(recent["date"].dt.date)
     day_ok = by_day["ok"].min()          # 當天所有執行都綠,那天才算綠
     n_days = len(day_ok)
     n_green = int(day_ok.sum())
+    last_day = day_ok.index.max()
+    trail_age = (today - last_day).days
 
-    rows = [f"- 紀錄區間:{day_ok.index.min()} .. {day_ok.index.max()}"
-            f"({n_days} 天 · 共 {len(recent)} 次執行)",
-            f"- 全綠天數:**{n_green}/{n_days}**({n_green / n_days * 100:.1f}%)"]
+    rows = [window_line]
+    if trail_age > TRAIL_MAX_AGE_DAYS:
+        rows += [
+            f"- ⚠ **軌跡最後一筆是 {last_day},已 {trail_age} 天沒有新紀錄"
+            f"(上限 {TRAIL_MAX_AGE_DAYS} 天)。**",
+            "  這不是「沒有失敗」,是**每日健檢沒有在跑、或沒有推上 "
+            "ops-data**。",
+            f"  下面的比率只涵蓋有紀錄的那 {n_days} 天,"
+            f"不能讀成「系統這一年是穩的」。",
+        ]
+    rows += [
+        f"- 窗口內有紀錄:**{n_days}/{WINDOW_DAYS}** 天",
+        f"- 有紀錄的日子:{day_ok.index.min()} .. {last_day}"
+        f"({n_days} 天 · 共 {len(recent)} 次執行)",
+        f"- 全綠天數:**{n_green}/{n_days}**"
+        f"({n_green / n_days * 100:.1f}%,分母是有紀錄的那 {n_days} 天)",
+    ]
 
     # 失敗項同樣按天去重 —— 同一天跑三次不該把同一個故障算成三天
     counter: dict[str, int] = {}
@@ -267,7 +329,7 @@ def section_data_health() -> Section:
         for name, n in sorted(counter.items(), key=lambda x: -x[1])[:8]:
             rows.append(f"- `{name}` — {n} 天")
     else:
-        rows.append("- 過去一年沒有任何失敗紀錄")
+        rows.append(f"- 有紀錄的那 {n_days} 天裡,沒有任何失敗")
     return Section("資料源穩定度", "\n".join(rows))
 
 
