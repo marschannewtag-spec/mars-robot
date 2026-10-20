@@ -381,6 +381,28 @@ jobs:
 
       # 心跳:即使健檢失敗也要跑,否則「來源掛掉」會連帶讓排程被停用,
       # 變成故障期間反而失去監控 —— 最糟的失效模式。
+      # ⚠ 獨立的收尾步驟,刻意【不讀】 steps.code。
+      #
+      # 它回答的問題和 manifest.json 不一樣:
+      #
+      #   manifest.json 的 fetched_at = 「資料」有多新
+      #   heartbeat.txt               = 「監控本身」今天有沒有來報到
+      #
+      # 2026-10-20 之前只有前者。於是健檢失敗那天沒有任何資料檔變動 ->
+      # `git diff --cached --quiet` 為真 -> commit 被跳過 -> repo 沒有活動,
+      # 而 GitHub 停用排程的 60 天倒數繼續走。**最需要心跳的那一天,
+      # 正好是心跳消失的那一天。**
+      #
+      # 位置放在健檢之後是刻意的(符合「健檢結果確定後才更新」),
+      # 但它的內容不依賴健檢結果 —— 依賴了就會重蹈覆轍。
+      - name: 心跳時間戳(與健檢成敗無關)
+        if: always()
+        run: |
+          mkdir -p ops/data
+          # 單行 UTC ISO 8601。格式由 tests/test_heartbeat.py 真的執行這行指令驗證。
+          date -u '+%Y-%m-%dT%H:%M:%SZ' > ops/data/heartbeat.txt
+          echo "心跳時間戳:$(cat ops/data/heartbeat.txt)"
+
       - name: 心跳 — 推資料到 ops-data 分支
         if: always()
         run: |
@@ -388,6 +410,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           tmp=$(mktemp -d)
+          cp ops/data/heartbeat.txt   "$tmp/" 2>/dev/null || true
           cp ops/data/manifest.json   "$tmp/" 2>/dev/null || true
           cp ops/data/health_log.csv  "$tmp/" 2>/dev/null || true
           cp ops/data/signals.json    "$tmp/" 2>/dev/null || true
@@ -407,6 +430,7 @@ jobs:
             git checkout -f -B ops-data
           fi
           mkdir -p ops/data
+          cp "$tmp"/heartbeat.txt  ops/data/ 2>/dev/null || true
           cp "$tmp"/manifest.json  ops/data/ 2>/dev/null || true
           cp "$tmp"/health_log.csv ops/data/ 2>/dev/null || true
           # signals.json 產生失敗時上面那步不會有檔案,cp 失敗就沿用分支上的舊版 ——
@@ -420,17 +444,29 @@ jobs:
           mkdir -p ops/data/deps
           cp "$tmp"/deps/*         ops/data/deps/ 2>/dev/null || true
 
+          # heartbeat.txt 放第一個不是排版 —— 它是唯一保證每次都會變的檔案,
+          # 也就是唯一保證這個 commit 一定成立的東西。
+          git add -f ops/data/heartbeat.txt 2>/dev/null || true
           git add -f ops/data/manifest.json ops/data/health_log.csv 2>/dev/null || true
           git add -f ops/data/signals.json 2>/dev/null || true
           # 鏡像是 PWA 的第一順位來源 —— 這一行沒推上去,使用者就讀到舊資料
           git add -f ops/data/pwa 2>/dev/null || true
           git add -f ops/data/deps 2>/dev/null || true
+          # ⚠ 這裡【不得】因為「沒有變化」就跳過 —— 那正是 60 天懸崖的失效路徑。
+          #
+          # heartbeat.txt 每次執行都會變,所以 diff 為空本身就是異常訊號
+          # (時間戳那步沒跑成功,或搬運掉了)。那種時候更要留下一個 commit:
+          # 排程活不活得下去,不該取決於今天有沒有新資料。
+          #
+          # push 刻意放在 if/else 外面 —— 放進 else 就是把同一個 bug
+          # 換一個地方再寫一次。
           if git diff --cached --quiet; then
-            echo "資料無變化,跳過 commit"
+            echo "::warning::heartbeat.txt 沒有變化,時間戳可能沒寫成功。仍送出空 commit 以維持 repo 活動。"
+            git commit --allow-empty -m "chore: 每日心跳(無檔案變動)$(date -u '+%Y-%m-%d')"
           else
             git commit -m "chore: 每日資料心跳 $(date -u '+%Y-%m-%d')"
-            git push origin ops-data
           fi
+          git push origin ops-data
 
       - name: 摘要
         if: always()
