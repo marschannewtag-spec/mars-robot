@@ -123,6 +123,15 @@
   /* 市場體制與早期警訊(輔助層 — 不參與現金水位計算) */
   #regimepanel{display:none}
   #regimepanel.on{display:block}
+  /* 主訊號現況:放在體制面板的最上面,讓兩個讀數同時在視野裡。
+     它由核心的 render() 寫,【不是】由 renderRegime() 寫 —— 方向很重要,
+     見 index.html 裡那段註解。 */
+  #mainstate{font-size:12px;line-height:1.55;color:var(--faint);
+             border-left:2px solid var(--line);padding:6px 0 6px 9px;margin:0 0 10px}
+  #mainstate b{color:var(--ink)}
+  /* 已觸發的那幾條,門檻直接露出來,不用點開 */
+  .frule{display:block;font-size:11px;color:var(--faint);margin:3px 0 0 18px}
+  .frule code{font-size:11px}
   .domwrap{display:grid;grid-template-columns:auto 1fr;gap:18px;align-items:center;margin:12px 0 4px}
   .domlead{font:700 26px var(--mono);line-height:1.1;margin-top:4px}
   .domscores{display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -261,6 +270,7 @@
      ⚠ 這一塊【不參與】上方現金水位的計算,理由見 ops/src/regime.py 的模組說明。 -->
 <div class="panel" id="regimepanel">
   <h2>市場體制與早期警訊 <span class="lg" id="regimeage">·</span></h2>
+  <div id="mainstate"></div>
   <div class="domwrap">
     <div>
       <div class="ddlab">目前金融主體</div>
@@ -741,6 +751,24 @@ function render(data,fetchedAt,fromCache){
 
   $("momcash").textContent=Math.round(momC*100)+"%";$("momcash").style.color=riskColor(momC);
   $("vixcash").textContent=Math.round(vixC*100)+"%";$("vixcash").style.color=riskColor(vixC);
+
+  // 主訊號現況 —— 寫進體制面板的最上面,讓兩個讀數同時在視野裡。
+  //
+  // ⚠ **這一行由核心寫,不由 renderRegime() 寫。** 方向是刻意的:
+  //    體制層 -> 核心  是硬邊界(test_pwa_regime_layer_does_not_touch_the_cash_number)
+  //    核心   -> 體制層 只是把一個已經算好的事實放到看得到的地方
+  //    反過來寫的話,renderRegime 就得去讀核心節點,而那正是那條測試在擋的事。
+  //
+  // 為什麼需要它(2026-10-20 決策 T3):使用者在回調中覺得「慢半拍」,
+  // 而下面六條警訊可能已經亮了。兩個數字分在畫面的兩端時,很容易把
+  // 「警訊亮了」讀成「水位要動了」。放在一起並明講不會互相影響,比較誠實。
+  $("mainstate").innerHTML = uni>0
+    ? "<b>主訊號目前 "+Math.round(uni*100)+"%</b>(趨勢腿 "+Math.round(momC*100)
+      +"% · VIX 腿 "+Math.round(vixC*100)+"%,取較高者)。"
+      +"下面是<b>另一組讀數</b>,它<b>不會</b>改變上面那個數字。"
+    : "<b>主訊號目前 0% —— 兩腿都尚未觸發。</b>"
+      +"下面是<b>另一組讀數</b>,它<b>不會</b>改變上面那個數字。"
+      +"下面亮燈不代表上面會跟著動,兩者各自回答不同的問題。";
   // 純文字 → textContent。sLast.ym 來自 CSV 的日期欄,是【外部字串】;
   // 專案規則是外部字串不得直接進 innerHTML,而這裡根本不需要 HTML。
   $("momdesc").textContent=`乖離 ${(sLast.mom*100).toFixed(1)}% · ${sLast.ym}`;
@@ -917,10 +945,16 @@ function renderRegime(s){
 
   $("flaglist").innerHTML=warn.flags.map(f=>{
     const cls="flag"+(f.triggered?" on":"")+(f.ok?"":" na");
+    // 已觸發(或沒得判斷)的那幾條,把門檻/狀態直接露在外面 —— 要點開才看得到
+    // 的條件,等於沒有寫。沒觸發的仍然收起來,否則六條全攤開會變成雜訊牆。
+    const inline=(f.triggered||!f.ok)
+      ? '<span class="frule">'+(f.ok?'已達門檻:':'沒得判斷 · 門檻:')
+        +'<code>'+esc(f.rule)+'</code></span>'
+      : '';
     return '<details class="'+cls+'"><summary>'
       +'<span class="dot"></span>'
       +'<span class="fl">'+esc(f.label)+'</span>'
-      +'<span class="fd">'+esc(f.detail)+'</span></summary>'
+      +'<span class="fd">'+esc(f.detail)+'</span>'+inline+'</summary>'
       +'<div class="fbody"><b>為什麼要看:</b>'+esc(f.why)
       +'<br><b>觸發條件:</b><code>'+esc(f.rule)+'</code>'
       +'<br><b>來源:</b>'+esc(f.source)+'</div></details>';
