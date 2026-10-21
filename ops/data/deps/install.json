@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "kind": "dependency-install",
+  "generated_at": "2026-10-21T00:14:00+00:00",
+  "phase": "success",
+  "resolution_complete": true,
+  "install_exit_code": 0,
+  "source": "ops/requirements.txt",
+  "inputs": {
+    "requirements.txt": "sha256:6b340c97e48b38a912fbd9f03ed41bbef165096c0c0e41045a726dd533160ce4"
+  },
+  "environment": {
+    "python": "3.12.15",
+    "platform": "linux-x86_64",
+    "runner_os": "Linux",
+    "runner_arch": "X64",
+    "pip": "26.2.2"
+  },
+  "run": {
+    "commit": "4ec5418a28488c385b2d2b0c5a057ff533f7d964",
+    "workflow": "L1 每日資料健檢",
+    "run_id": "39520031619",
+    "attempt": "1"
+  },
+  "distributions": {
+    "certifi": "2026.10.19",
+    "charset-normalizer": "3.5.2",
+    "idna": "3.20",
+    "numpy": "2.5.4",
+    "pandas": "2.3.3",
+    "pip": "26.2.2",
+    "python-dateutil": "2.9.0.post0",
+    "pytz": "2026.5",
+    "pyyaml": "6.0.3",
+    "requests": "2.34.2",
+    "six": "1.17.0",
+    "tzdata": "2026.5",
+    "urllib3": "2.8.0"
+  },
+  "n_distributions": 13,
+  "dedupe_key": "combo:529d5077517e109e",
+  "error": null
+}
