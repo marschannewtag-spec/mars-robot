@@ -182,6 +182,93 @@ def _summaries(html: str) -> list[str]:
     return re.findall(r"<summary>(.*?)</summary>", html, re.S)
 
 
+def test_no_background_token_is_used_as_a_text_colour() -> None:
+    """背景色 token 不得當成文字色 —— 那等於把字寫成隱形。
+
+    ⚠ 2026-10-25 實測到的線上故障,與上面那條同一次改動、同樣壞了五天:
+
+        #mainstate b{color:var(--ink)}
+
+    在這套設計 token 裡 `--ink`(#0E1726)是**頁面背景色**,不是「墨水色」。
+    結果那一行最重要的字(`主訊號目前 24%`)對比度 **1.13:1** —— 肉眼幾乎看不到。
+    文字色只有三個:`--text` / `--muted` / `--faint`。
+
+    名字會騙人:`ink` 聽起來像前景,實際是背景。**不要從 token 的名字推語意,
+    去看它被宣告成什麼。**
+
+    ⚠ 要先把 CSS 註解拿掉再比對 —— 上面那段說明裡就寫著 `color:var(--ink)`,
+    而字串比對會把說明本身判成違規,逼人刪掉最該留的註解。
+    (與 regime 那三條 AST 掃描同一個理由。)
+    """
+    html = INDEX.read_text(encoding="utf-8")
+    style = html[html.index("<style>"):html.index("</style>")]
+    clean = re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+
+    bad = []
+    for token in ("--ink", "--surf", "--surf2", "--line"):
+        for m in re.finditer(r"(?<![-\w])color:\s*var\(" + token + r"\)", clean):
+            line = clean[:m.start()].count("\n") + 1
+            bad.append(f"`{token}` 被當成文字色(<style> 第 {line} 行附近)")
+    assert not bad, (
+        "背景色 token 被當成文字色:\n  " + "\n  ".join(bad) + "\n\n"
+        "文字色請用 --text / --muted / --faint。"
+        "背景 token 當文字色的症狀是「看起來什麼都沒寫」,而測試不會紅。")
+
+
+def test_every_summary_child_has_a_place_in_the_grid() -> None:
+    """`.flag>summary` 是 grid —— **每一個子元素都必須有欄位可站**。
+
+    ⚠ 2026-10-25 實測到的線上故障,壞了五天:
+
+        .flag>summary{grid-template-columns:14px 1fr auto}   /* 三欄 */
+        <summary><span.dot><span.fl><span.fd><span.frule>    /* 四個子元素 */
+
+    第四個沒有明確放置,被自動排到**第二列第一欄**(寬 14px),
+    而它身上帶著 `margin-left:18px` —— 18 > 14,內容寬度被壓成 **0**,
+    文字變成一字一行。實測 `width=0, height=189px`,
+    兩條已觸發的警訊各佔掉半個螢幕。
+
+    **為什麼原本的測試沒抓到:** 它斷言 `.frule` 出現在 summary 的 HTML 裡,
+    而那是**字串存在**,不是那個宣稱(「看得到」)。span 確實在,只是寬度 0。
+    這是本 repo 第七次踩到「判準對準字串而非宣稱」。
+
+    **為什麼不用瀏覽器測:** jsdom 不做排版,`getBoundingClientRect()` 一律回 0,
+    量不出這個差別;而 L2 必須離線。所以改成查**機制**:
+    **排在宣告欄數之後的子元素,必須自己宣告 `grid-column`。**
+    這與「寬度 0」是同一件事的兩種說法,而這一種離線測得到。
+    """
+    html = INDEX.read_text(encoding="utf-8")
+
+    # 1) CSS 宣告了幾欄(預設 + 窄螢幕覆寫,兩個都要算)
+    decls = re.findall(r"\.flag>summary\{[^}]*?grid-template-columns:([^;}]+)", html)
+    assert decls, "找不到 `.flag>summary` 的 grid-template-columns —— 前提變了,請重寫這條"
+    col_counts = sorted({len(d.strip().split()) for d in decls})
+    assert col_counts, "欄數解析不出來"
+
+    # 2) renderRegime 實際產生的子元素,【依順序】
+    out = _with_signals(_signals())
+    summaries = _summaries(out["flaglist_html"])
+    assert summaries, "沒有產生任何 flag,這條測試沒在量東西"
+    orders = {tuple(re.findall(r'<span class="([\w-]+)"', s)) for s in summaries}
+    assert orders, "summary 裡抓不到任何 span"
+
+    # 3) 哪些 class 有宣告 grid-column(任何一處都算)
+    placed = set(re.findall(r"\.([\w-]+)\{[^}]*grid-column:", html))
+
+    problems = []
+    for cols in col_counts:
+        for order in orders:
+            for idx, cls in enumerate(order):
+                if idx >= cols and cls not in placed:
+                    problems.append(
+                        f"{cols} 欄的版型下,第 {idx + 1} 個子元素 `.{cls}` "
+                        f"排在欄數之外卻沒有宣告 grid-column")
+    assert not problems, (
+        "summary 的 grid 放不下它的子元素:\n  " + "\n  ".join(sorted(set(problems)))
+        + "\n\n沒有明確放置的子元素會被排到下一列的第一欄(只有 14px 寬),"
+          "文字擠成一字一行 —— 而畫面以外沒有任何症狀,測試也不會紅。")
+
+
 def test_a_triggered_flag_shows_its_threshold_without_clicking() -> None:
     """要點開才看得到的條件,等於沒有寫。
 
