@@ -73,11 +73,6 @@ def vix_cash(risk: float) -> float:
     return c
 
 
-def union_cash(mom_c: float, vix_c: float) -> float:
-    """聯集:兩腿取較高者。值域恆在 [0, 1]。"""
-    return max(mom_c, vix_c)
-
-
 # --------------------------------------------------------------------------
 # 月頻聚合
 # --------------------------------------------------------------------------
@@ -227,5 +222,15 @@ def signal_frame(sp_m: pd.DataFrame, vix_m: pd.DataFrame) -> pd.DataFrame:
 
     df["mom_cash"] = df["mom"].map(mom_cash)
     df["vix_cash"] = df["risk"].map(vix_cash)
+    # 聯集刻意**行內**,不抽成函式。三份實作都是這樣寫的:
+    #   Python  np.maximum(...)            ← 這一行
+    #   JS      Math.max(momC, vixC)       ← index.html
+    #   Pine    math.max(mc, vc)           ← CashWeightGauge.pine
+    #
+    # 2026-10-25 刪掉了一個叫 `union_cash()` 的函式:它存在過,有 docstring
+    # 寫著「聯集:兩腿取較高者」,看起來像這條規則的真理來源 ——
+    # **但沒有任何地方呼叫它**。改了它不會改變任何輸出,而讀的人不會知道。
+    # 那正是 FRED 那段被移除的形狀:**一段「文件宣稱有、實際沒接」的程式
+    # 比沒有更糟,它讓人停止懷疑。**
     df["cash"] = np.maximum(df["mom_cash"], df["vix_cash"])
     return df[["ym", "price", "mom", "risk", "mom_cash", "vix_cash", "cash"]]

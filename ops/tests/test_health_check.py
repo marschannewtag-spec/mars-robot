@@ -41,12 +41,47 @@ def cfg() -> dict:
 
 
 def _trading_days(start: date, n: int):
+    """從 `start` 往後數 n 個交易日。**結束日由 n 決定,會隨星期幾漂移。**
+
+    ⚠ 要造「新鮮資料」請用 `_trading_days_ending()`,不要用這一支往回推 ——
+      見那支的說明。
+    """
     out, d = [], start
     while len(out) < n:
         if d.weekday() < 5:
             out.append(d)
         d += timedelta(days=1)
     return out
+
+
+def _trading_days_ending(end: date, n: int):
+    """n 個交易日,**結束在 `end` 當天或之前最近的那個交易日**。
+
+    為什麼需要這一支(2026-10-25 實測踩到)
+    --------------------------------------
+    原本「新鮮資料」的對照組寫成 `_trading_days(today - 90, 60)`。
+    60 個交易日 = 12 個日曆週,所以結束日落在 `today - 6`(平日)——
+    但 `today` 是週末時,最後那個交易日是上週五,年齡變成 **8 或 9 天**,
+    而 `max_age_days` 是 7。
+
+    `實測`:模擬一整年,**365 天裡有 104 天(28%)會紅** ——
+    每個星期六(年齡 8)和星期日(年齡 9)。這條從 2026-08-13 就壞著,
+    73 天內 CI 一次都沒在週末跑過,所以沒有人看見。
+
+    **它是對照組**,存在的唯一理由是證明新鮮度檢查不是「什麼都報 FAIL」。
+    一個 28% 機率自己紅的對照組會被當成雜訊,而最省事的「修法」是把
+    `config.yml` 的 `max_age_days` 調大 —— 那是放寬生產閾值,是關警報。
+    判準沒有錯,錯的是 fixture 的錨點。
+
+    同一個檔案的 `test_a_dead_source_does_not_erase_local_data` 早就踩過
+    一次並正確處理了(從今天往回構造),只是這一處沒跟上。
+    """
+    out, d = [], end
+    while len(out) < n:
+        if d.weekday() < 5:          # 往回走,週末自然被跳過
+            out.append(d)
+        d -= timedelta(days=1)
+    return list(reversed(out))
 
 
 def write_sp(raw: Path, days, price=lambda i: 100.0 + i) -> str:
@@ -93,19 +128,85 @@ def test_stale_data_is_detected(sandbox: Path, cfg: dict) -> None:
     ]
 
 
+def _write_fresh_fixture(raw: Path, today: date) -> None:
+    """「三個來源都剛更新過」的 fixture。對照組與它的守衛共用同一支 ——
+
+    共用是刻意的:守衛若自己另造一份 fixture,就只證明了**守衛自己的**
+    構造方式沒問題,而對照組可以被改回會漂移的寫法卻仍然全綠。
+    判準要對準那個對象。
+    """
+    days = _trading_days_ending(today, 60)
+    write_sp(raw, days)
+    write_vix(raw, days)
+    (raw / fetch_data.SOURCES["shiller"].filename).write_text(
+        f"Date,SP500,Dividend,Long Interest Rate\n"
+        f"{today.isoformat()},3000,50,2.5\n",
+        encoding="utf-8", newline="\n")
+
+
 def test_fresh_data_is_not_flagged(sandbox: Path, cfg: dict) -> None:
     """對照組 —— 少了這條,上面那條可能只是「什麼都報 FAIL」。"""
-    days = _trading_days(hc.today_utc() - timedelta(days=90), 60)
-    write_sp(sandbox, days)
-    write_vix(sandbox, days)
-    (sandbox / fetch_data.SOURCES["shiller"].filename).write_text(
-        f"Date,SP500,Dividend,Long Interest Rate\n"
-        f"{hc.today_utc().isoformat()},3000,50,2.5\n",
-        encoding="utf-8", newline="\n")
+    _write_fresh_fixture(sandbox, hc.today_utc())
 
     st = statuses(hc.check_freshness(cfg))
     assert st["資料新鮮度 · sp_daily"] == hc.OK
     assert st["資料新鮮度 · shiller"] == hc.OK
+
+
+def test_the_control_group_is_green_on_every_day_of_the_year(
+        sandbox: Path, cfg: dict, monkeypatch) -> None:
+    """對照組在一年中的【任何一天】都必須是綠的 —— 跑真的那條路。
+
+    這條是 2026-10-25 那個 bug 的捕手。它不比對字串、也不另造 fixture:
+    把「今天」換成 365 個日期,每次都用對照組**同一支** fixture 建構子,
+    再跑**同一個** `check_freshness`。
+
+    `實測`(修之前):365 天裡 104 天會紅 —— 每個星期六(年齡 8)與
+    星期日(年齡 9)。原因是 `_trading_days(today-90, 60)` 的結束日由
+    交易日數決定,會隨星期幾漂移,而 `max_age_days` 是 7。
+    這條從 2026-08-13 就壞著,73 天內 CI 一次都沒在週末跑過,所以沒人看見。
+
+    ⚠ **這條紅的時候不准改 `config.yml` 的門檻。** 那是生產設定,調大會
+      真的削弱對停更的偵測 —— 判準沒有錯,錯的是 fixture 的錨點。
+
+    也不要用「今天跑跑看」代替它:今天是星期幾決定了它會不會紅,
+    而那正是問題本身。**時鐘/日曆相關的判準,要用與時鐘無關的方式去釘。**
+
+    ⚠ 已知限制(突變 M169 實測 survive):把這裡改成自己複製一份 fixture
+      建構邏輯、不再呼叫 `_write_fresh_fixture`,這條仍然會綠 ——
+      因為複製過去的那份當下是對的。要擋那個只能去斷言「這個函式有呼叫
+      那個函式」,而那是對準字串不是對準宣稱。**共用建構子是靠約定維持的,
+      不是靠測試** —— 改動這兩個函式時請一起看。
+    """
+    bad, seen = [], set()
+    for i in range(365):
+        today = date(2026, 1, 1) + timedelta(days=i)
+        seen.add(today.strftime("%a"))
+        monkeypatch.setattr(hc, "today_utc", lambda _t=today: _t)
+        _write_fresh_fixture(sandbox, today)
+        st = statuses(hc.check_freshness(cfg))
+        for name in ("資料新鮮度 · sp_daily", "資料新鮮度 · vix"):
+            if st[name] != hc.OK:
+                bad.append((today.isoformat(), today.strftime("%a"), name))
+
+    # 守衛自己不得被縮窄 —— 把迴圈改成只跑幾天,它就不再守任何東西,
+    # 而那個改動不會有任何其他症狀(突變 M168 實測 survive)。
+    assert seen == {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}, (
+        f"只走到 {sorted(seen)} —— 七種星期都要走到,否則週末那條路沒被測")
+
+    assert not bad, (
+        f"對照組在 {len(bad)} 個「今天」上不是綠的,前幾個:{bad[:6]}\n"
+        "fixture 的結束日漂移了 —— 要從今天往回構造,不要從起點往後數。\n"
+        "**不要改 config.yml 的門檻來讓它過**,那是放寬生產閾值。")
+
+
+def test_the_fresh_fixture_really_has_the_rows_it_promises() -> None:
+    """順帶釘住長度與排序 —— 換錨點時最容易順手弄壞的兩件事。"""
+    days = _trading_days_ending(date(2026, 10, 25), 60)   # 刻意挑一個星期日
+    assert len(days) == 60
+    assert days == sorted(days), "必須是遞增,write_sp 依序寫入"
+    assert all(d.weekday() < 5 for d in days), "混進了週末"
+    assert days[-1] == date(2026, 10, 23), "星期日的最後一個交易日應該是前一個星期五"
 
 
 def test_vix_out_of_range_and_duplicate_dates_are_detected(
