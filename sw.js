@@ -54,9 +54,31 @@ self.addEventListener("fetch", (e) => {
   if (url.origin !== self.location.origin) return;
 
   // ② HTML / 導覽 → 網路優先(重部署立即生效),離線才退回快取
+  //
+  // ⚠ `{ cache: "reload" }` 不是最佳化,是讓上面那句話變成真的。
+  //    GitHub Pages 回 `Cache-Control: max-age=600`(實測 2026-10-26),
+  //    而裸的 `fetch(req)` 會先問瀏覽器自己的 HTTP 快取 —— 於是「網路優先」
+  //    實際上是「**最多十分鐘前的網路**」:部署完成後使用者仍可能看到舊頁面,
+  //    而且沒有任何症狀,重新整理也沒用(回應是 200,只是來自本機快取)。
+  //
+  //    這裡【不能】用 `no-store`:那樣連寫回 HTTP 快取都不做,離線時瀏覽器
+  //    那層就什麼都不剩,兜底只剩下面的 Cache API。`reload` 是「略過讀、
+  //    但照常寫」。
+  //
+  //    代價是每次導覽都重新下載整頁(實測 77,642 bytes)。`no-cache` 可以
+  //    用條件式請求換成 304 + 0 bytes(實測),新鮮度保證完全相同 ——
+  //    兩者都不可能回到過期內容。要換的話只動這一個字,
+  //    test_the_navigation_can_never_be_served_a_stale_page 兩種都接受。
+  //
+  //    ⚠ 規格上這樣寫是安全的,但理由不直觀:`new Request(input, init)` 有一步
+  //      「If mode is "navigate", then throw a TypeError」。它只在 init 自己帶了
+  //      `mode` 時才會踩到 —— input 是 Request 時 fallbackMode 是 null,
+  //      所以 mode 是 null、不丟、而且原本的 "navigate" 會被原封不動保留。
+  //      (`靜態檢查`:WHATWG Fetch 規格 Request 建構式步驟原文,2026-10-26。
+  //       沒能實測:瀏覽器窗格不讓本機 SW 註冊。)
   if (req.mode === "navigate" || url.pathname.endsWith("/") || url.pathname.endsWith("index.html")) {
     e.respondWith(
-      fetch(req)
+      fetch(req, { cache: "reload" })
         .then((res) => {
           if (cacheable(res)) store(req, res);             // 別把 404 頁面存成離線首頁
           return res;

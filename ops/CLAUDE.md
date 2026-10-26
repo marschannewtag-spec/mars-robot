@@ -959,6 +959,15 @@ pip install -r ops/requirements.txt -r ops/requirements-test.txt
 
 改 `index.html` 的**任何**內容 → 把 `sw.js` 的 `CACHE = "cwgauge-vN"` 版本號 +1。
 
+`sw.js` 分支 ②(HTML / 導覽)的 `fetch` **必須帶一個不會回到過期內容的
+`cache` 模式**(`reload` / `no-cache` / `no-store`)。裸的 `fetch(req)` 會吃
+瀏覽器自己的 HTTP 快取,而 GitHub Pages 回 `max-age=600` —— 於是檔頭宣稱的
+「部署新版立即生效」會變成「最多十分鐘前的網路」,**而且完全沒有症狀**
+(回應是 200、SW 版本號正確、重新整理沒有用)。
+由 `tests/test_sw.py::test_the_navigation_can_never_be_served_a_stale_page`
+釘住,判準是執行期真的傳給 `fetch` 的那個 init,不是原始碼裡的字串。
+事故經過見 `POSTMORTEMS.md`。
+
 反過來單獨 +1(沒動 `index.html`)是安全的,效果是強制清一次所有使用者的快取 ——
 修掉快取污染類的問題時就該這樣做,否則舊的壞條目會留在使用者機器上。
 

@@ -113,6 +113,62 @@ def test_a_successful_navigation_is_still_cached(run: dict) -> None:
     assert run["scenarios"]["navigate_200"]["cachedUrl"]
 
 
+# ── 「網路優先」必須真的是網路 ──────────────────────────────────────────
+#
+# 2026-10-26 實測:GitHub Pages 對 index.html 回 `Cache-Control: max-age=600`。
+# 裸的 `fetch(req)` 會先問瀏覽器自己的 HTTP 快取,所以分支 ② 宣稱的
+# 「部署新版立即生效」實際上是「最多十分鐘前的網路」—— 而且完全沒有症狀:
+# 回應是 200、DevTools 看起來正常、重新整理也沒用。
+#
+# ⚠ 判準不是「原始碼裡有沒有 reload 這個字」。那條線會在任何一次分支改寫後
+#   繼續通過卻什麼都不保證。這裡問的是**執行期 SW 真的交代給 fetch 的那個
+#   init**,由 sw_bridge 記下來。
+#
+# 可接受的值 = 不可能回到過期內容的那幾個 RequestCache:
+#   reload   —— 略過讀快取,照常寫回
+#   no-store —— 完全不碰快取
+#   no-cache —— 一定向伺服器驗證(304 也算新鮮)
+# 被排除的是 default / force-cache / only-if-cached:它們都可能在
+# max-age 還沒過期時直接回舊的那一份,連一次往返都不做。
+
+
+_FRESH_CACHE_MODES = {"reload", "no-store", "no-cache"}
+
+
+def test_the_navigation_can_never_be_served_a_stale_page(run: dict) -> None:
+    """分支 ② 的網路呼叫,不得允許瀏覽器拿 HTTP 快取裡的舊頁面交差。"""
+    s = run["scenarios"]["navigate_200"]
+    calls = s["fetchLog"]
+    assert len(calls) == 1, (
+        f"導覽情境打了 {len(calls)} 次網路,預期 1 次 —— "
+        f"沒打的話下面那條是恆真的:{calls}")
+
+    init = calls[0]["init"] or {}
+    assert init.get("cache") in _FRESH_CACHE_MODES, (
+        f"分支 ② 用 cache={init.get('cache')!r} 去抓 HTML。\n"
+        "GitHub Pages 的 max-age=600 會讓這次請求可能完全不出門,"
+        "於是『部署新版立即生效』這句話是假的 —— 而且沒有任何症狀。\n"
+        f"可接受的值:{sorted(_FRESH_CACHE_MODES)}")
+
+
+def test_the_cache_first_branch_did_not_get_the_same_treatment(run: dict) -> None:
+    """控制組:證明上面那條量的是【分支 ②】,不是「每次 fetch 都被蓋章」。
+
+    沒有這一條的話,把 `cache:"reload"` 誤加在共用的地方(或橋接器自己
+    無條件記上一筆)也會讓上面綠燈 —— 那就又是一條讀不到東西的守衛。
+
+    分支 ③ 是快取優先,它走到 fetch 時本來就是 miss,略過 HTTP 快取
+    只是白白多下載一次,沒有新鮮度上的好處。
+    """
+    s = run["scenarios"]["static_200"]
+    assert len(s["fetchLog"]) == 1, f"靜態檔情境沒走網路:{s['fetchLog']}"
+    init = s["fetchLog"][0]["init"] or {}
+    assert "cache" not in init, (
+        f"分支 ③ 也被加上了 cache={init.get('cache')!r}。\n"
+        "它是快取優先,走到 fetch 就表示快取 miss —— 略過 HTTP 快取"
+        "換不到新鮮度,只換到一次多餘的下載。")
+
+
 # ── 分流規則 ────────────────────────────────────────────────────────────
 
 
