@@ -235,45 +235,69 @@ def test_the_orphan_fix_is_scoped_to_narrow_screens(css: str) -> None:
 # 3. 刻度字必須站在它所標示的轉折點上(2026-10-26 新增)
 # ==========================================================================
 
-def test_the_scale_labels_stand_on_the_gradient_stops(css: str) -> None:
-    """`.tempscale` 的四個字,位置必須等於 `.tempbar` 色帶的四個轉折。
+def test_the_scale_marks_the_thresholds_the_code_actually_uses(css: str) -> None:
+    """色條上的刻度,必須等於 `renderTemp()` 裡真正的分級門檻。
 
-    `實測`(2026-10-25,改之前):`.tempscale` 用 `justify-content:space-between`,
-    四個字平均落在 0 / 33 / 67 / 100%,而色帶的轉折在 0 / 42 / 70 / 100% ——
-    「警戒」兩個字站在色帶還是**綠色**的地方。
+    `實測`(2026-10-26,改之前)程式裡的分級是
 
-    這是一條**無聲**的錯誤:畫面看起來很正常,只是刻度指錯位置。
-    沒有人會因為「版面壞了」而發現它,只會因為照著它讀而讀錯。
+        uni<0.42 -> 警戒 ·  uni<0.90 -> 高風險 ·  否則 極端
 
-    這一條釘的是那個耦合本身:**改了色帶就一定要改刻度,反之亦然。**
-    判準不是比對 `42` 這個數字,是比對兩邊的清單相不相等 ——
-    哪天色帶的轉折調成 38/65,這條測試仍然在問對的問題。
+    而色條上寫的是「警戒 **42%**、高風險 **70%**、極端 **100%**」:
+
+    | 刻度字 | 標在 | 真相 |
+    |---|---|---|
+    | 警戒 | 42% | 那是警戒**結束**的地方 |
+    | 高風險 | 70% | 不是任何門檻,是區間中點 |
+    | 極端 | 100% | 它其實從 **90%** 就開始 |
+
+    三個都錯。而前一版的守衛要求「刻度字對齊**漸層轉折**」—— 漸層轉折
+    本身就不是門檻,所以那條測試只是把錯誤對得更整齊。
+    **判準對準了一個中間物,不是對準那個宣稱。**
+
+    現在門檻只寫一次(`.tempwrap` 的 `--t1` / `--t2`),刻度線 `.ttick`
+    與刻度字 `.tempscale span` 都讀同一個變數 —— 兩者**不可能再分岔**,
+    所以這條測試只需要問一件事:**那兩個變數等不等於程式裡的門檻。**
+
+    (把分岔的可能性消掉,不等於讓守衛閉嘴 —— 剩下的那個耦合仍然被檢查,
+    而且是唯一還能錯的地方。)
     """
-    bar = re.search(r"\.tempbar\{[^}]*linear-gradient\(90deg,([^)]*)\)", css, re.S)
-    assert bar, "找不到 `.tempbar` 的 linear-gradient —— 前提變了,請重寫這條"
-    stops = [int(v) for v in re.findall(r"(\d+)%", bar.group(1))]
-    assert len(stops) >= 3, f"色帶只解析到 {len(stops)} 個轉折 —— 這條測試沒在量東西"
-
     html = INDEX.read_text(encoding="utf-8")
+
+    # 1) 程式裡的門檻
+    fn = re.search(r"function renderTemp\([^)]*\)\{(.*?)\n\}", html, re.S)
+    assert fn, "找不到 renderTemp() —— 前提變了,請重寫這條"
+    thresholds = [float(v) for v in re.findall(r"uni<([\d.]+)\?", fn.group(1))]
+    assert len(thresholds) >= 2, (
+        f"從 renderTemp() 只解析到 {thresholds} —— 這條測試沒在量東西")
+
+    # 2) CSS 裡的門檻(單一來源)
+    declared = re.findall(r"--t(\d)\s*:\s*(\d+)%", css)
+    assert len(declared) == len(thresholds), (
+        f"程式有 {len(thresholds)} 個門檻,CSS 宣告了 {len(declared)} 個")
+    css_pct = [int(v) for _, v in sorted(declared)]
+    want_pct = [round(x * 100) for x in thresholds]
+    assert css_pct == want_pct, (
+        f"色條的刻度在 {css_pct}%,但 renderTemp() 的分級門檻是 {want_pct}%。\n"
+        "刻度標在不是門檻的地方,畫面上看起來完全正常 —— 只有照著它讀的人會讀錯。")
+
+    # 3) 刻度線與刻度字必須讀同一個變數,不得各自寫死
+    for sel in (r"\.ttick\.t1\{left:var\(--t1\)\}",
+                r"\.ttick\.t2\{left:var\(--t2\)\}",
+                r"\.tempscale span:nth-child\(1\)\{left:var\(--t1\)\}",
+                r"\.tempscale span:nth-child\(2\)\{left:var\(--t2\)\}"):
+        assert re.search(sel, css), (
+            f"找不到 `{sel}` —— 刻度線與刻度字必須讀同一個 --t 變數。\n"
+            "各自寫死百分比的話,改了一邊忘了另一邊不會有任何症狀。")
+
+    # 4) 刻度【字】本身就是那個門檻數字
     block = re.search(r'<div class="tempscale">(.*?)</div>', html, re.S)
     assert block, "找不到 `.tempscale` 的標記"
-    n_labels = len(re.findall(r"<span>", block.group(1)))
-    assert n_labels == len(stops), (
-        f"色帶有 {len(stops)} 個轉折,但刻度只有 {n_labels} 個字 —— "
-        "有一個轉折沒有人標,或有一個字站在沒有轉折的地方")
-
-    # 頭尾各自貼邊,中間的必須逐一對上
-    assert re.search(r"\.tempscale span:nth-child\(1\)\{left:0\}", css), \
-        "第一個刻度字沒有貼左緣"
-    assert re.search(rf"\.tempscale span:nth-child\({n_labels}\)\{{right:0\}}", css), \
-        "最後一個刻度字沒有貼右緣"
-
-    placed = [int(v) for v in
-              re.findall(r"\.tempscale span:nth-child\(\d+\)\{left:(\d+)%", css)]
-    assert placed == stops[1:-1], (
-        f"刻度字站在 {placed}%,但色帶的轉折在 {stops[1:-1]}%。\n"
-        "刻度字必須站在它所標示的那個轉折上,否則它在說謊 —— "
-        "而說謊的刻度在畫面上看起來完全正常。")
+    labels = re.findall(r"<span>([^<]*)</span>", block.group(1))
+    assert len(labels) == len(thresholds), (
+        f"刻度字有 {len(labels)} 個,門檻有 {len(thresholds)} 個。\n"
+        "刻度上【只】放門檻 —— 端點 0 與 100 不帶門檻資訊,是裝飾,已拿掉。")
+    assert [int(x) for x in labels] == want_pct, (
+        f"刻度字寫的是 {labels},但門檻是 {want_pct} —— 位置對了,字卻是別的數。")
 
 
 # ==========================================================================

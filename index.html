@@ -39,7 +39,7 @@
   /* 深色底上瀏覽器預設的焦點框幾乎看不見 —— 鍵盤使用者等於沒有游標。 */
   :where(a,button,summary,input):focus-visible{
     outline:2px solid var(--teal);outline-offset:2px;border-radius:6px}
-  /* 前庭失調的人會被 .allin 那個脈動與 0.9s 的水位動畫弄到不舒服。
+  /* 0.9s 的水位動畫與 0.7s 的色條動畫對前庭失調的人不友善。
      系統層級已經有這個偏好設定了,照做就好。 */
   @media(prefers-reduced-motion:reduce){
     *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
@@ -69,13 +69,16 @@
   /* HERO: gauge + readout */
   .hero{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px 20px;align-items:stretch;
     grid-template-areas:"ladder readout" "ladder legs" "ladder temp";
-    background:linear-gradient(160deg,var(--surf),var(--surf2));border:1px solid var(--line);
+    /* 平面表面,不用漸層。階層靠三階底色拉開:
+       頁面 --ink < 其他卡片 --surf < hero --surf2。
+       漸層曾經是 hero 唯一的區別手段,而那是裝飾;一階更亮的平面色做同一件事,
+       而且在任何螢幕上都一致(漸層在低色深的面板上會有色帶)。 */
+    background:var(--surf2);border:1px solid var(--line);
     border-radius:var(--r-xl);padding:18px 20px;position:relative;overflow:hidden}
-  /* 跟著水位變色的柔光。--hero-tint 由 paintLadder() 設,預設透明 ——
-     沒有資料時不該有顏色(與「失敗即靜默」同一條紀律:不確定就什麼都不說)。 */
-  .hero::after{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;
-    background:radial-gradient(125% 95% at 100% 0%,var(--hero-tint,transparent),transparent 62%)}
-  .hero>*{position:relative;z-index:1}
+  /* ⚠ 這裡曾經有一層跟著水位變色的柔光(radial-gradient + --hero-tint)。
+     它當初是為了填滿 hero 右半邊的空白 —— 而那塊空白後來被兩條腿填掉了,
+     於是它變成純裝飾。**簡約的意思就是純裝飾要刪掉,不是調淡。**
+     「今天多熱」已經由量尺填色、大數字、分級名稱三處表達,不缺第四處。 */
   /* signature: vertical cash ladder */
   /* ⚠ 這裡曾經有 `min-height:168px`,理由是「桌面版量尺被壓成方磚」。
      那是在治症狀:真正的原因是 hero 右欄只放了一個讀數所以太矮。
@@ -103,11 +106,11 @@
     transition:bottom .9s cubic-bezier(.2,.7,.2,1)}
   .readout{grid-area:readout;display:flex;flex-direction:column;justify-content:center;min-width:0}
   .readlab{font:600 11.5px/1.3 var(--sans);letter-spacing:.02em;color:var(--muted)}
+  /* 脈動動畫已刪。實心 teal 膠囊在一片深色裡本來就是最亮的東西,
+     再加一圈會呼吸的光暈是在喊第二次。顯示的時機沒有變。 */
   .allin{display:none;margin-left:8px;font:700 10.5px var(--sans);letter-spacing:.02em;
-    color:#04130d;background:var(--teal);padding:3px 8px;border-radius:20px;
-    box-shadow:0 0 0 0 rgba(45,212,191,.6);animation:pulse 2.4s infinite}
+    color:#04130d;background:var(--teal);padding:3px 8px;border-radius:999px}
   .allin.on{display:inline-block}
-  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(45,212,191,.5)}70%{box-shadow:0 0 0 7px rgba(45,212,191,0)}100%{box-shadow:0 0 0 0 rgba(45,212,191,0)}}
   .big{font:700 64px/0.95 var(--mono);letter-spacing:-.02em;margin:4px 0 2px;font-variant-numeric:tabular-nums}
   .big small{font-size:26px;color:var(--muted)}
   .verdict{font-size:13.5px;font-weight:600;margin-top:4px}
@@ -119,7 +122,12 @@
 
   /* risk temperature bar */
   /* 在 hero 裡面,所以不要自己的卡片外殼 —— 一條分隔線就夠了。 */
-  .tempwrap{grid-area:temp;border-top:1px solid var(--line);padding:13px 0 0}
+  /* ⚠ 門檻只在這裡寫一次。刻度線(.ttick)與刻度字(.tempscale span)
+     都讀這兩個變數,所以它們不可能再分岔。
+     值必須等於 renderTemp() 裡的分級門檻(uni<0.42 / uni<0.90),
+     由 test_the_scale_marks_the_thresholds_the_code_actually_uses 釘住。 */
+  .tempwrap{grid-area:temp;border-top:1px solid var(--line);padding:13px 0 0;
+    --t1:42%; --t2:90%}
   .templab{display:flex;align-items:baseline;gap:8px;
     font:600 11.5px var(--sans);letter-spacing:.02em;color:var(--muted)}
   /* 分級名稱現在是全頁唯一的那一個,給它應有的重量(但仍小於上面的 verdict,
@@ -127,23 +135,37 @@
   .templab b{font-size:13px;font-weight:700;letter-spacing:0}
   /* 上方 margin 要容得下 .tval(它定位在 top:-21px)。16px 時實測與
      .templab 重疊 5px —— 水位落在 20-30% 區間時那個數字會壓到「警戒」。 */
-  .tempbar{position:relative;height:13px;border-radius:7px;margin:24px 0 7px;
-    background:linear-gradient(90deg,#2DD4BF 0%, #FBBF24 42%, #FB923C 70%, #F43F5E 100%)}
-  .tmark{position:absolute;top:-4px;left:0;width:4px;height:21px;background:#fff;border-radius:2px;
-    box-shadow:0 0 7px rgba(0,0,0,.6);transition:left .7s cubic-bezier(.2,.7,.2,1)}
+  /* 平面軌道 + 進度填色。原本是一條四色彩虹,而彩虹在這裡其實是多餘的:
+     「現在多熱」由填色的【長度】說,顏色只需要一個(與量尺、大數字共用 riskColor)。
+     軌道從 13px 收到 6px —— 它是一條尺,不是一個色塊。 */
+  .tempbar{position:relative;height:6px;border-radius:999px;margin:24px 0 7px;
+    background:rgba(232,238,247,.10)}
+  .tfill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;
+    transition:width .7s cubic-bezier(.2,.7,.2,1)}
+  /* 真正的分級門檻,位置讀 .tempwrap 的 --t1 / --t2 */
+  .ttick{position:absolute;top:-2px;bottom:-2px;width:1px;background:rgba(232,238,247,.28)}
+  .ttick.t1{left:var(--t1)}
+  .ttick.t2{left:var(--t2)}
+  .tmark{position:absolute;top:-4px;left:0;width:2px;height:14px;background:#fff;border-radius:1px;
+    box-shadow:0 0 0 1px rgba(14,23,38,.55);transition:left .7s cubic-bezier(.2,.7,.2,1)}
   .tval{position:absolute;top:-21px;left:0;font:700 12px var(--mono);transform:translateX(-50%);
     transition:left .7s cubic-bezier(.2,.7,.2,1);font-variant-numeric:tabular-nums}
-  /* ⚠ 原本是 justify-content:space-between,四個字平均分佈在 0/33/67/100%,
-     但色帶的轉折在 0/42/70/100% —— 「警戒」兩個字落在色帶還是綠的地方。
-     刻度字必須站在它所標示的那個轉折上,否則它在說謊。
-     百分比與上面 .tempbar 的 linear-gradient 必須一致。 */
+  /* 刻度字 = 純數字,位置讀 --t1 / --t2(與刻度線同一個來源)。
+     ⚠ 它曾經寫的是「平靜 / 警戒 / 高風險 / 極端」,而且標錯位置:
+       「警戒」標在 42%(那是警戒【結束】的地方)、「高風險」標在 70%
+       (不是任何門檻)、「極端」標在 100%(它其實從 90% 就開始)。
+       分級名稱上一行已經寫了,而且那是全頁唯一的一個 —— 在刻度上再寫一次
+       既多餘又給了說謊的機會。數字不會說謊。
+     ⚠ 端點 `0` 與 `100` 也拿掉了:它們不帶任何門檻資訊,是裝飾。
+       範圍由三個地方說了 —— `.tval` 永遠印出當前值、上面的大數字是同一個
+       百分比、`.tempnote` 寫著「刻度＝現金水位」。而且 320px 下 `90` 與 `100`
+       只剩 2px 間距,讀起來像「90100」(實測)——
+       **碰撞只是症狀,真正的問題是那兩個數字本來就是多的。** */
   .tempscale{position:relative;height:14px;font:500 10px var(--sans);color:var(--faint);
     font-variant-numeric:tabular-nums}
-  .tempscale span{position:absolute;top:0;white-space:nowrap}
-  .tempscale span:nth-child(1){left:0}
-  .tempscale span:nth-child(2){left:42%;transform:translateX(-50%)}
-  .tempscale span:nth-child(3){left:70%;transform:translateX(-50%)}
-  .tempscale span:nth-child(4){right:0}
+  .tempscale span{position:absolute;top:0;white-space:nowrap;transform:translateX(-50%)}
+  .tempscale span:nth-child(1){left:var(--t1)}
+  .tempscale span:nth-child(2){left:var(--t2)}
   .tempnote{font-size:10.5px;line-height:1.62;color:var(--faint);margin-top:9px}
   .tempnote b{color:var(--muted)}
   /* 兩條腿在 hero 裡面:沒有外殼,左邊一條細線,與 #mainstate 同一個語彙。
@@ -249,7 +271,7 @@
   .flag .fd{font:600 11px var(--sans);color:var(--faint);text-align:right;
     font-variant-numeric:tabular-nums;white-space:nowrap}
   .flag.on{border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.07)}
-  .flag.on .dot{background:var(--amber);box-shadow:0 0 8px rgba(251,191,36,.8)}
+  .flag.on .dot{background:var(--amber)}
   .flag.on .fl,.flag.on .fd{color:var(--amber)}
   .flag.na .dot{background:transparent;border:1px dashed var(--faint)}
   .flag .fbody{padding:0 12px 11px 35px;font-size:11.5px;line-height:1.65;color:var(--faint)}
@@ -367,10 +389,12 @@
     <span>風險溫度 <b id="tempstate">·</b></span>
   </div>
   <div class="tempbar">
+    <i class="tfill" id="tfill"></i>
+    <i class="ttick t1"></i><i class="ttick t2"></i>
     <div class="tmark" id="tmark"></div>
     <div class="tval" id="tval">·</div>
   </div>
-  <div class="tempscale"><span>0 平靜</span><span>警戒</span><span>高風險</span><span>極端 100</span></div>
+  <div class="tempscale"><span>42</span><span>90</span></div>
   <div class="tempnote">刻度＝現金水位(已驗證聯集),<b>非獨立預測指標</b>,不預測跌幅</div>
 </div>
 </section>
@@ -737,10 +761,6 @@ function paintLadder(c){
   // 單一色,而且與大數字、溫度計指針共用 riskColor() —— 三處不可能再分岔。
   fill.style.background=riskColor(c);
   fill.style.clipPath="none";
-  // hero 的柔光:同一個 riskColor,只是換成低透明度。
-  // 只在這裡設,所以它不可能與量尺/大數字分岔 —— 三者是同一個運算式。
-  document.querySelector(".hero").style.setProperty(
-    "--hero-tint", riskColor(c).replace("rgb(","rgba(").replace(")",",.14)"));
   cap.style.bottom=(c*100)+"%";
   cap.style.display=c>0?"block":"none";
   // 刻度改成四分位(25/50/75),理由有兩個,都是實測出來的:
@@ -798,14 +818,12 @@ function drawChart(hist){
   x.beginPath();x.moveTo(px(0),cy(0));
   hist.forEach((d,i)=>x.lineTo(px(i),cy(d.cash)));
   x.lineTo(px(n-1),cy(0));x.closePath();
-  const g=x.createLinearGradient(0,pad.t,0,pad.t+ih);
-  g.addColorStop(0,"rgba(244,63,94,.45)");g.addColorStop(.4,"rgba(251,146,60,.30)");g.addColorStop(1,"rgba(45,212,191,.05)");
-  x.fillStyle=g;x.fill();
-  // cash outline
-  x.beginPath();hist.forEach((d,i)=>i?x.lineTo(px(i),cy(d.cash)):x.moveTo(px(i),cy(d.cash)));
-  // 現金是面積,不需要再用一條高對比的線描邊 —— 月頻階梯的鋸齒會變成畫面上
-  // 最吵的東西,而它旁邊那條 S&P(真正的脈絡)反而最淡。把權重對調過來。
-  x.strokeStyle="rgba(251,191,36,.5)";x.lineWidth=1.1;x.stroke();
+  // 平面填色,不用漸層。原本由上而下 rose -> orange -> teal,而那條漸層
+  // 暗示「越高越危險」—— 但高度【本身】已經是那個意思,顏色只是重講一次,
+  // 而且重講得不精確(漸層的轉折與任何門檻都無關)。
+  // 同一條序列只畫一層。原本是「面積 + 同色描邊」,兩層疊在一起只是把
+  // 同一件事畫兩次,而月頻階梯的方角本來就由面積自己畫出來了。
+  x.fillStyle="rgba(251,191,36,.22)";x.fill();
   // S&P line (log-normalized to panel)
   const ps=hist.map(d=>Math.log(d.price));const mn=Math.min(...ps),mx=Math.max(...ps);
   const sy=v=>pad.t+ih*(1-(v-mn)/(mx-mn||1))*.85-2;
@@ -865,6 +883,8 @@ function renderTemp(uni,momC,vixC){
   const pct=Math.round(uni*100);
   const c=riskColor(uni);
   $("tmark").style.left=pct+"%";
+  // 進度填色:長度說「多熱」,顏色與量尺、大數字共用同一個 riskColor。
+  $("tfill").style.width=pct+"%"; $("tfill").style.background=c;
   $("tval").style.left=pct+"%"; $("tval").textContent=pct; $("tval").style.color=c;
   const st=uni===0?"平靜":uni<0.42?"警戒":uni<0.90?"高風險":"極端";
   $("tempstate").textContent=st; $("tempstate").style.color=c;
