@@ -558,3 +558,58 @@ def test_the_canary_tests_the_lock_it_would_propose(canary: dict) -> None:
     assert "uv pip compile" not in relock["run"], (
         "在判斷要不要開 PR 的時候又重新產生了一次 —— 那一份沒有被測過"
     )
+
+
+def test_the_ci_trigger_covers_every_file_the_tests_read() -> None:
+    """測試會讀的每一個 repo 檔案,都必須能觸發 L2。
+
+    `實測`(2026-10-26,改之前)L2 的 `paths` 是
+    `index.html` / `ops/**` / `.github/workflows/ci.yml`,而測試會讀的是
+    `index.html` / `ops/**` / `sw.js` / `README.md` / `.github`。
+
+    漏掉的三個都有測試在看,而且漏得很安靜 —— 只改 `sw.js` 不會跑
+    `test_sw.py`,只改 `daily-health.yml` 不會跑那三組 workflow 契約測試。
+    `ops/CLAUDE.md` 甚至明文把「單獨 +1 sw.js」寫成一個安全的動作。
+
+    另一個後果是 PR 會卡死:**必要檢查有 paths 過濾時,沒碰到那些路徑的 PR
+    永遠拿不到那個檢查**,於是 mergeStateStatus 永遠 BLOCKED(PR #14 實測)。
+
+    判準不是「有沒有 paths」,是**測試讀得到的檔案,觸發條件涵不涵蓋它** ——
+    所以把 paths 加回來也可以,只要它是完整的。
+    """
+    import re as _re
+
+    root = Path(__file__).resolve().parents[2]
+    wanted = set()
+    for f in sorted((root / "ops/tests").glob("test_*.py")):
+        src = f.read_text(encoding="utf-8")
+        wanted |= set(_re.findall(r'REPO_ROOT\s*/\s*"([^"]+)"', src))
+    wanted = {w for w in wanted if not w.startswith("ops/")}   # ops/** 必定涵蓋
+    assert len(wanted) >= 3, f"只掃到 {wanted} —— 掃描可能壞了"
+
+    doc = yaml.safe_load((root / ".github/workflows/ci.yml")
+                         .read_text(encoding="utf-8"))
+    # ⚠ PyYAML 走 YAML 1.1,`on:` 會被解析成布林 **True**,不是字串 "on"。
+    #   直接 `doc["on"]` 會 KeyError —— 而那是 GitHub workflow 的經典陷阱
+    #   (寫這條測試時當場踩到)。兩個鍵都查。
+    on = doc.get("on", doc.get(True))
+    assert on is not None, "ci.yml 沒有觸發條件 —— 前提變了,請重寫這條"
+    for event in ("push", "pull_request"):
+        cfg = on.get(event) or {}
+        paths = cfg.get("paths") if isinstance(cfg, dict) else None
+        if paths is None:
+            continue                       # 沒有過濾 = 全部都會觸發
+        missing = []
+        for w in sorted(wanted):
+            ok = any(p == w or (p.endswith("/**") and
+                                (w == p[:-3] or w.startswith(p[:-2])))
+                     for p in paths)
+            if not ok:
+                missing.append(w)
+        assert not missing, (
+            f"`on.{event}.paths` 沒有涵蓋 {missing} —— 但有測試在讀它們。\n"
+            f"目前的 paths:{paths}\n"
+            "只改那些檔案時 L2 不會跑,而那不會有任何症狀:沒有紅燈、"
+            "沒有訊息,看起來就像通過了。\n"
+            "順帶:必要檢查有 paths 過濾時,沒碰到那些路徑的 PR 永遠拿不到"
+            "那個檢查,會一直停在 BLOCKED。")

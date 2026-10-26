@@ -4,16 +4,30 @@ name: L2 邏輯一致性
 # 不碰任何外部資料源。這是刻意的:否則 Yahoo 某天抽風就會讓 CI 變紅燈,
 # 你就分不清是「邏輯壞了」還是「資料源不舒服」。資料源的死活由 L1 每日健檢負責。
 
+# ⚠ 這裡【刻意沒有 paths 過濾】,2026-10-26 拿掉的。原本是:
+#
+#     push:         paths: [index.html, ops/**, .github/workflows/ci.yml]
+#     pull_request: paths: [index.html, ops/**]
+#
+# 它漏掉了三個有測試在看的東西,而且漏得很安靜:
+#
+#   | 只改這個                        | 有測試在看                     | 會跑嗎 |
+#   |---------------------------------|--------------------------------|--------|
+#   | sw.js                           | test_sw.py + sw_bridge.mjs     | 不會   |
+#   | .github/workflows/daily-health  | 心跳 / L1 失敗 / 年度健檢三組  | 不會   |
+#   | README.md                       | 文件對帳 / checksum 說明       | 不會   |
+#
+# 而 ops/CLAUDE.md 明文寫著「單獨 +1 sw.js(沒動 index.html)是安全的」——
+# 一個文件教你做、而且會跳過自己測試的流程。
+#
+# 第二個後果:**必要檢查有 paths 過濾時,沒碰到那些路徑的 PR 永遠拿不到
+# 那個檢查,於是永遠 BLOCKED**(PR #14 實測)。
+#
+# 拿掉它省下的只有「改 icon 時的兩分鐘」,代價是兩個會沉默的洞。
+# 由 test_dependency_policy.py::test_the_ci_trigger_covers_every_file_the_tests_read 釘住。
 on:
   push:
-    paths:
-      - "index.html"
-      - "ops/**"
-      - ".github/workflows/ci.yml"
   pull_request:
-    paths:
-      - "index.html"
-      - "ops/**"
   workflow_dispatch:
 
 permissions:
