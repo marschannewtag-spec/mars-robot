@@ -406,6 +406,119 @@ def test_the_scale_ticks_are_visible_against_the_empty_track(css: str) -> None:
         "而水位低(回測全期 59.3% 的月份現金是 0%)正是最常見的狀態。")
 
 
+def _ramp_stops(html: str) -> list[tuple[float, tuple[int, int, int]]]:
+    """從 `riskColor()` 的原始碼解析色階。
+
+    不寫死一份副本 —— 副本會在改色盤的那天安靜地變成「測試在量兩個月前的設計」。
+    """
+    m = re.search(r"const stops=\[(.*?)\];", html)
+    assert m, "找不到 riskColor() 的 stops —— 前提變了,請重寫這兩條"
+    out = []
+    for pos, r, g, b in re.findall(
+            r"\[\s*([\d.]+)\s*,\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]\s*\]",
+            m.group(1)):
+        out.append((float(pos), (int(r), int(g), int(b))))
+    assert len(out) >= 2, f"只解析到 {len(out)} 個 stop —— 這條測試沒在量東西"
+    return out
+
+
+def _ramp(stops, c: float) -> tuple[int, int, int]:
+    """重現 riskColor() 的線性內插。"""
+    for i in range(len(stops) - 1):
+        a, ca = stops[i]
+        b, cb = stops[i + 1]
+        if c <= b:
+            k = (c - a) / ((b - a) or 1)
+            return tuple(round(x + (y - x) * k) for x, y in zip(ca, cb))
+    return stops[-1][1]
+
+
+def _union_ladder() -> list[float]:
+    """聯集現金水位【真的會出現】的那幾個值,從引擎推出來,不寫死。"""
+    import engine
+
+    vals = set()
+    for i in range(-4000, 4001):
+        vals.add(engine.mom_cash(i / 10000))
+        vals.add(engine.vix_cash(i / 1000))
+    out = sorted(v for v in vals if v == v)        # 去掉 NaN
+    assert len(out) >= 5, f"只推出 {len(out)} 個階梯值 —— 這條測試沒在量東西"
+    return out
+
+
+def test_the_colour_ramp_matches_the_css_tokens(css: str) -> None:
+    """`riskColor()` 的四個 stop,必須逐位元等於 `:root` 的四個 token。
+
+    `實測`(2026-10-26):兩邊目前相同,**而且沒有任何東西在守它**。
+    同一個「安全色」在這個檔案裡存了兩份 —— 一份給 CSS(文字、膠囊、長條),
+    一份給 JS(大數字、水位條、歷史圖)。
+
+    改了一邊忘了另一邊,症狀是**畫面上同時出現兩種「同一個」顏色**,
+    而且不會有任何錯誤 —— 這是本 repo 反覆記錄的那個形狀:
+    兩端對同一份東西各有一個定義,而沒有人對帳。
+    """
+    html = INDEX.read_text(encoding="utf-8")
+    stops = _ramp_stops(html)
+    names = ["--teal", "--amber", "--orange", "--rose"]
+    assert len(stops) == len(names), (
+        f"色階有 {len(stops)} 個 stop,但語意色只有 {len(names)} 個 —— "
+        "兩邊的數量都變了的話,這條測試要重寫,不是放寬")
+
+    wrong = []
+    for (pos, rgb), name in zip(stops, names):
+        want = _rgba(_token(css, name))[:3]
+        if tuple(rgb) != tuple(round(v) for v in want):
+            wrong.append(f"{pos:.2f} 的 {rgb} vs {name} 的 "
+                         f"{tuple(round(v) for v in want)}")
+    assert not wrong, (
+        "riskColor() 的 stop 與 CSS token 不一致:\n  " + "\n  ".join(wrong) + "\n\n"
+        "同一個顏色存了兩份,改一邊忘了另一邊 —— 畫面上會同時出現兩種"
+        "「同一個」顏色,而且沒有任何錯誤訊息。兩份都要改。")
+
+
+def test_the_colour_ramp_only_gets_darker(css: str) -> None:
+    """水位越高,顏色必須越深(相對亮度單調不升)。
+
+    ⚠ 這條是 2026-10-26 使用者講出來的規則:「數字小淺、數字大深」。
+    量過之後發現它**當時不成立**:
+
+    | 水位 | 顏色 | 相對亮度 |
+    |---|---|---|
+    | 0% | `#2DD4BF` | 0.514 |
+    | 24% | amber | **0.579** ← 比 0% 還淺 |
+
+    也就是整條色階在最底下那一段是反的 —— 而那一段正是最常出現的狀態
+    (回測全期 59.3% 的月份現金是 0%)。
+    修法是把 0% 的 teal 提亮到 `#5EEAD4`(0.660),不是改 amber ——
+    amber 一壓暗,24% 與 30% 的層次就糊了。
+
+    ## 判準釘在哪幾個值上
+
+    只釘**聯集真的會輸出的那幾個階梯值**(由 `engine` 推出來,不寫死)。
+    不做連續掃描,理由是量過的:`實測` 密集掃描 0..1 會出現 177 個
+    「變淺」的點,但最大一次只有 **0.0018**,而相鄰階梯值之間最小的落差是
+    **0.0255** —— 差 14 倍。那是 `round()` 的 ±1 抖動,畫面上不存在,
+    因為畫面上只會出現那八個值。
+
+    **把抖動也釘住會讓這條測試在守一個不存在的東西。**
+    """
+    html = INDEX.read_text(encoding="utf-8")
+    stops = _ramp_stops(html)
+    ladder = _union_ladder()
+
+    rows = [(v, _ramp(stops, v), _luminance(_ramp(stops, v))) for v in ladder]
+    bad = []
+    for (v0, c0, l0), (v1, c1, l1) in zip(rows, rows[1:]):
+        if l1 > l0:
+            bad.append(f"{v0*100:.0f}% {c0} 亮度 {l0:.3f}  ->  "
+                       f"{v1*100:.0f}% {c1} 亮度 {l1:.3f}  (變淺了)")
+
+    assert not bad, (
+        "色階不是一路變深:\n  " + "\n  ".join(bad) + "\n\n"
+        "規則是「水位越高顏色越深」。顏色在這張圖上是第二條軸 —— "
+        "它反過來的那一段,讀的人會以為風險比較低。")
+
+
 # ==========================================================================
 # 5. 中文不得被設成等寬字(2026-10-26 新增)
 # ==========================================================================

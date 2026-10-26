@@ -29,7 +29,7 @@
     /* 色:四階表面 + 三階文字 + 四個語意色。不再增加。 */
     --ink:#0E1726; --surf:#16223A; --surf2:#1B2A45; --line:#26375A;
     --text:#E8EEF7; --muted:#8A9CB8; --faint:#5C6F90;
-    --teal:#2DD4BF; --amber:#FBBF24; --orange:#FB923C; --rose:#F43F5E;
+    --teal:#5EEAD4; --amber:#FBBF24; --orange:#FB923C; --rose:#F43F5E;
     /* 軌道底色:所有長條的空軌道共用這一個,不要各自寫 #0c1322。 */
     --track:rgba(232,238,247,.10);
 
@@ -732,8 +732,19 @@ function compute(spArr,vixRows){
 }
 
 // ---- rendering ----
+// 0..1 現金水位 -> 顏色。水位越高顏色越深(相對亮度越低)。
+//
+// ⚠ 這四個顏色在這個檔案裡存了【兩份】:這裡的 stops,與 :root 的
+//   --teal / --amber / --orange / --rose。兩份必須逐位元相同,
+//   由 test_the_colour_ramp_matches_the_css_tokens 釘住 ——
+//   改了一邊忘了另一邊,畫面上會同時出現兩種「同一個」顏色。
+//
+// ⚠ 第一個 stop 曾經是 #2DD4BF(亮度 0.514),而第二個 amber 是 0.579 ——
+//   也就是 0% 比 24% 更【深】,整條色階在最底下那一段是反的。
+//   提亮成 #5EEAD4(0.660)之後八個階梯值才真的一路變深。
+//   由 test_the_colour_ramp_only_gets_darker 釘住。
 function riskColor(c){ // 0..1 cash -> color
-  const stops=[[0,[45,212,191]],[.25,[251,191,36]],[.55,[251,146,60]],[1,[244,63,94]]];
+  const stops=[[0,[94,234,212]],[.25,[251,191,36]],[.55,[251,146,60]],[1,[244,63,94]]];
   for(let i=0;i<stops.length-1;i++){const[a,ca]=stops[i],[b,cb]=stops[i+1];
     if(c<=b){const t=(c-a)/(b-a||1);return`rgb(${ca.map((v,j)=>Math.round(v+(cb[j]-v)*t)).join(",")})`;}}
   return"rgb(244,63,94)";
