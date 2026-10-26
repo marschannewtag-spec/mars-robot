@@ -114,7 +114,21 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status,
   // 兩者共用一個 makeFetch(0) 的話,install 的 addAll 會先 reject,快取是空的,
   // 於是「離線但快取命中」根本到不了。
   let phase = installStatus;
-  const net = async (...a) => makeFetch(phase)(...a);
+  // 記下每一次網路呼叫【連同它的 init】。
+  //
+  // 為什麼要記 init:`fetch(req)` 與 `fetch(req, {cache:"reload"})` 在這個
+  // 假網路底下回一模一樣的東西,所以單看回應永遠分不出差別 —— 那是真的
+  // 瀏覽器 HTTP 快取層才看得到的差異,而這裡沒有那一層。
+  // 於是把「SW 到底交代了什麼」當成可觀測量:它不是字串比對,是這支程式
+  // 在執行期真的傳出去的那個物件,分支怎麼改寫都還量得到。
+  const fetchLog = [];
+  const net = async (...a) => {
+    fetchLog.push({
+      url: typeof a[0] === "string" ? a[0] : (a[0] && a[0].url) || null,
+      init: a[1] === undefined ? null : a[1],
+    });
+    return makeFetch(phase)(...a);
+  };
   const cachesObj = makeCaches(putErrors, () => net);
   const listeners = load(cachesObj, net);
 
@@ -123,6 +137,7 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status,
     await new Promise((done) => fn({ waitUntil: (p) => Promise.resolve(p).then(done, done) }));
   }
   phase = status;
+  fetchLog.length = 0;          // install 的 addAll 也走 net,那幾次不算
   const shellSize = (await (await cachesObj.open([...cachesObj.stores.keys()][0])).keys()).length;
 
   let responded = null;
@@ -156,6 +171,7 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status,
     cachedNow: after.length - shellSize,
     cachedUrl: after.includes(url),
     putErrors,
+    fetchLog,
     unhandled: unhandled.splice(0),
   };
 }
