@@ -93,10 +93,29 @@ def _media_block(css: str, query: str) -> str:
 
 
 def _token(css: str, name: str) -> str:
-    """`:root` 裡某個設計 token 的值。"""
-    m = re.search(re.escape(name) + r":\s*(#[0-9a-fA-F]{3,8})", css)
+    """`:root` 裡某個設計 token 的值(`#rrggbb` 或 `rgba(...)`)。
+
+    ⚠ 2026-10-26 擴充成也認得 `rgba()`。原本只認 `#rrggbb`,所以把共用的
+    軌道底色收成 `--track:rgba(...)` 這個 token 之後,下面的對比度守衛
+    就**讀不到顏色了** —— 而讀不到的守衛會直接 error,不是靜靜通過,
+    所以這次是當場發現的。收 token 與「守衛讀得到」兩件事要一起做。
+    """
+    m = re.search(re.escape(name) + r":\s*(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))", css)
     assert m, f"找不到 token {name}"
     return m.group(1)
+
+
+def _resolve(css: str, value: str) -> str:
+    """把 `var(--x)` 換成它的值。只展開一層以外再遞迴,找不到就原樣丟回去
+    讓 `_rgba()` 去報「看不懂的顏色」—— 不要在這裡悄悄給一個預設色,
+    那會讓守衛量到一個畫面上不存在的顏色。"""
+    v = value.strip()
+    for _ in range(4):
+        m = re.fullmatch(r"var\(\s*(--[\w-]+)\s*\)", v)
+        if not m:
+            return v
+        v = _token(css, m.group(1)).strip()
+    return v
 
 
 def _rgba(value: str) -> tuple[float, float, float, float]:
@@ -113,9 +132,9 @@ def _rgba(value: str) -> tuple[float, float, float, float]:
     return (float(m.group(1)), float(m.group(2)), float(m.group(3)), a)
 
 
-def _over(fg: str, bg: tuple[float, float, float]) -> tuple[float, float, float]:
-    """把 fg 疊在不透明的 bg 上,得到實際看到的顏色。"""
-    r, g, b, a = _rgba(fg)
+def _over(css: str, fg: str, bg: tuple[float, float, float]) -> tuple[float, float, float]:
+    """把 fg 疊在不透明的 bg 上,得到實際看到的顏色。fg 可以是 `var(--x)`。"""
+    r, g, b, a = _rgba(_resolve(css, fg))
     return tuple(a * c + (1 - a) * d for c, d in zip((r, g, b), bg))
 
 
@@ -179,32 +198,89 @@ def test_the_scale_value_has_room_above_the_bar(css: str) -> None:
 # 2. stat 不得在窄螢幕變成孤兒(突變 M173)
 # ==========================================================================
 
-def test_the_stat_strip_stays_one_column(css: str) -> None:
-    """`.strip` 在**每一個**宣告過的寬度下都只能有一欄。
+def test_the_stat_strip_never_leaves_an_orphan(css: str) -> None:
+    """`.strip` 的格子數除不盡欄數時,最後一張必須橫跨整列。
 
-    這條取代了原本的兩條孤兒守衛。`實測`(2026-10-26):三張 stat 塞進
-    兩欄,第三張獨佔半寬、右邊空一塊,所以當時加了一條跨欄規則,
-    又加了第二條守衛去釘那條跨欄規則只在窄螢幕生效(M188 就是在那裡逃掉的)。
+    `實測`(2026-10-25):三張 stat 塞進兩欄,第三張獨佔半寬(164px)、
+    右邊空一塊,邊緣參差。
 
-    改成單欄之後那一串全部不需要了 —— **孤兒按構造不可能出現**。
+    判準跟著實際的格子數走,不是寫死一個結論 —— 以後加第四張 stat,
+    四張配兩欄除得盡,就不再要求跨欄。
 
-    ⚠ 但「不可能出現」不等於可以把守衛拿掉。單欄那條舊守衛會**恆真**:
-      `3 % 1 == 0`,它直接 continue,一個斷言都不執行。
-      `實測`:改完之後它仍然是綠的,而它已經什麼都沒在量。
-      **讓問題不存在是對的;讓守衛閉嘴不是。** 所以判準換成那個新的宣稱
-      本身 —— 「只有一欄」—— 把欄數改回 2 或 3 它就會紅。
+    ## 這條測試的狀態,誠實寫在這裡
+
+    `實測`(2026-10-26 的版面):宣告的欄數是 **3**(≥561px)與 **1**(窄螢幕),
+    而 stat 有 3 張 —— 兩個都除得盡,所以**今天它不會對任何東西開火**。
+    它守的是「哪天有人把欄數改成 2 卻忘了跨欄規則」。
+
+    這跟「恆真」不一樣,差別在**前提會不會自己消失**:
+
+    | | |
+    |---|---|
+    | 恆真 | 判準讀不到東西,改什麼都不會紅(例如上一版 `3 % 1 == 0` 直接 continue,而那是**唯一**一條 strip 守衛) |
+    | 條件未觸發 | 判準讀得到真實資料,只是目前的值剛好合格 |
+
+    上面那個 `assert n_stats >= 2` 就是用來分辨這兩者的:**如果 stat 數讀不到,
+    它會紅,而不是安靜地通過。**
+
+    ⚠ 2026-10-26 這條被我換成過 `test_the_stat_strip_stays_one_column`
+    (當時版面是全頁單欄)。版面改回「桌面三等分」之後那條會紅 ——
+    紅得對,因為它釘的宣稱已經不是現在的宣稱了。換回來,不是放寬。
     """
+    html = INDEX.read_text(encoding="utf-8")
+    n_stats = len(re.findall(r'<div class="stat"', html))
+    assert n_stats >= 2, f"只找到 {n_stats} 張 stat —— 這條測試沒在量東西"
+
     values = _decl(css, ".strip", "grid-template-columns")
     assert values, "找不到 `.strip` 的 grid-template-columns —— 這條沒在量東西"
 
-    wide = [(v, len(_tracks(v))) for v in values if len(_tracks(v)) != 1]
-    assert not wide, (
-        "`.strip` 有多欄的宣告:"
-        + "、".join(f"`{v.strip()}`({n} 欄)" for v, n in wide) + "\n"
-        "多欄就會有「格子數除不盡欄數」的孤兒問題,而那需要一條跨欄規則"
-        "加一條守衛去釘它只在該生效的寬度生效。單欄沒有這個問題。\n"
-        "真的要改回多欄的話,把這條換回 test_the_stat_strip_never_leaves_an_orphan,"
-        "不要只是放寬它。")
+    span = _decl(css, ".strip .stat:last-child", "grid-column")
+
+    for value in values:
+        cols = len(_tracks(value))
+        if n_stats % cols == 0:
+            continue
+        assert span, (
+            f"{n_stats} 張 stat 配 {cols} 欄會剩下 {n_stats % cols} 張孤兒,"
+            "而 `.strip .stat:last-child` 沒有宣告 grid-column。"
+            "最後一張會獨佔一格、右邊空一塊。")
+        covered = _covered(span[0], cols)
+        assert len(covered) == cols, (
+            f"`.strip .stat:last-child{{grid-column:{span[0]}}}` 只跨了 "
+            f"{len(covered)} 欄,但要填滿一整列需要 {cols} 欄")
+
+
+def test_the_three_stats_are_laid_out_identically(css: str) -> None:
+    """三個即時指標必須共用同一套規則,不得有只給其中一格的特例。
+
+    規格要求「等寬、等高、標籤位置一致、數字對齊」。等寬等高由
+    `repeat(3, minmax(0,1fr))` 的 grid 保證;**真正會悄悄走鐘的是
+    「只改其中一格」** —— `實測`(2026-10-26 改之前):第三格的值帶著
+    `style="font-size:13px"`,另外兩格沒有,所以同一列三個數字兩種字級。
+
+    所以這條去量兩件事:
+      1. `.strip` 裡的三個 `.stat` 不得有 inline `style`
+      2. 不得有 `:nth-child` / `:last-child` 之類只選到其中一格的字級規則
+    """
+    html = INDEX.read_text(encoding="utf-8")
+    block = re.search(r'<div class="strip">(.*?)\n</div>', html, re.S)
+    assert block, "找不到 `.strip` 的標記"
+    inner = block.group(1)
+
+    n = len(re.findall(r'<div class="stat"', inner))
+    assert n == 3, f"`.strip` 裡有 {n} 個 .stat,預期 3 個 —— 這條沒在量東西"
+
+    inline = re.findall(r'<div class="(?:stat|k|x|y)"[^>]*(style="[^"]*")', inner)
+    assert not inline, (
+        f"即時指標裡還有 inline 樣式:{inline}。"
+        "一格有、另外兩格沒有,就是同一列出現兩種規格。"
+        "要改就改 `.stat` / `.stat .x`,三格一起改。")
+
+    picks = re.findall(r"\.stat[^{]*:(?:nth-child|last-child|first-child)[^{]*\{",
+                       css)
+    assert not picks, (
+        f"有只選到其中一格的 `.stat` 規則:{picks}。"
+        "三個指標要長得一樣,個別挑一格改就是在製造不一致。")
 
 
 # ==========================================================================
@@ -312,10 +388,10 @@ def test_the_scale_ticks_are_visible_against_the_empty_track(css: str) -> None:
     assert tick_decl, "找不到 `.ttick` 的 background"
 
     # 色條住在 hero 裡,所以它的底是 --surf2(不是頁面底色)。
-    surf = _rgba(_token(css, "--surf2"))[:3]
+    surf = _rgba(_resolve(css, _token(css, "--surf2")))[:3]
 
-    track = _over(track_decl[0], surf)
-    tick = _over(tick_decl[0], track)          # 刻度畫在軌道【上面】
+    track = _over(css, track_decl[0], surf)
+    tick = _over(css, tick_decl[0], track)          # 刻度畫在軌道【上面】
 
     tick_vs_track = _contrast(tick, track)
     track_vs_surf = _contrast(track, surf)

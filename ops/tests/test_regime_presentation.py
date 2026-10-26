@@ -55,7 +55,11 @@ def _node(bridge: Path, *args: str) -> dict:
 
 def test_the_main_signal_line_lives_inside_the_regime_panel(html: str) -> None:
     """兩個讀數要同時在視野裡,否則這整個改動沒有意義。"""
-    panel = html[html.index('<div class="panel" id="regimepanel">"'.rstrip('"')):]
+    # ⚠ 用 id 定位,不要用 `class="panel" id="regimepanel"` 那整串。
+    #    2026-10-26 版面整理把外殼 class 從 .panel 改成共用的 .block,
+    #    這條就 ValueError 了 —— 而它要釘的是「那一行在不在那塊面板裡」,
+    #    外殼叫什麼不是宣稱的一部分。**判準要對準宣稱,不要對準字串。**
+    panel = html[html.index('id="regimepanel"'):]
     panel = panel[:panel.index("</div>\n\n<details>")] if "</div>\n\n<details>" in panel \
         else panel[:4000]
     assert 'id="mainstate"' in panel, (
