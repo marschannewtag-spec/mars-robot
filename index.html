@@ -135,14 +135,19 @@
   .tempwrap{--t1:42%; --t2:90%}
   /* 上方 margin 要容得下 .tval(它定位在 top:-21px)。16px 時實測與
      上一行重疊 5px —— 水位落在 20-30% 區間時那個數字會壓到文字。 */
-  .tempbar{position:relative;height:6px;border-radius:999px;margin:24px 0 7px;
+  /* 高度 10px。曾經是 13px、收到 6px、再回到 10px —— 這一輪是使用者指定加粗。
+     ⚠ 加粗時指針與刻度線必須一起放大,否則它們會被條子吃掉:
+       .tmark 要維持上下各突出 4px(所以 height = bar + 8),
+       .ttick 的 top/bottom 負值也跟著走。只改 bar 一個數字的話,
+       指針會變成「條子裡的一小截白」,而它的工作是標出位置。 */
+  .tempbar{position:relative;height:10px;border-radius:999px;margin:24px 0 7px;
     background:var(--track)}
   .tfill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;
     transition:width .7s cubic-bezier(.2,.7,.2,1)}
-  .ttick{position:absolute;top:-2px;bottom:-2px;width:1px;background:rgba(232,238,247,.28)}
+  .ttick{position:absolute;top:-3px;bottom:-3px;width:1px;background:rgba(232,238,247,.28)}
   .ttick.t1{left:var(--t1)}
   .ttick.t2{left:var(--t2)}
-  .tmark{position:absolute;top:-4px;left:0;width:2px;height:14px;background:#fff;border-radius:1px;
+  .tmark{position:absolute;top:-4px;left:0;width:3px;height:18px;background:#fff;border-radius:2px;
     box-shadow:0 0 0 1px rgba(14,23,38,.55);transition:left .7s cubic-bezier(.2,.7,.2,1)}
   .tval{position:absolute;top:-21px;left:0;font:700 12px var(--mono);transform:translateX(-50%);
     transition:left .7s cubic-bezier(.2,.7,.2,1);font-variant-numeric:tabular-nums}
