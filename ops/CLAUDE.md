@@ -880,9 +880,23 @@ localStorage 的配額擔心掛了兩輪沒人動,實際量只花三十秒:222 K
 一個寫死在散文裡的「目前有 N 條測試」保證會過期,而過期的數字
 比沒有數字更糟:它看起來像事實。
 
-**整組 0 skip 是不變量**(不是現況)。跳過與通過的 exit code 相同,
+**跳過的只能是已知的那一條。** 跳過與通過的 exit code 相同,
 所以外部工具缺席一律 `pytest.fail`,由 `tests/test_js_bridge_policy.py`
 從守門員那一端釘住。
+
+⚠ 這裡原本寫的是「整組 0 skip 是不變量」。`實測`(2026-10-26):`main` 的 L2
+與 canary 都是 `553 passed, 1 skipped` —— **那句話兩個月來都是錯的,
+而且沒有任何東西會因為它錯而變色。**
+
+那一條是 `test_signals_contract.py::test_the_locally_produced_signals_file_is_strict_json`
+(`ops/data/signals.json` 在 `.gitignore` 裡,CI 上永遠不會有)。它跳過的理由
+正當,CI 那一側由另外兩條不依賴該檔的測試頂住。
+
+所以改成**白名單**:已知的那一條連同理由寫在
+`tests/test_reporting.py::_ALLOWED_SKIPS`,多一條或少一條都會紅
+(`test_the_only_skip_in_the_suite_is_the_known_one`)。
+這與「放寬閾值」的差別在於:**新的 skip 仍然會被抓到**,
+而那正是原本那句不變量想守的事。
 
 突變測試累計 **189 個**:180 被抓到、4 個等價突變(見上,含 M182 ——
 把量尺刻度改成深色,算過對比 1.36:1 仍然看得見,**它應該 survive**)、

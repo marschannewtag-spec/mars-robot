@@ -224,13 +224,21 @@
     border-left:2px solid var(--line);padding:6px 0 6px 10px;margin-bottom:12px}
   #mainstate b{color:var(--text)}
   .domwrap{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;margin-bottom:4px}
-  .domlead{font:700 24px var(--sans);line-height:1.15;margin-top:3px}
+  /* ⚠ 這裡曾經有 `.domlead`(24px 的「美國」)。刪掉的理由是**它與排行榜
+     第一列說的是同一件事**,而且相距不到 60px。
+     留下的是排行榜 —— 它多講了「領先多少」,大標題講不出來。
+     答案改由第一列自己承擔:`.domrow.top` 轉成正文色 + 一個 `主體` 膠囊,
+     與兩條腿的 `主導` 膠囊是同一個語彙。 */
   .domscores{display:flex;flex-direction:column;gap:3px;min-width:0}
-  .domrow{display:grid;grid-template-columns:34px 1fr 42px;align-items:center;gap:8px;
+  /* 第一欄放得下「名稱 + 主體膠囊」,而且是【固定】寬度:每一列各自是一個
+     grid,用 auto 的話每列會自己算,六列的長條就對不齊了。 */
+  .domrow{display:grid;grid-template-columns:66px 1fr 42px;align-items:center;gap:8px;
     font:600 10.5px var(--sans);color:var(--faint)}
+  .domrow .dn{display:flex;align-items:center;gap:5px;white-space:nowrap}
+  .domrow .pill{font-size:9.5px;padding:1px 6px}
   .domrow .dbar{height:7px;background:var(--track);border-radius:999px;overflow:hidden}
   .domrow .dbar i{display:block;height:100%;border-radius:999px;background:var(--faint)}
-  .domrow.top{color:var(--text)}
+  .domrow.top{color:var(--text);font-size:11.5px}
   .domrow.top .dbar i{background:var(--teal)}
   .domrow .dnum{text-align:right;font:600 10.5px var(--mono);font-variant-numeric:tabular-nums}
 
@@ -419,7 +427,6 @@
   <div class="domwrap">
     <div>
       <div class="lab">目前金融主體</div>
-      <div class="domlead" id="domleader">··</div>
       <div class="ddspan" id="dommargin"></div>
     </div>
     <div class="domscores" id="domscores"></div>
@@ -1082,14 +1089,16 @@ function renderRegime(s){
   // ── 主體判定 ──
   const scores=dom.scores||{};
   const names=Object.keys(scores).sort((a,b)=>scores[b]-scores[a]);
-  $("domleader").textContent=dom.leader||"資料不足";
-  $("domleader").style.color=dom.leader?"var(--teal)":"var(--faint)";
+  // 「誰是主體」只說一次 —— 說在排行榜第一列自己身上(`主體` 膠囊),
+  // 不再另外立一個大標題。沒有主體時由 #dommargin 說「可用市場不足」。
   $("dommargin").textContent=dom.leader
     ? ("領先第二名 "+(dom.margin==null?"—":dom.margin+"×")+" · 近"+(dom.window==="2y"?"兩年":dom.window)+"日報酬")
     : "可用市場不足,不下結論";
   const max=names.length?scores[names[0]]:0;
   $("domscores").innerHTML=names.map((n,i)=>
-    '<div class="domrow'+(i===0?" top":"")+'"><span>'+esc(n)+'</span>'
+    '<div class="domrow'+(i===0&&dom.leader?" top":"")+'">'
+    +'<span class="dn">'+esc(n)
+    +(i===0&&dom.leader?'<i class="pill">主體</i>':"")+'</span>'
     +'<span class="dbar"><i style="width:'+(max>0?Math.round(scores[n]/max*100):0)+'%"></i></span>'
     +'<span class="dnum">'+scores[n].toFixed(2)+'</span></div>').join("");
 
