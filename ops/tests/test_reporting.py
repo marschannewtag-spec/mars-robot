@@ -1315,6 +1315,96 @@ def _strings_in(node, consts: dict) -> list[str]:
     return out
 
 
+# pytest 真正用來跳過的那幾個 API。
+#
+# ⚠ 不要寫成 `name.endswith("skip")`。第一版就是那樣,結果抓到上面那個
+#   **叫做 `_is_tool_skip` 的函式呼叫** —— 一個名字結尾剛好是 skip 的
+#   自家工具。判準又一次對準了字串而不是那個宣稱(「有沒有呼叫 pytest
+#   的跳過 API」)。`實測`:第一版跑出來的唯一「違規」就是那個誤判。
+_SKIP_APIS = frozenset({
+    "pytest.skip", "pytest.xfail",
+    "pytest.mark.skip", "pytest.mark.skipif",
+    "skip", "skipif",          # from pytest import skip 這種寫法
+})
+
+
+def _skip_sites() -> list[str]:
+    """整組測試裡每一個跳過呼叫的位置,寫成 `檔名::函式`。
+
+    與上面那條工具缺席掃描共用 AST,理由相同:文字掃描會掃到說明自己。
+    """
+    import ast
+
+    sites: list[str] = []
+    for f, tree in _test_sources():
+        stack: list[str] = []
+
+        def walk(node, fn=None):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    walk(child, child.name)
+                    continue
+                if isinstance(child, ast.Call):
+                    if _dotted(child.func) in _SKIP_APIS:
+                        sites.append(f"{f.name}::{fn or '<module>'}")
+                walk(child, fn)
+
+        walk(tree)
+    return sorted(set(sites))
+
+
+# 唯一允許跳過的那一條,連同它為什麼跳。
+#
+# `ops/data/signals.json` 在 .gitignore 裡,而 L2 的 CI job 只做
+# checkout + 裝相依 + 跑 pytest —— 沒有任何一步會產生它。
+# 這條測試在**有真檔案的機器**上(開發機、每日健檢的 runner)才有對象,
+# 它量的是真的被寫出來的那一份,不是合成的 payload。
+# CI 那一側的覆蓋由 test_write_signals_rejects_non_finite 與
+# test_signals_mirror.py 的瀏覽器判準頂住,兩者都不依賴這個檔存在。
+_ALLOWED_SKIPS = {
+    "test_signals_contract.py::test_the_locally_produced_signals_file_is_strict_json",
+}
+
+
+def test_the_only_skip_in_the_suite_is_the_known_one() -> None:
+    """跳過的只能是已知的那一條。多一條、少一條,都要有人看一眼。
+
+    ⚠ 這條取代了一句**假話**。ops/CLAUDE.md 原本寫「整組 0 skip 是不變量」,
+    而 `實測`(2026-10-26)`main` 的 L2 與 canary 都是
+    `553 passed, 1 skipped` —— 那句話兩個月來都是錯的,
+    **而且沒有任何東西會因為它錯而變色。**
+
+    為什麼不是把那條 skip 改掉:它跳過的理由是正當的(見 `_ALLOWED_SKIPS`
+    上面那段),改成「沒有檔案就用合成資料」會讓它變成另一條測試 ——
+    那條測試已經存在了,就在它隔壁。
+
+    為什麼不是把不變量刪掉:跳過與通過的 **exit code 相同**,
+    沒有人盯著的話,下一條 skip 會安靜地混進來,而輸出只少一個點。
+    這正是本 repo 反覆記錄的 SKIP/PASS 同形問題。
+
+    所以改成**白名單**:已知的那一條寫下來連同理由,其他一律紅。
+    這和「放寬閾值」的差別在於 —— **新的 skip 仍然會被抓到**,
+    而那正是原本那句不變量想守的事。
+    """
+    found = set(_skip_sites())
+    assert found, "掃描沒掃到任何 skip —— 這條測試沒在量東西(判準或掃描器壞了)"
+
+    extra = sorted(found - _ALLOWED_SKIPS)
+    gone = sorted(_ALLOWED_SKIPS - found)
+
+    assert not extra, (
+        "多了沒有登記過的 skip:\n  " + "\n  ".join(extra) + "\n\n"
+        "跳過與通過的 exit code 相同 —— 一條新的 skip 在輸出上只少一個點,"
+        "CI 照樣綠。要嘛讓它不跳過(conftest 的 require_* 會硬失敗),"
+        "要嘛把它連同【為什麼】寫進 _ALLOWED_SKIPS。\n"
+        "⚠ 寫進白名單不是免死金牌:理由要寫得讓下一個人能判斷它還成不成立。")
+
+    assert not gone, (
+        "白名單裡的 skip 不見了:\n  " + "\n  ".join(gone) + "\n\n"
+        "可能是好事(它終於不跳過了),但白名單要跟著清掉 —— "
+        "一個指向不存在對象的例外,下次會變成「這裡本來就允許跳過」的誤解。")
+
+
 def _module_str_consts(tree) -> dict:
     import ast
 
