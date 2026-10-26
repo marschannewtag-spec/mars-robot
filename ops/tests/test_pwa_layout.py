@@ -332,7 +332,130 @@ def test_the_ladder_ticks_are_visible_against_the_empty_track(css: str) -> None:
 
 
 # ==========================================================================
-# 5. 門檻文字必須落在有寬度的軌道上(突變 M171)
+# 5. 中文不得被設成等寬字(2026-10-26 新增)
+# ==========================================================================
+
+CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def _element_text(html: str, start: int, raw: bool = False) -> str:
+    """從某個開始標籤的位置,取出它整棵子樹的文字 —— **數標籤**,不要用正則。
+
+    (與 `_media_block` 同一個理由:巢狀的東西正則數不了。`.templab` 的中文
+    在子層的 `<span>` 裡,只看直接文字會漏掉 —— 而它正是出過問題的那一個。)
+    """
+    tag = re.match(r"<(\w+)", html[start:]).group(1)
+    i = html.index(">", start) + 1
+    depth, out = 1, []
+    opener = re.compile(r"<(/?)" + tag + r"[\s>/]", re.I)
+    while depth and i < len(html):
+        m = opener.search(html, i)
+        if not m:
+            break
+        out.append(html[i:m.start()])
+        i = html.index(">", m.start()) + 1
+        depth += -1 if m.group(1) else 1
+    inner = "".join(out)
+    return inner if raw else re.sub(r"<[^>]*>", " ", inner)
+
+
+def _elements_with(html: str, token: str, kind: str, raw: bool = False) -> list[str]:
+    """帶有某個 class 或 id 的元素,各自的子樹文字(`raw=True` 回原始 HTML)。"""
+    attr = "class" if kind == "." else "id"
+    pat = re.compile(r'<\w+[^>]*\b' + attr + r'="[^"]*(?<![\w-])'
+                     + re.escape(token) + r'(?![\w-])[^"]*"')
+    return [_element_text(html, m.start(), raw=raw) for m in pat.finditer(html)]
+
+
+def _elements_for(html: str, selector: str) -> list[str]:
+    """一條(單一)選擇器真正選到的那些元素的文字。
+
+    ⚠ 要看的是**最後一段**。第一版只抓選擇器裡最後一個 `.class`/`#id`,
+    於是 `.warnhead b` 被解讀成 `.warnhead`,量到的是整個
+    `外部早期警訊 2 / 6`,而真正被選到的 `<b>` 裡只有 `2 / 6`(數字,
+    本來就該是等寬)—— **偽陽性,量錯了對象**。`.fine code` 同理。
+
+    所以:最後一段若是純標籤,就先定位它的祖先,再在祖先的子樹裡找該標籤。
+    """
+    segs = [s for s in re.split(r"[\s>+~]+", selector.strip()) if s]
+    if not segs:
+        return []
+    last = segs[-1]
+    m = re.findall(r"([.#])([\w-]+)", last)
+    if m:
+        kind, token = m[-1]
+        return _elements_with(html, token, kind)
+
+    # 最後一段是標籤(b / code / summary …):在祖先的子樹裡找它
+    tag = re.match(r"[\w-]+", last)
+    if not tag:
+        return []
+    anc = re.findall(r"([.#])([\w-]+)", " ".join(segs[:-1]))
+    scopes = ([html] if not anc
+              else _elements_with(html, anc[-1][1], anc[-1][0], raw=True))
+    out = []
+    for scope in scopes:
+        for mm in re.finditer(r"<" + tag.group(0) + r"[\s>]", scope):
+            out.append(_element_text(scope, mm.start()))
+    return out
+
+
+def test_no_chinese_label_is_set_in_the_monospace_face(css: str) -> None:
+    """`--mono` 沒有中文字 —— 把中文設成等寬,等於一個標籤裡兩套字體。
+
+    `實測`(2026-10-26,改之前)六個標籤踩到:`.readlab`(建議現金比重)、
+    `.templab`(風險溫度)、`.ddlab`(目前距高點)、`.warnhead`(外部早期警訊)、
+    `.card .t`(趨勢動能腿)、`.stat .k`(VIX 現值)。中文掉到系統字體、
+    拉丁與數字留在等寬,兩邊字重與基線都不一樣 —— 而且還套了
+    **只對拉丁大寫有意義的字距**(最多 1.98px)。中文沒有字距這個傳統。
+
+    那就是「看起來像機器排的」的來源,而它不會讓任何東西變紅。
+
+    判準不是白名單,是**真的去看那條規則選到的元素裡有沒有中文**。
+    所以新增一個裝中文的等寬規則,這條會紅;而
+    `.eyebrow`(純拉丁)、`.big` / `.ddbig`(數字)、`code`(代碼)不受影響。
+
+    ## 這一條【測不到】什麼 —— 兩個已證實的洞
+
+    **它只看得到 HTML 裡寫死的字。** 兩個實測過的例子(突變 M194 / M195
+    都因此 survive,那是預期的,不是判準弱):
+
+    | 元素 | 為什麼看不到 |
+    |---|---|
+    | `#sfresh` 的值(剛剛 / 3 小時前) | 由 `render()` 寫入,靜態檔裡是 `··` |
+    | `.flag .fbody code` 的門檻原文 | `實測`:靜態 body 裡 `class="fbody"` 出現 **0 次**,`#flaglist` 是空的;文字來自 `signals.json` 的 `f.rule`,是**外部資料** |
+
+    第二個尤其值得記:那段中文**根本不在這個檔案裡**,所以任何靜態分析都看不到。
+    要抓它只能在真的瀏覽器裡量字體 —— 而 L2 必須完全離線,
+    jsdom 也不做 `var()` 的串接解析。**所以這個洞是知道的、量過的、刻意留著的。**
+    留在這裡是為了讓下一個人不必重新發現它。
+    """
+    html = INDEX.read_text(encoding="utf-8")
+    body = html[html.index("</style>"):]
+
+    rules = re.findall(r"([^{}]+)\{([^}]*var\(--mono\)[^}]*)\}", css)
+    assert len(rules) >= 6, f"只找到 {len(rules)} 條等寬規則 —— 掃描可能壞了"
+
+    bad = []
+    for selector, body_decl in rules:
+        for part in selector.split(","):
+            for text in _elements_for(body, part):
+                hit = CJK.findall(text)
+                if hit:
+                    sample = re.sub(r"\s+", " ", text).strip()[:24]
+                    bad.append(f"`{part.strip()}` 選到的元素含中文:「{sample}」")
+                    break
+
+    assert not bad, (
+        "下列規則把中文設成了等寬字:\n  " + "\n  ".join(sorted(set(bad))) + "\n\n"
+        "`--mono` 沒有中文字,中文會掉到系統字體 —— 同一個標籤裡兩套字體、"
+        "兩種字重與基線。等寬字留給數字與代碼,文字用 `--sans`。\n"
+        "順帶:`letter-spacing` 是拉丁全大寫標題的語彙,中文沒有這個傳統,"
+        "套上去只會讓字散掉。")
+
+
+# ==========================================================================
+# 6. 門檻文字必須落在有寬度的軌道上(突變 M171)
 # ==========================================================================
 
 def test_the_threshold_text_sits_on_a_flexible_track(css: str) -> None:
