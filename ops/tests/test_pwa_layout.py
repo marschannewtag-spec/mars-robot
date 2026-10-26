@@ -92,6 +92,48 @@ def _media_block(css: str, query: str) -> str:
     raise AssertionError(f"{query} 的大括號沒有配對完成")
 
 
+def _token(css: str, name: str) -> str:
+    """`:root` 裡某個設計 token 的值。"""
+    m = re.search(re.escape(name) + r":\s*(#[0-9a-fA-F]{3,8})", css)
+    assert m, f"找不到 token {name}"
+    return m.group(1)
+
+
+def _rgba(value: str) -> tuple[float, float, float, float]:
+    """`#rrggbb` 或 `rgba(r,g,b,a)` -> (r, g, b, alpha)。"""
+    v = value.strip()
+    m = re.fullmatch(r"#([0-9a-fA-F]{6})", v)
+    if m:
+        h = m.group(1)
+        return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 1.0)
+    m = re.fullmatch(r"rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*"
+                     r"(?:,\s*([\d.]+)\s*)?\)", v)
+    assert m, f"看不懂的顏色:{value!r}(這條測試只認得 #rrggbb 與 rgba())"
+    a = float(m.group(4)) if m.group(4) is not None else 1.0
+    return (float(m.group(1)), float(m.group(2)), float(m.group(3)), a)
+
+
+def _over(fg: str, bg: tuple[float, float, float]) -> tuple[float, float, float]:
+    """把 fg 疊在不透明的 bg 上,得到實際看到的顏色。"""
+    r, g, b, a = _rgba(fg)
+    return tuple(a * c + (1 - a) * d for c, d in zip((r, g, b), bg))
+
+
+def _luminance(rgb: tuple[float, float, float]) -> float:
+    """WCAG 相對亮度。"""
+    def lin(c: float) -> float:
+        c /= 255
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+    r, g, b = (lin(c) for c in rgb)
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: tuple[float, float, float], b: tuple[float, float, float]) -> float:
+    la, lb = _luminance(a), _luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
 def _covered(grid_column: str, n_tracks: int) -> list[int]:
     """`grid-column: a/b` 覆蓋哪幾條軌道(1-based)。"""
     parts = [p.strip() for p in grid_column.split("/")]
@@ -239,27 +281,54 @@ def test_the_scale_labels_stand_on_the_gradient_stops(css: str) -> None:
 # ==========================================================================
 
 def test_the_ladder_ticks_are_visible_against_the_empty_track(css: str) -> None:
-    """`.ladder .rung` 的顏色不得等於 `.ladder` 的底色。
+    """刻度線與軌道的對比,不得低於**軌道與頁面底色**的對比。
 
-    `實測`(2026-10-25):兩邊都是 `#0c1322`。後果是刻度**只有被填滿的那一段
-    看得見** —— 水位 24% 時整支量尺就是一個黑盒子,四條刻度線一條都看不到。
-    它從來沒有「壞掉」過,它只是從來沒有出現過。
+    `實測`(2026-10-25):兩邊的 background 都是 `#0c1322`。後果是刻度
+    **只有被填滿的那一段看得見** —— 水位 24% 時整支量尺就是一個黑盒子。
+    它從來沒有「壞掉」過,**它只是從來沒有出現過**:沒有 console 錯誤、
+    沒有版面位移、沒有任何測試會紅。
 
-    同色不會有任何症狀:沒有 console 錯誤、沒有版面位移、沒有測試會紅。
-    只有真的去看畫面的人才會發現「咦,刻度呢」—— 而那正是這一組測試
-    存在的理由(見模組說明:綠燈不代表不用看畫面;這一條是把其中
-    **看得到的那一半**變成綠燈看得見)。
+    ⚠ 第一版的判準是「兩個字串不相等」。那擋得住 `#0c1322` vs `#0c1322`,
+    擋不住 `rgba(232,238,247,.056)` vs `rgba(232,238,247,.055)` ——
+    差 0.001、肉眼完全沒有線,而字串不相等。**判準對準的是字串,不是
+    「看得見」**(這個 repo 反覆踩的那個形狀,我在同一個檔案裡又寫了一次)。
+
+    門檻刻意**不寫死數字**,而是拿軌道自己當尺:
+
+        contrast(刻度線, 軌道)  >=  contrast(軌道, 頁面底色)
+
+    白話是「刻度至少要和軌道本身一樣看得出來」—— 軌道看得出來是一支量杯,
+    刻度就該看得出來是刻度。改了調色盤不必回來調這條。
+
+    `實測`(2026-10-26 的配色):刻度/軌道 **1.60**,軌道/頁面 **1.31**,通過。
+
+    這條**不管刻度是比軌道亮還是比軌道暗** —— 深色的線一樣看得見。
+    亮度方向不是宣稱的一部分,對比才是。
     """
-    track = _decl(css, ".ladder", "background")
-    assert track, "找不到 `.ladder` 的 background"
-    rung = _decl(css, ".ladder .rung", "background")
-    assert rung, "找不到 `.ladder .rung` 的 background"
+    track_decl = _decl(css, ".ladder", "background")
+    assert track_decl, "找不到 `.ladder` 的 background"
+    rung_decl = _decl(css, ".ladder .rung", "background")
+    assert rung_decl, "找不到 `.ladder .rung` 的 background"
 
-    assert rung[0].strip().lower() != track[0].strip().lower(), (
-        f"刻度線與量尺底色都是 `{rung[0].strip()}` —— "
-        "空白區的刻度等於沒有畫。\n"
-        "填色那一段勉強看得到(底下是填色不是底色),所以水位越低越看不見,"
-        "而水位低正是最常見的狀態。")
+    # 量尺疊在 hero 的漸層上,這裡用漸層較暗的那一端(--surf)當底 —— 近似,
+    # 但兩端差距很小,而且取較暗的一端對「刻度看不看得見」是保守的。
+    page = _rgba(_token(css, "--ink"))[:3]
+    surf = _rgba(_token(css, "--surf"))[:3]
+
+    track = _over(track_decl[0], surf)
+    rung = _over(rung_decl[0], track)          # 刻度畫在軌道【上面】
+
+    tick_vs_track = _contrast(rung, track)
+    track_vs_page = _contrast(track, page)
+
+    assert tick_vs_track >= track_vs_page, (
+        f"刻度線與軌道的對比只有 {tick_vs_track:.2f}:1,"
+        f"而軌道與頁面底色是 {track_vs_page:.2f}:1 —— "
+        "刻度比軌道本身還難看出來。\n"
+        f"  軌道 `{track_decl[0].strip()}` 疊在 --surf 上 -> rgb{tuple(round(c) for c in track)}\n"
+        f"  刻度 `{rung_decl[0].strip()}` 疊在軌道上 -> rgb{tuple(round(c) for c in rung)}\n"
+        "空白區看不到刻度不會有任何症狀:沒有錯誤、沒有位移、沒有測試會紅。"
+        "而水位低(回測全期 59.3% 的月份現金是 0%)正是最常見的狀態。")
 
 
 # ==========================================================================

@@ -50,7 +50,7 @@
   h1{font-size:20px;font-weight:700;letter-spacing:-.01em;margin:6px 0 2px}
   .sub{color:var(--muted);font-size:12.5px;line-height:1.5}
 
-  header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:var(--s5)}
+  header{display:flex;justify-content:space-between;align-items:flex-start;gap:14px;margin-bottom:18px}
   #refresh{flex:none;background:var(--surf2);color:var(--text);border:1px solid var(--line);
     border-radius:var(--r-md);padding:10px 14px;min-height:40px;font:600 12px var(--sans);
     cursor:pointer;display:flex;align-items:center;gap:7px;transition:.15s}
@@ -60,17 +60,26 @@
   @keyframes sp{to{transform:rotate(360deg)}}
 
   /* HERO: gauge + readout */
-  .hero{display:grid;grid-template-columns:96px 1fr;gap:22px;align-items:stretch;
+  .hero{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px 20px;align-items:stretch;
+    grid-template-areas:"ladder readout" "ladder legs" "ladder temp";
     background:linear-gradient(160deg,var(--surf),var(--surf2));border:1px solid var(--line);
-    border-radius:var(--r-xl);padding:22px;position:relative;overflow:hidden}
+    border-radius:var(--r-xl);padding:18px 20px;position:relative;overflow:hidden}
   /* 跟著水位變色的柔光。--hero-tint 由 paintLadder() 設,預設透明 ——
      沒有資料時不該有顏色(與「失敗即靜默」同一條紀律:不確定就什麼都不說)。 */
   .hero::after{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;
     background:radial-gradient(125% 95% at 100% 0%,var(--hero-tint,transparent),transparent 62%)}
   .hero>*{position:relative;z-index:1}
   /* signature: vertical cash ladder */
-  .ladder{position:relative;width:96px;min-height:168px;border-radius:var(--r-lg);
-    background:#0c1322;border:1px solid var(--line);overflow:hidden}
+  /* ⚠ 這裡曾經有 `min-height:168px`,理由是「桌面版量尺被壓成方磚」。
+     那是在治症狀:真正的原因是 hero 右欄只放了一個讀數所以太矮。
+     溫度條搬進來之後右欄自己就夠高了,min-height 拿掉 ——
+     **用一個下限去撐高一個本來就該有內容的格子,撐出來的是空白。** */
+  /* ⚠ 軌道底色曾經是 `#0c1322`,與頁面底色 `#0E1726` 幾乎同色 —— 未填滿的
+     那一段看起來不是量尺的一部分,而是 hero 上挖掉的一塊。而「未填滿」
+     正是最常見的狀態(回測全期 59.3% 的月份現金是 0%)。
+     比表面亮一階,它就讀得出來是一支還沒裝滿的量杯。 */
+  .ladder{grid-area:ladder;position:relative;width:96px;border-radius:var(--r-lg);
+    background:rgba(232,238,247,.055);border:1px solid var(--line);overflow:hidden}
   .ladder .fill{position:absolute;left:0;right:0;bottom:0;transition:height .9s cubic-bezier(.2,.7,.2,1)}
   /* ⚠ 原本是 `background:#0c1322` —— 與量尺空白區【同色】。
      結果刻度只有被填滿的那一段看得到,水位 24% 時整支就是一個黑盒子(實測)。
@@ -85,7 +94,7 @@
   .ladder .cap{position:absolute;left:0;right:0;height:2px;background:#fff;
     box-shadow:0 1px 3px rgba(0,0,0,.55),0 -1px 3px rgba(0,0,0,.55);
     transition:bottom .9s cubic-bezier(.2,.7,.2,1)}
-  .readout{display:flex;flex-direction:column;justify-content:center;min-width:0}
+  .readout{grid-area:readout;display:flex;flex-direction:column;justify-content:center;min-width:0}
   .readlab{font:600 11px/1 var(--mono);letter-spacing:.18em;text-transform:uppercase;color:var(--muted)}
   .allin{display:none;margin-left:8px;font:700 10px var(--mono);letter-spacing:.08em;
     color:#04130d;background:var(--teal);padding:3px 8px;border-radius:20px;
@@ -101,7 +110,8 @@
   .defnote.on{display:block}
 
   /* risk temperature bar */
-  .tempwrap{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px 13px;margin-top:var(--s4)}
+  /* 在 hero 裡面,所以不要自己的卡片外殼 —— 一條分隔線就夠了。 */
+  .tempwrap{grid-area:temp;border-top:1px solid var(--line);padding:13px 0 0}
   .templab{display:flex;justify-content:space-between;align-items:baseline;font:600 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
   .templab b{font-size:13px;letter-spacing:0}
   .tempdrv{font:600 10px var(--mono);color:var(--faint)}
@@ -125,25 +135,33 @@
   .tempscale span:nth-child(4){right:0}
   .tempnote{font-size:10.5px;line-height:1.5;color:var(--faint);margin-top:8px}
   .tempnote b{color:var(--muted)}
-  .legs{display:grid;grid-template-columns:1fr 1fr;gap:var(--s3);margin-top:var(--s3)}
-  .card{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 15px}
-  .card .t{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);display:flex;justify-content:space-between;align-items:center}
-  .card .v{font:700 30px var(--mono);margin:7px 0 2px;font-variant-numeric:tabular-nums}
-  .card .d{font-size:11.5px;color:var(--faint);line-height:1.5}
-  .pill{font:600 10px var(--mono);padding:2px 7px;border-radius:999px;border:1px solid currentColor}
+  /* 兩條腿在 hero 裡面:沒有外殼,左邊一條細線,與 #mainstate 同一個語彙。
+     版型是「標題+pill 靠左、數字靠右、說明在下面一行」—— 一條佔 44px 高,
+     比原本的卡片(105px 兩張並排)省一半,而且讀的順序與句子一樣。 */
+  .legs{grid-area:legs;display:grid;gap:10px}
+  .card{display:grid;grid-template-columns:1fr auto;align-items:baseline;column-gap:10px;
+    border-left:2px solid var(--line);padding:1px 0 1px 10px}
+  .card .t{font:600 11px var(--mono);letter-spacing:.1em;text-transform:uppercase;
+    color:var(--muted);display:flex;align-items:center;gap:7px;white-space:nowrap}
+  .card .v{font:700 21px var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+  .card .d{grid-column:1/-1;font-size:11px;color:var(--faint);line-height:1.5;margin-top:1px}
+  /* white-space:nowrap 不是裝飾:`主導` 兩個字一換行,膠囊就變成一個圓圈,
+     看起來像壞掉的圖示(375px 窄欄實測)。 */
+  .pill{font:600 10px var(--mono);padding:2px 7px;border-radius:999px;
+    border:1px solid currentColor;white-space:nowrap}
   /* 非主導的那一腿會被寫成空字串,而空字串配上 border + padding
      會留下一個 14px 寬的空框 —— 看起來像壞掉的元件。實測畫面上看得到。 */
   .pill:empty{display:none}
 
   /* stat strip */
-  .strip{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s3);margin-top:var(--s3)}
-  .stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-md);padding:12px 13px}
+  .strip{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s3);margin-top:14px}
+  .stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px}
   .stat .k{font:600 10px var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint)}
   .stat .x{font:700 19px var(--mono);margin-top:5px;font-variant-numeric:tabular-nums}
   .stat .y{font-size:10.5px;color:var(--faint);margin-top:2px}
 
   /* chart */
-  .panel{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:16px;margin-top:var(--s4)}
+  .panel{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px;margin-top:14px}
   .panel h2{font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
   .panel h2 .lg{font:500 10.5px var(--mono);color:var(--faint);font-weight:500}
   canvas{width:100%;height:200px;display:block;margin-top:8px}
@@ -222,8 +240,8 @@
   .flag .fbody b{color:var(--muted)}
   .flag .fbody code{font:10.5px var(--mono);background:#16223A;padding:1px 5px;border-radius:4px;color:var(--teal)}
 
-  details{margin-top:var(--s4);background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:0 16px}
-  summary{cursor:pointer;padding:14px 0;font-size:12.5px;font-weight:600;color:var(--muted);list-style:none;display:flex;justify-content:space-between;align-items:center}
+  details{margin-top:14px;background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:0 16px}
+  summary{cursor:pointer;padding:12px 0;font-size:12.5px;font-weight:600;color:var(--muted);list-style:none;display:flex;justify-content:space-between;align-items:center}
   /* 「＋」不動的話,展開後它還在說「可以展開」。轉 45° 變成「×」= 可收合。 */
   .mk{display:inline-block;font:400 15px/1 var(--mono);color:var(--faint);transition:transform .2s}
   details[open] .mk{transform:rotate(45deg)}
@@ -237,12 +255,21 @@
   #err{display:none;background:rgba(244,63,94,.1);border:1px solid var(--rose);color:#ffd3da;
     border-radius:var(--r-md);padding:13px 15px;margin-bottom:var(--s4);font-size:12.5px;line-height:1.5}
   .skel{color:var(--faint)}
+  /* 寬螢幕:讀數與「它是怎麼來的」並排,溫度條跨過兩欄。
+     760px 的版面在這個寬度下才真的被用滿 —— 不然右邊永遠是一塊空白。 */
+  @media(min-width:620px){
+    .hero{grid-template-columns:96px minmax(0,1fr) minmax(0,.92fr);
+      grid-template-areas:"ladder readout legs" "ladder temp temp"}
+  }
   /* 窄螢幕:主體判定改成上下堆疊。並排時分數條只剩約 36px 寬,長條圖失去意義 */
-  @media(max-width:430px){.big{font-size:54px}.legs,.strip{grid-template-columns:1fr 1fr}
+  @media(max-width:430px){.big{font-size:54px}.strip{grid-template-columns:1fr 1fr}
     /* 量尺收窄 20px,讓出來的寬度全部給右邊的讀數 —— 375px 下讀數欄
        從 185px 變成 209px(+13%),`來源 · S&P · VIX` 那一行少斷一次。
        量尺的工作是「大概多滿」,96px 與 76px 在這件事上沒有差別。 */
-    .hero{padding:18px;grid-template-columns:76px 1fr;gap:18px}
+    /* 窄螢幕上溫度條需要整個寬度(刻度字四個,並排在 76px 右邊會擠成一團),
+       所以量尺只佔第一列,溫度條自己一列。 */
+    .hero{padding:16px;grid-template-columns:76px 1fr;gap:13px 16px;
+      grid-template-areas:"ladder readout" "legs legs" "temp temp"}
     .ladder{width:76px}
     .domwrap{grid-template-columns:1fr;gap:12px}
     .flag>summary{grid-template-columns:14px 1fr;row-gap:2px}
@@ -293,21 +320,8 @@
     <div class="asof" id="asof"></div>
     <div class="defnote" id="opsnote"></div>
   </div>
-</section>
-
-<div class="tempwrap">
-  <div class="templab">
-    <span>風險溫度 <b id="tempstate">·</b></span>
-    <span class="tempdrv" id="tempdrv"></span>
-  </div>
-  <div class="tempbar">
-    <div class="tmark" id="tmark"></div>
-    <div class="tval" id="tval">·</div>
-  </div>
-  <div class="tempscale"><span>0 平靜</span><span>警戒</span><span>高風險</span><span>極端 100</span></div>
-  <div class="tempnote">刻度＝現金水位(已驗證聯集),<b>非獨立預測指標</b>,不預測跌幅</div>
-</div>
-
+  <!-- 兩條腿也住在 hero 裡:第一屏要同時回答「多少」「在刻度哪裡」「怎麼來的」。
+       它們不保留卡片外殼 —— 盒子裡再放兩個盒子只會更吵。 -->
 <div class="legs">
   <div class="card">
     <div class="t">趨勢動能腿 <span class="pill" id="mompill">—</span></div>
@@ -320,6 +334,23 @@
     <div class="d" id="vixdesc">系統性風險分數</div>
   </div>
 </div>
+  <!-- 風險溫度條住在 hero 裡面,不是自己一張卡。
+       它畫的就是上面那個數字 —— 「24%」與「24 落在刻度哪裡」是同一件事的
+       兩種畫法,拆成兩張卡片只會讓 hero 右半邊空著,而讀的人要移動視線兩次。 -->
+<div class="tempwrap">
+  <div class="templab">
+    <span>風險溫度 <b id="tempstate">·</b></span>
+    <span class="tempdrv" id="tempdrv"></span>
+  </div>
+  <div class="tempbar">
+    <div class="tmark" id="tmark"></div>
+    <div class="tval" id="tval">·</div>
+  </div>
+  <div class="tempscale"><span>0 平靜</span><span>警戒</span><span>高風險</span><span>極端 100</span></div>
+  <div class="tempnote">刻度＝現金水位(已驗證聯集),<b>非獨立預測指標</b>,不預測跌幅</div>
+</div>
+</section>
+
 
 <div class="strip">
   <div class="stat"><div class="k">VIX 現值</div><div class="x" id="svix">··</div><div class="y" id="svixd"></div></div>
