@@ -94,7 +94,6 @@ def test_core_readout_ids_are_present(defined_ids: list[str]) -> None:
         "bigpct",     # 建議現金比重,整個工具的輸出
         "verdict",    # 文字判讀
         "momcash", "vixcash",   # 兩條腿
-        "ladder", "fill",       # 水位條
         "chart",      # 歷史圖
         "defnote",    # 價格定義退回的警示列
         "lagnote",    # 資料落後的警示列
