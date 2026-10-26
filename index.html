@@ -70,10 +70,16 @@
        一條分隔線表達,不用第二個盒子。 */
   .block{background:var(--surf);border:1px solid var(--line);
     border-radius:var(--r);padding:var(--pad);margin-top:var(--gap)}
-  .block>h2{font:600 var(--fz-h)/1.3 var(--sans);display:flex;
-    justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}
+  /* ⚠ flex-wrap 與 .ht 的 white-space:nowrap 一起看才有意義:
+     標題列是 space-between,圖例一長就會把標題的空間吃掉 ——
+     `實測`(2026-10-26,375px):圖例加了「(顏色同上方水位條)」之後,
+     「現金水位歷史」被擠成兩行而且與圖例疊在一起。
+     現在標題不換行、整列可換行,所以該掉下去的是圖例。 */
+  .block>h2{font:600 var(--fz-h)/1.3 var(--sans);display:flex;flex-wrap:wrap;
+    justify-content:space-between;align-items:baseline;gap:2px 10px;margin-bottom:10px}
+  .block>h2 .ht{white-space:nowrap}
   .block>h2 .lg{font:500 var(--fz-note) var(--sans);color:var(--faint);
-    font-variant-numeric:tabular-nums;text-align:right}
+    font-variant-numeric:tabular-nums;text-align:right;min-width:0}
   /* 區塊內的分隔:一條線,不是一個新盒子。 */
   .rule{border-top:1px solid var(--line);margin:13px 0;height:0}
 
@@ -400,12 +406,13 @@
 </div>
 
 <div class="block">
-  <h2>現金水位歷史 <span class="lg">近 8 年 · 面積=現金% · 線=S&P</span></h2>
+  <h2><span class="ht">現金水位歷史</span> <span class="lg">近 8 年 · 柱=現金% · 線=S&P</span></h2>
   <canvas id="chart" width="720" height="200"></canvas>
+  <div class="note" style="margin-top:7px">柱的<b>顏色＝該月的現金水位</b>,與上方水位條同一個色階 —— 一次 100% 的全現金與一次 24% 的小減碼,顏色不一樣。</div>
 </div>
 
 <div class="block">
-  <h2>回撤賠率脈絡 <span class="lg">距高點 · 基準率 since 1928</span></h2>
+  <h2><span class="ht">回撤賠率脈絡</span> <span class="lg">距高點 · 基準率 since 1928</span></h2>
   <div class="ddnow">
     <div>
       <div class="lab">目前距高點</div>
@@ -422,7 +429,7 @@
      資料抓不到時整塊隱藏(display:none),不佔版面、不報錯 —— 與心跳指示器同一條紀律。
      ⚠ 這一塊【不參與】上方現金水位的計算,理由見 ops/src/regime.py 的模組說明。 -->
 <div class="block" id="regimepanel">
-  <h2>市場體制與早期警訊 <span class="lg" id="regimeage">·</span></h2>
+  <h2><span class="ht">市場體制與早期警訊</span> <span class="lg" id="regimeage">·</span></h2>
   <div id="mainstate"></div>
   <div class="domwrap">
     <div>
@@ -765,8 +772,8 @@ function drawChart(hist){
   // 現金軸的參考線 —— 沒有刻度的面積圖只看得出「有起伏」,看不出「多高」,
   // 而「那一次到底拉到幾成」正是看這張圖的理由。
   // 畫在面積之前,所以它在資料底下,不會壓住讀數。
-  x.strokeStyle="rgba(232,238,247,.10)";x.lineWidth=1;
-  x.fillStyle="#5C6F90";x.font="9px ui-monospace,monospace";
+  x.strokeStyle="rgba(232,238,247,.16)";x.lineWidth=1;
+  x.fillStyle="#7E92B4";x.font="9px ui-monospace,monospace";
   x.textAlign="left";x.textBaseline="middle";
   [.5,1].forEach(v=>{
     const gy=Math.round(cy(v))+.5;
@@ -776,22 +783,34 @@ function drawChart(hist){
     x.fillText((v*100)+"%",pad.l,gy);
   });
   x.textBaseline="alphabetic";
-  x.beginPath();x.moveTo(px(0),cy(0));
-  hist.forEach((d,i)=>x.lineTo(px(i),cy(d.cash)));
-  x.lineTo(px(n-1),cy(0));x.closePath();
-  // 平面填色,不用漸層。原本由上而下 rose -> orange -> teal,而那條漸層
-  // 暗示「越高越危險」—— 但高度【本身】已經是那個意思,顏色只是重講一次,
-  // 而且重講得不精確(漸層的轉折與任何門檻都無關)。
-  // 同一條序列只畫一層。原本是「面積 + 同色描邊」,兩層疊在一起只是把
-  // 同一件事畫兩次,而月頻階梯的方角本來就由面積自己畫出來了。
-  x.fillStyle="rgba(251,191,36,.22)";x.fill();
+  // 每個月一根柱子,用【它自己的水位】上色 —— 與大數字、水位條共用
+  // riskColor(),三處不可能分岔。
+  //
+  // ⚠ 這【不是】把刪掉的那條漸層加回來,兩者差在色軸:
+  //    漸層是「由上而下 rose -> teal」,鋪在整個面積上 —— 那條色軸是
+  //    「畫布的高度」,與任何一個月的值都無關,所以 24% 的那幾個月
+  //    頂端也會被塗成 rose。顏色在那裡是裝飾,而且會說謊。
+  //    這裡每一根柱子只有一個顏色,就是 riskColor(那個月的水位)。
+  //    顏色軸 = 值軸,與高度講的是同一件事,只是讓「那一次拉到多兇」
+  //    在整張圖上一眼看得出層次,不必逐根去量高度。
+  //
+  // 改之前整張圖只有一個琥珀色:一次 100% 的全現金與一次 24% 的小減碼
+  // 長得一模一樣(實測畫面如此)。
+  const step=iw/Math.max(1,n-1);
+  hist.forEach((d,i)=>{
+    if(!(d.cash>0))return;
+    const top=cy(d.cash);
+    x.fillStyle=riskColor(d.cash).replace("rgb(","rgba(").replace(")",",.62)");
+    // +0.7 讓相鄰柱子接起來,否則月與月之間會出現髮絲般的縫
+    x.fillRect(px(i)-step/2,top,step+0.7,cy(0)-top);
+  });
   // S&P line (log-normalized to panel)
   const ps=hist.map(d=>Math.log(d.price));const mn=Math.min(...ps),mx=Math.max(...ps);
   const sy=v=>pad.t+ih*(1-(v-mn)/(mx-mn||1))*.85-2;
   x.beginPath();hist.forEach((d,i)=>{const y=sy(Math.log(d.price));i?x.lineTo(px(i),y):x.moveTo(px(i),y);});
-  x.strokeStyle="rgba(232,238,247,.78)";x.lineWidth=1.5;x.stroke();
+  x.strokeStyle="rgba(232,238,247,.88)";x.lineWidth=1.5;x.stroke();
   // year ticks
-  x.fillStyle="#5C6F90";x.font="10px ui-monospace,monospace";x.textAlign="center";
+  x.fillStyle="#7E92B4";x.font="10px ui-monospace,monospace";x.textAlign="center";
   let lastY="";hist.forEach((d,i)=>{const y=d.ym.slice(0,4);if(y!==lastY&&y%2===0){lastY=y;x.fillText("'"+y.slice(2),px(i),H-5);}});
 }
 // 縮放/轉向後必須重繪:像素緩衝區是在 drawChart 裡依當下寬度設定的,不重繪就會被橫向拉扁。
@@ -911,6 +930,10 @@ function render(data,fetchedAt,fromCache){
 
   $("momcash").textContent=Math.round(momC*100)+"%";$("momcash").style.color=riskColor(momC);
   $("vixcash").textContent=Math.round(vixC*100)+"%";$("vixcash").style.color=riskColor(vixC);
+  // 每條腿的左邊細線吃自己那一腿的顏色 —— 「哪一腿在發燙」不必讀數字。
+  // 與上面兩行共用同一個 riskColor(),不可能分岔。
+  $("momcash").closest(".leg").style.borderLeftColor=riskColor(momC);
+  $("vixcash").closest(".leg").style.borderLeftColor=riskColor(vixC);
 
   // 主訊號現況 —— 寫進體制面板的最上面,讓兩個讀數同時在視野裡。
   //
@@ -941,7 +964,9 @@ function render(data,fetchedAt,fromCache){
   const above=sLast.price>=sLast.sma;
   $("sma").textContent=(above?"+":"")+(sLast.mom*100).toFixed(1)+"%";$("sma").style.color=above?"var(--teal)":"var(--rose)";
   $("smad").textContent=above?"站上均線":"跌破均線";
+  // 這一格的工作就是講新鮮度,而它原本用顏色講了零句話。
   $("sfresh").textContent=fromCache?"離線快取":"剛剛";
+  $("sfresh").style.color=fromCache?"var(--amber)":"var(--teal)";
   $("sfresh").title="資料抓取時間:"+new Date(fetchedAt).toLocaleString();
   $("sfreshd").textContent=`${data.src||"S&P "+sLast.ym}`;
   // ⚠ 這裡曾經以 `data.src` 開頭(「每日 · 本專案鏡像 · S&P …」),
