@@ -171,15 +171,99 @@ def test_the_orphan_fix_is_scoped_to_narrow_screens(css: str) -> None:
 
     少了這條,「把跨欄規則搬到全域」會讓上面那條照樣綠,而桌面版
     (三欄、三張,本來就除得盡)的最後一張會橫跨整列,變成另一種走鐘。
+
+    ⚠ 第一版寫成 `assert ".strip .stat:last-child" in inner` —— **比對選擇器
+    的字串,不是比對那個宣告**。2026-10-26 替跨欄那張卡加了
+    `.strip .stat:last-child .k / .x / .y` 三條兄弟規則之後,
+    把 grid-column 那條搬到 media query **外面**,`.k` 那三條仍然在裡面,
+    子字串照樣命中 —— 突變 M188 實測 survive。
+
+    宣稱是「**跨欄這個宣告**只在窄螢幕生效」,所以要去那個區塊裡解析那個宣告。
+    **判準要對準宣稱,不要對準字串**(這個 repo 第八次踩到同一個形狀)。
     """
     inner = _media_block(css, "@media(max-width:430px)")
-    assert ".strip .stat:last-child" in inner, (
-        "跨欄規則不在 `@media(max-width:430px)` 裡 —— 桌面版是三欄三張,"
-        "本來就不需要跨欄,全域生效會讓最後一張無故橫跨整列")
+    assert _decl(inner, ".strip .stat:last-child", "grid-column"), (
+        "`.strip .stat:last-child` 的 `grid-column` 宣告不在 "
+        "`@media(max-width:430px)` 裡 —— 桌面版是三欄三張,本來就不需要跨欄,"
+        "全域生效會讓最後一張無故橫跨整列。\n"
+        "(選擇器出現在區塊裡不算 —— 要的是那個宣告本身。)")
 
 
 # ==========================================================================
-# 3. 門檻文字必須落在有寬度的軌道上(突變 M171)
+# 3. 刻度字必須站在它所標示的轉折點上(2026-10-26 新增)
+# ==========================================================================
+
+def test_the_scale_labels_stand_on_the_gradient_stops(css: str) -> None:
+    """`.tempscale` 的四個字,位置必須等於 `.tempbar` 色帶的四個轉折。
+
+    `實測`(2026-10-25,改之前):`.tempscale` 用 `justify-content:space-between`,
+    四個字平均落在 0 / 33 / 67 / 100%,而色帶的轉折在 0 / 42 / 70 / 100% ——
+    「警戒」兩個字站在色帶還是**綠色**的地方。
+
+    這是一條**無聲**的錯誤:畫面看起來很正常,只是刻度指錯位置。
+    沒有人會因為「版面壞了」而發現它,只會因為照著它讀而讀錯。
+
+    這一條釘的是那個耦合本身:**改了色帶就一定要改刻度,反之亦然。**
+    判準不是比對 `42` 這個數字,是比對兩邊的清單相不相等 ——
+    哪天色帶的轉折調成 38/65,這條測試仍然在問對的問題。
+    """
+    bar = re.search(r"\.tempbar\{[^}]*linear-gradient\(90deg,([^)]*)\)", css, re.S)
+    assert bar, "找不到 `.tempbar` 的 linear-gradient —— 前提變了,請重寫這條"
+    stops = [int(v) for v in re.findall(r"(\d+)%", bar.group(1))]
+    assert len(stops) >= 3, f"色帶只解析到 {len(stops)} 個轉折 —— 這條測試沒在量東西"
+
+    html = INDEX.read_text(encoding="utf-8")
+    block = re.search(r'<div class="tempscale">(.*?)</div>', html, re.S)
+    assert block, "找不到 `.tempscale` 的標記"
+    n_labels = len(re.findall(r"<span>", block.group(1)))
+    assert n_labels == len(stops), (
+        f"色帶有 {len(stops)} 個轉折,但刻度只有 {n_labels} 個字 —— "
+        "有一個轉折沒有人標,或有一個字站在沒有轉折的地方")
+
+    # 頭尾各自貼邊,中間的必須逐一對上
+    assert re.search(r"\.tempscale span:nth-child\(1\)\{left:0\}", css), \
+        "第一個刻度字沒有貼左緣"
+    assert re.search(rf"\.tempscale span:nth-child\({n_labels}\)\{{right:0\}}", css), \
+        "最後一個刻度字沒有貼右緣"
+
+    placed = [int(v) for v in
+              re.findall(r"\.tempscale span:nth-child\(\d+\)\{left:(\d+)%", css)]
+    assert placed == stops[1:-1], (
+        f"刻度字站在 {placed}%,但色帶的轉折在 {stops[1:-1]}%。\n"
+        "刻度字必須站在它所標示的那個轉折上,否則它在說謊 —— "
+        "而說謊的刻度在畫面上看起來完全正常。")
+
+
+# ==========================================================================
+# 4. 量尺的刻度線不得與量尺底色同色(2026-10-26 新增)
+# ==========================================================================
+
+def test_the_ladder_ticks_are_visible_against_the_empty_track(css: str) -> None:
+    """`.ladder .rung` 的顏色不得等於 `.ladder` 的底色。
+
+    `實測`(2026-10-25):兩邊都是 `#0c1322`。後果是刻度**只有被填滿的那一段
+    看得見** —— 水位 24% 時整支量尺就是一個黑盒子,四條刻度線一條都看不到。
+    它從來沒有「壞掉」過,它只是從來沒有出現過。
+
+    同色不會有任何症狀:沒有 console 錯誤、沒有版面位移、沒有測試會紅。
+    只有真的去看畫面的人才會發現「咦,刻度呢」—— 而那正是這一組測試
+    存在的理由(見模組說明:綠燈不代表不用看畫面;這一條是把其中
+    **看得到的那一半**變成綠燈看得見)。
+    """
+    track = _decl(css, ".ladder", "background")
+    assert track, "找不到 `.ladder` 的 background"
+    rung = _decl(css, ".ladder .rung", "background")
+    assert rung, "找不到 `.ladder .rung` 的 background"
+
+    assert rung[0].strip().lower() != track[0].strip().lower(), (
+        f"刻度線與量尺底色都是 `{rung[0].strip()}` —— "
+        "空白區的刻度等於沒有畫。\n"
+        "填色那一段勉強看得到(底下是填色不是底色),所以水位越低越看不見,"
+        "而水位低正是最常見的狀態。")
+
+
+# ==========================================================================
+# 5. 門檻文字必須落在有寬度的軌道上(突變 M171)
 # ==========================================================================
 
 def test_the_threshold_text_sits_on_a_flexible_track(css: str) -> None:
