@@ -32,7 +32,7 @@
          那些測試用正則讀數字,換成 var() 會讓它們解析失敗 ——
          一條讀不到東西的守衛,比沒有守衛更糟。 */
     --r-sm:8px; --r-md:12px; --r-lg:16px; --r-xl:20px;
-    --s2:8px; --s3:12px; --s4:16px; --s5:24px;
+    --s2:8px; --s3:12px; --s4:16px;
     --sans:"Inter",system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif;
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -290,8 +290,7 @@
   }
   /* 窄螢幕:主體判定改成上下堆疊。並排時分數條只剩約 36px 寬,長條圖失去意義 */
   @media(max-width:430px){.big{font-size:54px}.strip{grid-template-columns:1fr 1fr}
-    /* 量尺收窄 20px,讓出來的寬度全部給右邊的讀數 —— 375px 下讀數欄
-       從 185px 變成 209px(+13%),`來源 · S&P · VIX` 那一行少斷一次。
+    /* 量尺收窄 20px,讓出來的寬度給右邊的讀數。
        量尺的工作是「大概多滿」,96px 與 76px 在這件事上沒有差別。 */
     /* 窄螢幕上溫度條需要整個寬度(刻度字四個,並排在 76px 右邊會擠成一團),
        所以量尺只佔第一列,溫度條自己一列。 */
@@ -306,14 +305,9 @@
        而右對齊讓斷行處參差。窄螢幕改成上下。 */
     .ddnow{flex-direction:column;align-items:flex-start;gap:var(--s2)}
     .ddverdict{max-width:100%;text-align:left}
-    /* 三張 stat 在兩欄裡會讓第三張變成半寬孤兒,右邊空一塊。
-       讓它橫跨整列,邊緣就齊了。
-       ⚠ 但「跨滿一整列」之後它仍然是直式排版,於是變成一個 339px 寬、
-         裡面只有「剛剛」兩個字的大空盒 —— 邊緣齊了,空洞感更明顯。
-         跨欄的那一張改成橫式:標題靠左、值靠右,高度與上一列對齊。 */
-    /* 三張一種長相 —— 標籤靠左、值靠右、說明在下一行。
-       上一輪只把跨欄的那一張改成橫式,於是同一列裡同一個元件有兩種排法,
-       那是補丁不是設計。 */
+    /* 三張一種長相:標籤靠左、值靠右、說明在下一行。
+       中間經過兩個已經不存在的狀態(直式跨欄變成大空盒、只有跨欄那張改橫式
+       導致同一列兩種排法),它們的註解已刪 —— 留著只會替舊狀態背書。 */
     .strip .stat{display:flex;flex-wrap:wrap;align-items:baseline;gap:1px 10px}
     .strip .stat .k{flex:1 0 auto}
     .strip .stat .x{margin-top:0;font-size:17px}
