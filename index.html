@@ -67,8 +67,11 @@
   @keyframes sp{to{transform:rotate(360deg)}}
 
   /* HERO: gauge + readout */
-  .hero{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px 20px;align-items:stretch;
-    grid-template-areas:"ladder readout" "ladder legs" "ladder temp";
+  /* 單欄,所有寬度都一樣。曾經是「量尺在左、讀數在右」,窄螢幕再換一種排法,
+     寬螢幕又換第三種 —— 三套版型,每一套都要自己的 media query 與自己的守衛。
+     由上而下只有一套:讀數 -> 兩條腿 -> 量尺。 */
+  .hero{display:grid;grid-template-columns:minmax(0,1fr);gap:14px;
+    grid-template-areas:"readout" "legs" "temp";
     /* 平面表面,不用漸層。階層靠三階底色拉開:
        頁面 --ink < 其他卡片 --surf < hero --surf2。
        漸層曾經是 hero 唯一的區別手段,而那是裝飾;一階更亮的平面色做同一件事,
@@ -79,31 +82,17 @@
      它當初是為了填滿 hero 右半邊的空白 —— 而那塊空白後來被兩條腿填掉了,
      於是它變成純裝飾。**簡約的意思就是純裝飾要刪掉,不是調淡。**
      「今天多熱」已經由量尺填色、大數字、分級名稱三處表達,不缺第四處。 */
-  /* signature: vertical cash ladder */
-  /* ⚠ 這裡曾經有 `min-height:168px`,理由是「桌面版量尺被壓成方磚」。
-     那是在治症狀:真正的原因是 hero 右欄只放了一個讀數所以太矮。
-     溫度條搬進來之後右欄自己就夠高了,min-height 拿掉 ——
-     **用一個下限去撐高一個本來就該有內容的格子,撐出來的是空白。** */
-  /* ⚠ 軌道底色曾經是 `#0c1322`,與頁面底色 `#0E1726` 幾乎同色 —— 未填滿的
-     那一段看起來不是量尺的一部分,而是 hero 上挖掉的一塊。而「未填滿」
-     正是最常見的狀態(回測全期 59.3% 的月份現金是 0%)。
-     比表面亮一階,它就讀得出來是一支還沒裝滿的量杯。 */
-  .ladder{grid-area:ladder;position:relative;width:96px;border-radius:var(--r-lg);
-    background:rgba(232,238,247,.055);border:1px solid var(--line);overflow:hidden}
-  .ladder .fill{position:absolute;left:0;right:0;bottom:0;transition:height .9s cubic-bezier(.2,.7,.2,1)}
-  /* ⚠ 原本是 `background:#0c1322` —— 與量尺空白區【同色】。
-     結果刻度只有被填滿的那一段看得到,水位 24% 時整支就是一個黑盒子(實測)。
-     淺色半透明在填色上與空白處都看得見。 */
-  .ladder .rung{position:absolute;left:0;right:0;height:1px;background:rgba(232,238,247,.16)}
-  /* `.ladder .rlab` 的規則已刪:它宣告在這裡很久,但【沒有任何程式產生過
-     .rlab 元素】—— 一條沒有對象的樣式。(它連 color 都宣告了兩次,
-     #0c1322 之後又 #cfe,後者覆蓋前者 —— 寫的人自己也沒看過它。)
-     試過真的把字畫出來,結果刻度字與水位線互相疊住,見 paintLadder()。 */
-  /* 水位線。填色改成單一色之後,純白 3px + 白光暈在淺色(teal/amber)填色上
-     會糊成一團;改成白線 + 深色描邊,任何填色上都切得乾淨。 */
-  .ladder .cap{position:absolute;left:0;right:0;height:2px;background:#fff;
-    box-shadow:0 1px 3px rgba(0,0,0,.55),0 -1px 3px rgba(0,0,0,.55);
-    transition:bottom .9s cubic-bezier(.2,.7,.2,1)}
+  /* ⚠ 這裡曾經有一支直立的水位量尺(.ladder / .fill / .rung / .cap),
+     以及 paintLadder()。刪掉的理由不是它不好看,是**它與下面那條色條
+     畫的是同一個數字**:量尺的填滿【高度】= uni,色條的填滿【寬度】= uni,
+     兩者只差 90 度。加上 `.big` 的 64px 數字,同一個 uni 在 hero 裡被畫了三次。
+
+     留下來的是色條,因為它嚴格多講了一件量尺講不出來的事 ——
+     **真正的分級門檻 42 / 90 標在上面**。量尺只有四分位刻度(25/50/75),
+     而四分位不對應任何門檻。兩個都留的話,讀的人得自己對齊兩把尺。
+
+     (量尺的四分位刻度原本有一條對比度守衛。那條沒有刪,是**改成量色條的
+     刻度線對軌道** —— 守的是同一個宣稱:刻度要看得見。) */
   .readout{grid-area:readout;display:flex;flex-direction:column;justify-content:center;min-width:0}
   .readlab{font:600 11.5px/1.3 var(--sans);letter-spacing:.02em;color:var(--muted)}
   /* 脈動動畫已刪。實心 teal 膠囊在一片深色裡本來就是最亮的東西,
@@ -186,16 +175,20 @@
      會留下一個 14px 寬的空框 —— 看起來像壞掉的元件。實測畫面上看得到。 */
   .pill:empty{display:none}
 
-  /* stat strip */
-  .strip{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--s3);margin-top:14px}
-  .stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px}
-  .stat .k{font:600 11px var(--sans);letter-spacing:.02em;color:var(--faint)}
-  .stat .x{font:700 19px var(--mono);margin-top:5px;font-variant-numeric:tabular-nums}
+  /* stat strip —— 單欄。三張一種長相:標籤靠左、值靠右、說明在下一行。
+     曾經是三欄(窄螢幕兩欄 + 第三張跨欄),而「三個格子擠兩欄」必然留下
+     一個孤兒,於是需要一條跨欄規則,再需要一條守衛去釘那條跨欄規則。
+     單欄之後那整串都不存在了 —— 不是把守衛關掉,是那個情況按構造不會發生。 */
+  .strip{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--s3);margin-top:14px}
+  .stat{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-md);padding:10px 12px;
+    display:flex;flex-wrap:wrap;align-items:baseline;gap:1px 10px}
+  .stat .k{font:600 11px var(--sans);letter-spacing:.02em;color:var(--faint);flex:1 0 auto}
+  .stat .x{font:700 17px var(--mono);font-variant-numeric:tabular-nums}
   /* 「資料更新」那一格的值是文字(剛剛 / 3 小時前),不是數字 ——
      等寬字沒有中文,那兩個字會掉到另一套字體。規則是「等寬只給數字」,
      所以這裡用文字的字體;tabular-nums 留著,「3 小時前」的數字仍不跳動。 */
   #sfresh{font-family:var(--sans)}
-  .stat .y{font-size:10.5px;color:var(--faint);margin-top:2px}
+  .stat .y{font-size:10.5px;color:var(--faint);flex:1 0 100%}
 
   /* chart */
   .panel{background:var(--surf);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 16px;margin-top:14px}
@@ -297,28 +290,14 @@
   #err{display:none;background:rgba(244,63,94,.1);border:1px solid var(--rose);color:#ffd3da;
     border-radius:var(--r-md);padding:13px 15px;margin-bottom:var(--s4);font-size:12.5px;line-height:1.5}
   .skel{color:var(--faint)}
-  /* 寬螢幕:讀數與「它是怎麼來的」並排,溫度條跨過兩欄。
-     760px 的版面在這個寬度下才真的被用滿 —— 不然右邊永遠是一塊空白。 */
-  @media(min-width:620px){
-    /* 讀數欄比腿那欄寬一截 —— 不是美感,是量出來的:
-       `每日 · 本專案鏡像 · S&P 2026-10 · VIX→19.4 (2026-10)` 單行需要 285px,
-       而 1:0.92 只給 284px。差 1px,於是它斷在 `2026-10` 的連字號上,
-       第二行只剩 `10)`。
-       ⚠ 不要只加到剛好 —— 那串字會隨資料來源變(月頻 · Shiller /
-         即時 · TwelveData),剛好塞下等於下次換來源又斷行。
-         目標是「最長的那個字串也放得下」,不是「今天這個放得下」。 */
-    .hero{grid-template-columns:96px minmax(0,1.12fr) minmax(0,.85fr);
-      grid-template-areas:"ladder readout legs" "ladder temp temp"}
-  }
+  /* ⚠ 這裡曾經有一整組 `@media(min-width:620px)`,把 hero 變成三欄
+     (量尺 | 讀數 | 兩條腿)。拿掉了:版面只有單欄一種,桌面就是同一個
+     單欄置中加寬。那組規則裡還釘著一個量出來的欄寬比(1.12 : 0.85),
+     理由是 `#asof` 那串字單行需要 285px —— 而 `#asof` 現在短了一截
+     (來源與頻率只在「資料更新」那張卡說一次),那個比例連前提都沒了。 */
   /* 窄螢幕:主體判定改成上下堆疊。並排時分數條只剩約 36px 寬,長條圖失去意義 */
-  @media(max-width:430px){.big{font-size:54px}.strip{grid-template-columns:1fr 1fr}
-    /* 量尺收窄 20px,讓出來的寬度給右邊的讀數。
-       量尺的工作是「大概多滿」,96px 與 76px 在這件事上沒有差別。 */
-    /* 窄螢幕上溫度條需要整個寬度(刻度字四個,並排在 76px 右邊會擠成一團),
-       所以量尺只佔第一列,溫度條自己一列。 */
-    .hero{padding:16px;grid-template-columns:76px 1fr;gap:13px 16px;
-      grid-template-areas:"ladder readout" "legs legs" "temp temp"}
-    .ladder{width:76px}
+  @media(max-width:430px){.big{font-size:54px}
+    .hero{padding:16px;gap:13px}
     .domwrap{grid-template-columns:1fr;gap:12px}
     .flag>summary{grid-template-columns:14px 1fr;row-gap:2px}
     .flag .fd{grid-column:2;text-align:left}
@@ -326,16 +305,7 @@
     /* 「距高點」與那句判讀並排時各剩不到一半寬,兩邊同時在換行,
        而右對齊讓斷行處參差。窄螢幕改成上下。 */
     .ddnow{flex-direction:column;align-items:flex-start;gap:var(--s2)}
-    .ddverdict{max-width:100%;text-align:left}
-    /* 三張一種長相:標籤靠左、值靠右、說明在下一行。
-       中間經過兩個已經不存在的狀態(直式跨欄變成大空盒、只有跨欄那張改橫式
-       導致同一列兩種排法),它們的註解已刪 —— 留著只會替舊狀態背書。 */
-    .strip .stat{display:flex;flex-wrap:wrap;align-items:baseline;gap:1px 10px}
-    .strip .stat .k{flex:1 0 auto}
-    .strip .stat .x{margin-top:0;font-size:17px}
-    .strip .stat .y{flex:1 0 100%;margin-top:0}
-    /* 三張 stat 在兩欄裡會讓第三張變成半寬孤兒,右邊空一塊。 */
-    .strip .stat:last-child{grid-column:1/-1}}
+    .ddverdict{max-width:100%;text-align:left}}
 </style>
 </head>
 <body>
@@ -354,10 +324,6 @@
 <div id="err"></div>
 
 <section class="hero">
-  <div class="ladder" id="ladder">
-    <div class="fill" id="fill" style="height:0%"></div>
-    <div class="cap" id="cap" style="bottom:0%"></div>
-  </div>
   <div class="readout">
     <div class="readlab">建議現金比重 <span class="allin" id="allin">✓ ALL-IN 全額投資</span></div>
     <div class="big" id="bigpct"><span class="skel">··</span><small>%</small></div>
@@ -748,37 +714,6 @@ function verdictText(c){
   return"全額投資";
 }
 
-function paintLadder(c){
-  const fill=$("fill"),cap=$("cap"),lad=$("ladder");
-  // remove old rungs/labels
-  lad.querySelectorAll(".rung,.rlab").forEach(e=>e.remove());
-  fill.style.height=(c*100)+"%";
-  // ⚠ 這裡原本鋪一條 `0deg teal->rose` 的漸層。那是錯的,而且錯得看不出來:
-  //   漸層鋪在 .fill 身上,而 .fill 的高度【就是】水位 —— 水位 24% 時
-  //   整條彩虹被壓進最底下 24%,量尺頂端顯示 rose(極端)的顏色。
-  //   顏色軸是「刻度 0-100」,填色軸是「目前水位」,兩者不是同一個軸。
-  // 高度已經在講這個數字了,顏色再講一次只是多一個會錯的地方。
-  // 單一色,而且與大數字、溫度計指針共用 riskColor() —— 三處不可能再分岔。
-  fill.style.background=riskColor(c);
-  fill.style.clipPath="none";
-  cap.style.bottom=(c*100)+"%";
-  cap.style.display=c>0?"block":"none";
-  // 刻度改成四分位(25/50/75),理由有兩個,都是實測出來的:
-  //
-  // 1. 舊的刻度畫在 .24/.42/.66/.90 —— 那是【VIX 腿】的階梯,而聯集的可能值
-  //    有八個({0,.24,.30,.42,.60,.66,.90,1})。標出其中四個會讓人以為那就是全部。
-  // 2. 舊刻度的顏色與量尺空白區同色,所以只有被填滿的那一段看得見。
-  //    水位 24% 時整支量尺看起來就是一個黑盒子 —— 畫面上實測如此。
-  //
-  // 四分位不對階梯做任何宣稱,只回答「大概多滿」,那正是這支量尺的工作;
-  // 精確值已經用 64px 寫在右邊了,量尺不需要再講一次。
-  // 只畫線,不寫字。寫過一版有 25/50/75 的字,實測水位落在刻度附近時
-  // 字會疊在白色水位線與它的光暈上,兩個都變難讀 —— 而量杯本來就不必標字。
-  // 精確值用 64px 寫在右邊了,這支量尺回答的是「大概多滿」。
-  [25,50,75].forEach(pc=>{
-    const r=document.createElement("div");r.className="rung";r.style.bottom=pc+"%";lad.appendChild(r);
-  });
-}
 let _lastHist=null,_rzTimer=null,_drawRetry=0;
 function drawChart(hist){
   if(hist){_lastHist=hist;_drawRetry=0;} else hist=_lastHist;
@@ -897,7 +832,6 @@ function render(data,fetchedAt,fromCache){
   const pct=Math.round(uni*100);
   $("bigpct").innerHTML=pct+'<small>%</small>';
   $("bigpct").style.color=riskColor(uni);
-  paintLadder(uni);
   const vt=verdictText(uni);$("verdict").textContent=vt;$("verdict").style.color=riskColor(uni);
   // 退回 Shiller 時價格定義會從「月收盤」變成「月均價」,17.3% 的月份結果不同 —— 必須明說
   $("defnote").classList.toggle("on", !!data.altDef);
@@ -984,7 +918,11 @@ function render(data,fetchedAt,fromCache){
   $("sfresh").textContent=fromCache?"離線快取":"剛剛";
   $("sfresh").title="資料抓取時間:"+new Date(fetchedAt).toLocaleString();
   $("sfreshd").textContent=`${data.src||"S&P "+sLast.ym}`;
-  $("asof").textContent=`${data.src||""} · S&P ${sLast.ym} · VIX→${vLast.close.toFixed(1)} (${vLast.ym})`+(fromCache?" · 離線":"");
+  // ⚠ 這裡曾經以 `data.src` 開頭(「每日 · 本專案鏡像 · S&P …」),
+  //    而下面「資料更新」那張卡的 #sfreshd 寫的是【逐字相同】的那串。
+  //    同一句話出現在同一個畫面的兩個地方,而且沒有任何一方是另一方的補充。
+  //    來源與頻率留在那張卡(它的標題就是「資料更新」);這一行只說資料時點。
+  $("asof").textContent=`S&P ${sLast.ym} · VIX→${vLast.close.toFixed(1)} (${vLast.ym})`+(fromCache?" · 離線":"");
   drawChart(hist);
   renderOdds(data);
 }

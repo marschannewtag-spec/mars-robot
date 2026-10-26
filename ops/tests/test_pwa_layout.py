@@ -179,56 +179,32 @@ def test_the_scale_value_has_room_above_the_bar(css: str) -> None:
 # 2. stat 不得在窄螢幕變成孤兒(突變 M173)
 # ==========================================================================
 
-def test_the_stat_strip_never_leaves_an_orphan(css: str) -> None:
-    """`.strip` 的格子數除不盡欄數時,最後一張必須橫跨整列。
+def test_the_stat_strip_stays_one_column(css: str) -> None:
+    """`.strip` 在**每一個**宣告過的寬度下都只能有一欄。
 
-    `實測`(2026-10-25):三張 stat 塞進兩欄,第三張獨佔半寬(164px)、
-    右邊空一塊,邊緣參差。跨欄後 339px 滿版。
+    這條取代了原本的兩條孤兒守衛。`實測`(2026-10-26):三張 stat 塞進
+    兩欄,第三張獨佔半寬、右邊空一塊,所以當時加了一條跨欄規則,
+    又加了第二條守衛去釘那條跨欄規則只在窄螢幕生效(M188 就是在那裡逃掉的)。
 
-    這一條會隨「以後加第四張 stat」而自動重算 —— 四張配兩欄除得盡,
-    就不再要求跨欄。判準跟著實際的格子數走,不是寫死一個結論。
+    改成單欄之後那一串全部不需要了 —— **孤兒按構造不可能出現**。
+
+    ⚠ 但「不可能出現」不等於可以把守衛拿掉。單欄那條舊守衛會**恆真**:
+      `3 % 1 == 0`,它直接 continue,一個斷言都不執行。
+      `實測`:改完之後它仍然是綠的,而它已經什麼都沒在量。
+      **讓問題不存在是對的;讓守衛閉嘴不是。** 所以判準換成那個新的宣稱
+      本身 —— 「只有一欄」—— 把欄數改回 2 或 3 它就會紅。
     """
-    html = INDEX.read_text(encoding="utf-8")
-    n_stats = len(re.findall(r'<div class="stat"', html))
-    assert n_stats >= 2, f"只找到 {n_stats} 張 stat —— 這條測試沒在量東西"
+    values = _decl(css, ".strip", "grid-template-columns")
+    assert values, "找不到 `.strip` 的 grid-template-columns —— 這條沒在量東西"
 
-    span = _decl(css, ".strip .stat:last-child", "grid-column")
-
-    for value in _decl(css, ".strip", "grid-template-columns"):
-        cols = len(_tracks(value))
-        if n_stats % cols == 0:
-            continue
-        assert span, (
-            f"{n_stats} 張 stat 配 {cols} 欄會剩下 {n_stats % cols} 張孤兒,"
-            "而 `.strip .stat:last-child` 沒有宣告 grid-column。\n"
-            "最後一張會獨佔一格、右邊空一塊。")
-        covered = _covered(span[0], cols)
-        assert len(covered) == cols, (
-            f"`.strip .stat:last-child{{grid-column:{span[0]}}}` 只跨了 "
-            f"{len(covered)} 欄,但要填滿一整列需要 {cols} 欄")
-
-
-def test_the_orphan_fix_is_scoped_to_narrow_screens(css: str) -> None:
-    """跨欄規則只能在窄螢幕生效 —— 對照組。
-
-    少了這條,「把跨欄規則搬到全域」會讓上面那條照樣綠,而桌面版
-    (三欄、三張,本來就除得盡)的最後一張會橫跨整列,變成另一種走鐘。
-
-    ⚠ 第一版寫成 `assert ".strip .stat:last-child" in inner` —— **比對選擇器
-    的字串,不是比對那個宣告**。2026-10-26 替跨欄那張卡加了
-    `.strip .stat:last-child .k / .x / .y` 三條兄弟規則之後,
-    把 grid-column 那條搬到 media query **外面**,`.k` 那三條仍然在裡面,
-    子字串照樣命中 —— 突變 M188 實測 survive。
-
-    宣稱是「**跨欄這個宣告**只在窄螢幕生效」,所以要去那個區塊裡解析那個宣告。
-    **判準要對準宣稱,不要對準字串**(這個 repo 第八次踩到同一個形狀)。
-    """
-    inner = _media_block(css, "@media(max-width:430px)")
-    assert _decl(inner, ".strip .stat:last-child", "grid-column"), (
-        "`.strip .stat:last-child` 的 `grid-column` 宣告不在 "
-        "`@media(max-width:430px)` 裡 —— 桌面版是三欄三張,本來就不需要跨欄,"
-        "全域生效會讓最後一張無故橫跨整列。\n"
-        "(選擇器出現在區塊裡不算 —— 要的是那個宣告本身。)")
+    wide = [(v, len(_tracks(v))) for v in values if len(_tracks(v)) != 1]
+    assert not wide, (
+        "`.strip` 有多欄的宣告:"
+        + "、".join(f"`{v.strip()}`({n} 欄)" for v, n in wide) + "\n"
+        "多欄就會有「格子數除不盡欄數」的孤兒問題,而那需要一條跨欄規則"
+        "加一條守衛去釘它只在該生效的寬度生效。單欄沒有這個問題。\n"
+        "真的要改回多欄的話,把這條換回 test_the_stat_strip_never_leaves_an_orphan,"
+        "不要只是放寬它。")
 
 
 # ==========================================================================
@@ -304,53 +280,52 @@ def test_the_scale_marks_the_thresholds_the_code_actually_uses(css: str) -> None
 # 4. 量尺的刻度線不得與量尺底色同色(2026-10-26 新增)
 # ==========================================================================
 
-def test_the_ladder_ticks_are_visible_against_the_empty_track(css: str) -> None:
-    """刻度線與軌道的對比,不得低於**軌道與頁面底色**的對比。
+def test_the_scale_ticks_are_visible_against_the_empty_track(css: str) -> None:
+    """刻度線與軌道的對比,不得低於**軌道與它所在表面**的對比。
 
-    `實測`(2026-10-25):兩邊的 background 都是 `#0c1322`。後果是刻度
-    **只有被填滿的那一段看得見** —— 水位 24% 時整支量尺就是一個黑盒子。
-    它從來沒有「壞掉」過,**它只是從來沒有出現過**:沒有 console 錯誤、
-    沒有版面位移、沒有任何測試會紅。
+    `實測`(2026-10-25,當時量的是那支已經刪掉的直立量尺):兩邊的
+    background 都是 `#0c1322`。後果是刻度**只有被填滿的那一段看得見** ——
+    水位 24% 時整支量尺就是一個黑盒子。它從來沒有「壞掉」過,
+    **它只是從來沒有出現過**:沒有 console 錯誤、沒有版面位移、沒有測試會紅。
 
     ⚠ 第一版的判準是「兩個字串不相等」。那擋得住 `#0c1322` vs `#0c1322`,
     擋不住 `rgba(232,238,247,.056)` vs `rgba(232,238,247,.055)` ——
     差 0.001、肉眼完全沒有線,而字串不相等。**判準對準的是字串,不是
-    「看得見」**(這個 repo 反覆踩的那個形狀,我在同一個檔案裡又寫了一次)。
+    「看得見」**。
+
+    ⚠ 2026-10-26 量尺被刪掉(它與色條畫的是同一個數字)。這條守衛**沒有
+    跟著刪**,而是搬到活下來的那把尺上 —— `.ttick` 對 `.tempbar` 的軌道。
+    **宣稱沒有變:刻度要看得見。** 被刪掉的是其中一個對象,不是那個宣稱。
 
     門檻刻意**不寫死數字**,而是拿軌道自己當尺:
 
-        contrast(刻度線, 軌道)  >=  contrast(軌道, 頁面底色)
+        contrast(刻度線, 軌道)  >=  contrast(軌道, 它所在的表面)
 
-    白話是「刻度至少要和軌道本身一樣看得出來」—— 軌道看得出來是一支量杯,
-    刻度就該看得出來是刻度。改了調色盤不必回來調這條。
-
-    `實測`(2026-10-26 的配色):刻度/軌道 **1.60**,軌道/頁面 **1.31**,通過。
+    白話是「刻度至少要和軌道本身一樣看得出來」。改了調色盤不必回來調這條。
 
     這條**不管刻度是比軌道亮還是比軌道暗** —— 深色的線一樣看得見。
     亮度方向不是宣稱的一部分,對比才是。
     """
-    track_decl = _decl(css, ".ladder", "background")
-    assert track_decl, "找不到 `.ladder` 的 background"
-    rung_decl = _decl(css, ".ladder .rung", "background")
-    assert rung_decl, "找不到 `.ladder .rung` 的 background"
+    track_decl = _decl(css, ".tempbar", "background")
+    assert track_decl, "找不到 `.tempbar` 的 background"
+    tick_decl = _decl(css, ".ttick", "background")
+    assert tick_decl, "找不到 `.ttick` 的 background"
 
-    # 量尺疊在 hero 的漸層上,這裡用漸層較暗的那一端(--surf)當底 —— 近似,
-    # 但兩端差距很小,而且取較暗的一端對「刻度看不看得見」是保守的。
-    page = _rgba(_token(css, "--ink"))[:3]
-    surf = _rgba(_token(css, "--surf"))[:3]
+    # 色條住在 hero 裡,所以它的底是 --surf2(不是頁面底色)。
+    surf = _rgba(_token(css, "--surf2"))[:3]
 
     track = _over(track_decl[0], surf)
-    rung = _over(rung_decl[0], track)          # 刻度畫在軌道【上面】
+    tick = _over(tick_decl[0], track)          # 刻度畫在軌道【上面】
 
-    tick_vs_track = _contrast(rung, track)
-    track_vs_page = _contrast(track, page)
+    tick_vs_track = _contrast(tick, track)
+    track_vs_surf = _contrast(track, surf)
 
-    assert tick_vs_track >= track_vs_page, (
+    assert tick_vs_track >= track_vs_surf, (
         f"刻度線與軌道的對比只有 {tick_vs_track:.2f}:1,"
-        f"而軌道與頁面底色是 {track_vs_page:.2f}:1 —— "
+        f"而軌道與它所在的表面是 {track_vs_surf:.2f}:1 —— "
         "刻度比軌道本身還難看出來。\n"
-        f"  軌道 `{track_decl[0].strip()}` 疊在 --surf 上 -> rgb{tuple(round(c) for c in track)}\n"
-        f"  刻度 `{rung_decl[0].strip()}` 疊在軌道上 -> rgb{tuple(round(c) for c in rung)}\n"
+        f"  軌道 `{track_decl[0].strip()}` 疊在 --surf2 上 -> rgb{tuple(round(c) for c in track)}\n"
+        f"  刻度 `{tick_decl[0].strip()}` 疊在軌道上 -> rgb{tuple(round(c) for c in tick)}\n"
         "空白區看不到刻度不會有任何症狀:沒有錯誤、沒有位移、沒有測試會紅。"
         "而水位低(回測全期 59.3% 的月份現金是 0%)正是最常見的狀態。")
 
