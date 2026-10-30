@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "dependency-install",
-  "generated_at": "2026-10-29T01:24:19+00:00",
+  "generated_at": "2026-10-30T01:26:19+00:00",
   "phase": "success",
   "resolution_complete": true,
   "install_exit_code": 0,
@@ -19,7 +19,7 @@
   "run": {
     "commit": "fda83393ddff4e07e35742239da1eff39ea4eee5",
     "workflow": "L1 每日資料健檢",
-    "run_id": "40800191281",
+    "run_id": "40985820690",
     "attempt": "1"
   },
   "distributions": {
@@ -30,7 +30,7 @@
     "pandas": "2.3.3",
     "pip": "26.2.2",
     "python-dateutil": "3.0.0",
-    "pytz": "2026.5",
+    "pytz": "2026.6",
     "pyyaml": "6.0.3",
     "requests": "2.34.2",
     "six": "1.17.0",
@@ -38,6 +38,6 @@
     "urllib3": "2.8.0"
   },
   "n_distributions": 13,
-  "dedupe_key": "combo:28c4040618f2d392",
+  "dedupe_key": "combo:ea653be5cae37f0c",
   "error": null
 }
