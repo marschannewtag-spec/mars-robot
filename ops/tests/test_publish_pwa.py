@@ -22,7 +22,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from conftest import require_js_bridge  # noqa: E402
+from conftest import (  # noqa: E402
+    chart_months, mirror_months_needed, require_js_bridge, rolling_z_months,
+)
 import publish_pwa
 
 TESTS_DIR = Path(__file__).resolve().parent
@@ -189,14 +191,21 @@ def test_vix_payload_keeps_exactly_the_columns_the_pwa_reads(vix_daily: pd.DataF
 def test_vix_payload_window_covers_the_chart_plus_the_rolling_window(
     vix_daily: pd.DataFrame
 ):
-    """發出去的月份數必須夠畫 96 個月的圖,外加 36 個月的滾動 z 分數。
+    """發出去的月份數必須夠畫整張圖,外加滾動 z 分數的暖機窗。
 
     不夠的話圖會自己變短,而畫面上看不出是資料被裁掉還是歷史真的只有這麼長。
+
+    ⚠ 月數是**解析**出來的(圖長度讀 index.html、滾動窗讀 engine.py),
+    不是寫死的 96 + 36 —— 寫死的副本在圖變長的那天不會紅。
     """
+    need = mirror_months_needed()
     text = publish_pwa.vix_payload(vix_daily, now=datetime(2026, 10, 19,
                                                            tzinfo=timezone.utc))
     months = {r["DATE"][:7] for r in csv.DictReader(io.StringIO(text))}
-    assert len(months) >= 96 + 36, "只有 %d 個月,不足 132" % len(months)
+    assert len(months) >= need, (
+        f"只發了 {len(months)} 個月,但圖要 {chart_months()} + 滾動窗 "
+        f"{rolling_z_months()} = {need} 個月。"
+        "調 PWA_VIX_YEARS,不要調這條測試。")
 
 
 def test_vix_payload_values_are_unchanged_by_the_slice(vix_daily: pd.DataFrame):

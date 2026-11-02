@@ -33,6 +33,9 @@ import requests
 import yaml
 
 import health_check as hc
+from conftest import (  # noqa: E402
+    chart_months, mirror_months_needed, rolling_z_months,
+)
 
 OPS_ROOT = Path(__file__).resolve().parents[1]
 
@@ -256,12 +259,23 @@ def test_a_network_error_is_a_failure_not_a_crash(cfg: dict, monkeypatch) -> Non
 # --------------------------------------------------------------------------
 
 def test_the_vix_floor_matches_what_the_chart_actually_needs(cfg: dict) -> None:
-    """`min_vix_months` 必須 >= 96(圖)+ 36(滾動 z 分數)。
+    """`min_vix_months` 必須 >= 圖的月數 + 滾動 z 分數的窗。
 
     把它調低是「放寬閾值讓檢查通過」最容易被接受的那種寫法 ——
     下限一旦低於畫面真正需要的月數,圖變短就不再有人會知道。
+
+    ⚠ 兩個數字都是**解析出來的**,不是寫死的。2026-11-02 之前這裡寫
+    `>= 96 + 36`,而那個 96 是 `index.html` 的 `hist.slice(-96)` 的副本。
+    副本的後果很具體:有人把圖拉長到 `slice(-144)`,這條測試照樣綠,
+    `min_vix_months` 還停在 132 —— 於是圖最左邊 48 個月的滾動窗沒填滿,
+    z 分數全是 0,**風險被系統性低估,而且沒有任何錯誤訊息**。
     """
-    assert cfg["pwa"]["mirror"]["min_vix_months"] >= 96 + 36
+    need = mirror_months_needed()
+    assert cfg["pwa"]["mirror"]["min_vix_months"] >= need, (
+        f"min_vix_months = {cfg['pwa']['mirror']['min_vix_months']},"
+        f"但圖要 {chart_months()} 個月 + 滾動 z 分數要 {rolling_z_months()} 個月"
+        f" = {need}。\n圖變長了就要把這個下限一起調 —— 不調的話,"
+        "最左邊那幾個月的 z 分數會是 0,看起來像「那時候很平靜」。")
 
 
 def test_the_sp_floor_matches_the_sma_window(cfg: dict) -> None:

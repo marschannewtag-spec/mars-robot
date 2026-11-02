@@ -446,6 +446,84 @@ def _union_ladder() -> list[float]:
     return out
 
 
+def test_the_month_is_called_finished_at_the_same_day_count_everywhere() -> None:
+    """「這個月走完了沒」的門檻,畫面與年度報告必須是同一個數。
+
+    一個月的交易日少於門檻,就當它還沒走完:畫面標「(進行中)」,
+    年度報告把它排除在完整月之外。
+
+    `實測`(2026-11-02):這個門檻存了**兩份** ——
+    `annual_review.py` 的具名常數 `MIN_DAYS_FOR_COMPLETE_MONTH`,
+    與 `index.html` 裡兩處裸寫的 `vLast.n<15` / `vLast.n<15`。
+    那個常數上面的註解明文寫著「兩個消費端對『這個月走完了沒』必須用
+    同一把尺」—— **而沒有任何東西在對帳。**
+
+    症狀不會是當機,是**同一份資料在同一天有兩個答案**:
+    報告說「2026-11 是完整月,納入統計」,畫面說「2026-11 (進行中)」。
+    兩邊都沒有錯誤訊息,而讀的人要自己發現哪一個在騙他。
+
+    這是本 repo 反覆記錄的那個形狀,和色階、底色、圖長度同一個家族。
+    """
+    import annual_review
+
+    html = INDEX.read_text(encoding="utf-8")
+    found = re.findall(r"\.n\s*<\s*(\d+)", html)
+    assert found, (
+        "在 index.html 找不到 `.n < N` —— 畫面不再標「進行中」了嗎?"
+        "前提變了的話請重寫這一條,不要刪掉它。")
+
+    js = sorted(set(int(v) for v in found))
+    py = annual_review.MIN_DAYS_FOR_COMPLETE_MONTH
+
+    assert js == [py], (
+        f"index.html 用的門檻是 {js},annual_review 的常數是 {py}。\n"
+        "一邊改了另一邊沒改,報告會說「完整」而畫面說「進行中」—— "
+        "同一份資料兩個答案,而且兩邊都不會報錯。")
+
+
+def test_the_page_ground_is_the_same_colour_in_all_three_places(css: str) -> None:
+    """`--ink`、`<meta theme-color>`、`manifest.json` 必須是同一個色值。
+
+    `實測`(2026-11-02):這個底色在這個 repo 裡存了**三份**,而且沒有任何
+    東西在對帳 —— 把 `--ink` 從 `#0E1726` 換成 `#0C0D0F` 的時候,
+    另外兩份原封不動留在舊值上。
+
+    症狀不會出現在測試裡,只會出現在手機上:**網頁是近黑的,
+    而瀏覽器頂端那條狀態列還是海軍藍**,兩者中間一條看得見的接縫;
+    安裝成 PWA 之後,啟動畫面也還是舊的底色。
+
+    這是本 repo 反覆記錄的那個形狀:同一份事實有 N 個定義,而沒有人對帳。
+    `riskColor()` 的 stops 與 `:root` 的語意色是同一件事的另一個版本
+    (見 `test_the_colour_ramp_matches_the_css_tokens`)。
+    """
+    import json
+
+    ink = _token(css, "--ink").strip().lower()
+
+    html = INDEX.read_text(encoding="utf-8")
+    m = re.search(r'<meta\s+name="theme-color"\s+content="([^"]+)"', html)
+    assert m, "index.html 沒有 <meta name=\"theme-color\"> —— 前提變了,請重寫這一條"
+    meta = m.group(1).strip().lower()
+
+    mf_path = REPO_ROOT / "manifest.json"
+    assert mf_path.exists(), "找不到 manifest.json —— 前提變了,請重寫這一條"
+    mf = json.loads(mf_path.read_text(encoding="utf-8"))
+
+    places = {
+        ":root 的 --ink": ink,
+        "index.html 的 <meta theme-color>": meta,
+        "manifest.json 的 theme_color": str(mf.get("theme_color", "")).strip().lower(),
+        "manifest.json 的 background_color": str(mf.get("background_color", "")).strip().lower(),
+    }
+    assert all(places.values()), f"有一處是空的:{places}"
+
+    assert len(set(places.values())) == 1, (
+        "頁面底色在這幾個地方不一致:\n  "
+        + "\n  ".join(f"{k} = {v}" for k, v in places.items())
+        + "\n\n改了一處要四處都改。不一致的症狀是手機狀態列與頁面之間"
+        "出現一條接縫,而且不會有任何錯誤訊息。")
+
+
 def test_the_colour_ramp_matches_the_css_tokens(css: str) -> None:
     """`riskColor()` 的四個 stop,必須逐位元等於 `:root` 的四個 token。
 
@@ -601,7 +679,9 @@ def test_no_chinese_label_is_set_in_the_monospace_face(css: str) -> None:
 
     判準不是白名單,是**真的去看那條規則選到的元素裡有沒有中文**。
     所以新增一個裝中文的等寬規則,這條會紅;而
-    `.eyebrow`(純拉丁)、`.big` / `.ddbig`(數字)、`code`(代碼)不受影響。
+    `.big` / `.ddbig`(數字)、`code`(代碼)不受影響。
+    (這份豁免名單裡曾經還有 `.eyebrow` —— 標題上方那行全大寫拉丁小標。
+    那條規則已於 2026-11-02 整個刪掉,理由寫在 index.html 原處。)
 
     ## 這一條【測不到】什麼 —— 兩個已證實的洞
 
