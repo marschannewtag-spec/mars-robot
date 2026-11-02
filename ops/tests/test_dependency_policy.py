@@ -613,3 +613,90 @@ def test_the_ci_trigger_covers_every_file_the_tests_read() -> None:
             "沒有訊息,看起來就像通過了。\n"
             "順帶:必要檢查有 paths 過濾時,沒碰到那些路徑的 PR 永遠拿不到"
             "那個檢查,會一直停在 BLOCKED。")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 8. 執行環境:作業系統與 action 的 Node 版本(2026-11-03,D5)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 這兩條釘的是「每次執行跑在什麼上面」。它們和套件版本是同一個問題的兩半,
+# 只是從來沒有人管過另外那一半。理由寫在 ops/DEPENDENCIES.md 的 D5。
+
+
+def test_no_workflow_runs_on_a_floating_runner_label() -> None:
+    """`runs-on` 不得用 `*-latest`。
+
+    直覺是「latest 最安全」,這裡是反的:`actions/runner-images#14748`
+    說 `ubuntu-latest` → Ubuntu 26.04 的切換是「rolled out over a period of
+    several weeks」(2026-10-19 起,預計 2026-11-19 完成)。在那段期間,
+    **同一個 commit 的兩次執行可能拿到不同的作業系統**,而沒有任何東西
+    會說這次拿到哪一個。一個每天把資料推出去的管線,不該讓它的作業系統
+    是擲骰子決定的。
+
+    ⚠ 這條守衛自己有保存期限。釘死的 image 總有一天會下架,而「釘了之後
+    沒有人再想起它」就是這條決策的失效模式。那一天這條測試不會變紅 ——
+    變紅的會是 workflow 本身(找不到 runner)。看到那個的時候:
+    去 actions/runner-images 看現在的 LTS 是哪一版,改這裡的字串,
+    再更新 ops/DEPENDENCIES.md 的 D5。**不要為了讓它過而改回 latest。**
+    """
+    files = sorted(WORKFLOWS.glob("*.yml"))
+    assert len(files) >= 4, f"只找到 {len(files)} 個 workflow —— 這條會變成恆真"
+    floating = []
+    for wf in files:
+        data = yaml.safe_load(wf.read_text(encoding="utf-8"))
+        for name, job in (data.get("jobs") or {}).items():
+            on = job.get("runs-on")
+            labels = on if isinstance(on, list) else [on]
+            for lb in labels:
+                if isinstance(lb, str) and lb.endswith("-latest"):
+                    floating.append(f"{wf.name}:{name} → {lb}")
+    assert not floating, (
+        "這些 job 用了會自己變動的 runner 標籤:\n  " + "\n  ".join(floating) +
+        "\n改成明確的版本(例如 `ubuntu-26.04`)。理由見 ops/DEPENDENCIES.md 的 D5:"
+        "遷移期間同一個 commit 的兩次執行會拿到不同的作業系統。")
+
+
+# action 主版本的【下限】。值是「這個主版本的 action.yml 宣告 runs.using: node24」
+# 的最小主版本,`實測`(2026-11-02,逐一讀 action.yml)。
+#
+# 這是下限不是釘死:更高的主版本照樣通過,所以升級不會被這條擋住。
+# 它擋的是**倒退回 Node 20 那一代** —— 一次 copy-paste 就會發生,
+# 而症狀只是執行紀錄裡多一行黃字,沒有人會注意到。
+NODE24_FLOOR = {
+    "checkout": 5,
+    "setup-python": 6,
+    "setup-node": 5,
+    "upload-artifact": 6,
+    "download-artifact": 7,
+}
+
+
+def test_every_first_party_action_is_on_a_node24_major() -> None:
+    """`actions/*` 不得停留在只支援 Node 20 的主版本。
+
+    GitHub 2025-09 起把 node20 的 action 強制改跑在 Node 24,並在每次執行
+    留下一行棄用告示。那是**暫時的相容層**,不是承諾 —— 真的移除的那天,
+    這些 workflow 會一起壞掉,而最先壞掉的是每天供資料的那一支。
+
+    `anthropics/claude-code-action` 不在這條的管轄內:它是 composite
+    action(`using: composite`),沒有 Node 執行期。它釘在完整 SHA,
+    那是安全邊界的一部分,由別處管。
+    """
+    pat = re.compile(r"uses:\s*actions/([a-z0-9-]+)@v(\d+)")
+    seen, stale, unknown = 0, [], []
+    for wf in sorted(WORKFLOWS.glob("*.yml")):
+        for name, major in pat.findall(_code(wf)):
+            seen += 1
+            floor = NODE24_FLOOR.get(name)
+            if floor is None:
+                unknown.append(f"{wf.name} → actions/{name}@v{major}")
+            elif int(major) < floor:
+                stale.append(f"{wf.name} → actions/{name}@v{major}(至少要 v{floor})")
+    assert seen >= 5, f"只比對到 {seen} 個 actions/* —— 這條會變成恆真"
+    assert not unknown, (
+        "這些 actions/* 沒有登記在 NODE24_FLOOR 裡:\n  " + "\n  ".join(unknown) +
+        "\n去讀它那個主版本的 action.yml,確認 `runs.using` 是 node24(或更新),"
+        "再把下限加進表裡。沒有登記就等於沒有人在看它的執行期。")
+    assert not stale, (
+        "這些 action 還停在只支援 Node 20 的主版本:\n  " + "\n  ".join(stale) +
+        "\n見 ops/DEPENDENCIES.md 的 D5。")

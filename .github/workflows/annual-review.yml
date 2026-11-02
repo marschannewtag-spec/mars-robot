@@ -21,11 +21,11 @@ permissions:
 jobs:
   review:
     name: 產出年度健檢報告
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # 刻意不用 ubuntu-latest,理由見 ops/DEPENDENCIES.md
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -75,7 +75,7 @@ jobs:
         run: cat "${{ steps.report.outputs.path }}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: 保存為 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: annual-health-report
           path: ${{ steps.report.outputs.path }}

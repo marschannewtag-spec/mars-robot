@@ -37,7 +37,7 @@ concurrency:
 jobs:
   health:
     name: 資料源 · 新鮮度 · 合理性 · PWA
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # 刻意不用 ubuntu-latest,理由見 ops/DEPENDENCIES.md
     permissions:
       contents: write # 只用來推 ops-data 分支;main 由分支保護擋住
       issues: write
@@ -55,9 +55,9 @@ jobs:
       error_class: ${{ steps.gate.outputs.error_class }}
       autofix_reason: ${{ steps.gate.outputs.reason }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -286,7 +286,7 @@ jobs:
       # 交給 autofix job 用。jobs 之間不共用檔案系統,只能走 artifact。
       - name: 保存健檢報告
         if: steps.install.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: health-report
           path: health_report.md
@@ -297,7 +297,7 @@ jobs:
       # artifact 會跟著被跳過,而那正是唯一有診斷價值的輸出。
       - name: 保存依賴 manifest
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-manifest
           path: |
@@ -532,7 +532,7 @@ jobs:
     #
     # 開門清單由 src/autofix_gate.py 決定(有測試),不寫在這個表達式裡。
     if: needs.health.outputs.autofix == 'true' || inputs.drill
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # 刻意不用 ubuntu-latest,理由見 ops/DEPENDENCIES.md
     # 自動修復失敗不該讓整個 run 變紅。這兩層的語意必須分開:
     #   run 顏色 = 自動化本身有沒有壞
     #   Issue    = 資料健不健康
@@ -593,23 +593,23 @@ jobs:
       # ⚠ 無條件。最後的回報步驟要跑 ops/src/autofix_gate.py,沒有 checkout
       # 就沒有那個檔案 —— 而「沒有 token」正是最需要被回報的那個狀態,
       # 它會變成唯一報不出來的一個。那就又回到「安靜跳過」了。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       # 安裝失敗那條路上 health-report 根本不存在(它的上傳條件是安裝成功),
       # 要讀的是 always() 上傳的那一份。
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: steps.guard.outputs.enabled == 'true'
         with:
           name: dependency-manifest
 
       # 同上:回報步驟需要 python,所以這一步也不能有條件。
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         if: steps.guard.outputs.enabled == 'true'
         with:
           node-version: "22"

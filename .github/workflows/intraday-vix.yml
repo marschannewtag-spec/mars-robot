@@ -40,13 +40,13 @@ concurrency:
 jobs:
   quote:
     name: 抓 CBOE 延遲報價 → ops-data
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # 刻意不用 ubuntu-latest,理由見 ops/DEPENDENCIES.md
     permissions:
       contents: write # 只用來推 ops-data 分支;main 由分支保護擋住
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           # 刻意不設 cache: pip —— 這支不裝任何套件,沒有東西可以快取。
