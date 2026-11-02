@@ -193,7 +193,9 @@ def test_no_background_token_is_used_as_a_text_colour() -> None:
 
         #mainstate b{color:var(--ink)}
 
-    在這套設計 token 裡 `--ink`(#0E1726)是**頁面背景色**,不是「墨水色」。
+    在這套設計 token 裡 `--ink` 是**頁面背景色**,不是「墨水色」。
+    (事故當時是 `#0E1726`,2026-11-02 改成中性近黑 `#0C0D0F`。名字沒變、
+    語意沒變,所以這條守衛不受色值影響 —— 它看的是 token 名,不是色值。)
     結果那一行最重要的字(`主訊號目前 24%`)對比度 **1.13:1** —— 肉眼幾乎看不到。
     文字色只有三個:`--text` / `--muted` / `--faint`。
 
