@@ -1,0 +1,106 @@
+name: 盤中 VIX 報價
+
+# VIX 腿是領先腿,而它唯一的來源(CBOE 日檔)只收錄【已收盤】的交易日。
+# 整個交易時段裡,那條該最早動的腿看的是昨天。這支把 CBOE 的延遲 15 分鐘
+# 報價抓下來,發成一個 ~250 bytes 的小檔推到 ops-data,PWA 自己決定要不要接。
+# 背景與每一條判斷的理由寫在 ops/src/fetch_vix_quote.py 的模組 docstring。
+#
+# 這支刻意【不做】的事,每一條都對應一種已知的失效形狀:
+#
+# 1. **不碰 vix_daily.csv。** 歷史不可被盤中讀數改寫 —— 黃金基準、parity、
+#    健檢全錨在那份日檔上。而且 80 KB 的檔案一天重寫五次會把 ops-data 灌爆。
+# 2. **不開 Issue、不進健檢、不讓任何東西變紅燈。** 收盤後與週末「沒有可發布的
+#    報價」是正常狀態,不是故障。一個每天響好幾次的警報兩週內就會被無視 ——
+#    那是這個 repo 記錄過的事故,不要再製造一個。
+# 3. **沒東西可發就不 commit。** 這裡與心跳相反:心跳的空 commit 是刻意的
+#    (它要維持 repo 活動),這支不是,它只是一份補充讀數。
+# 4. **不 pip install。** 那支腳本只用標準函式庫。一條每天跑五次的路徑,
+#    不該讓相依解析有機會弄壞它。
+# 5. **不推 main。** 與所有自動流程同一條紀律。
+
+on:
+  # 美股現貨 09:30-16:00 ET。EST 是 14:30-21:00 UTC、EDT 是 13:30-20:00 UTC,
+  # 這五個時點同時涵蓋兩種日光節約狀態,不需要在 cron 裡處理時區。
+  #
+  # ⚠ 排程【不會準時】。`實測`(2026-11-02,每日健檢最近 12 次):cron 寫
+  #   22:00,實際 23:40-01:26 開跑,延遲 1h40m-3h26m。所以這裡排五次不是
+  #   為了每兩小時一筆,是為了在延遲與漏跑之後還剩下幾筆落在交易時段裡。
+  #   不要把這五個時點讀成「保證每兩小時更新一次」。
+  schedule:
+    - cron: "0 13,15,17,19,21 * * 1-5"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # 不取消進行中的 —— 一次 push 被卡住比少一筆讀數嚴重。
+  group: intraday-vix
+  cancel-in-progress: false
+
+jobs:
+  quote:
+    name: 抓 CBOE 延遲報價 → ops-data
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 只用來推 ops-data 分支;main 由分支保護擋住
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # 刻意不設 cache: pip —— 這支不裝任何套件,沒有東西可以快取。
+
+      - name: 抓報價
+        id: quote
+        run: |
+          python ops/src/fetch_vix_quote.py
+          if [ -f ops/data/pwa/vix_today.json ]; then
+            echo "have=1" >> "$GITHUB_OUTPUT"
+            cat ops/data/pwa/vix_today.json
+          else
+            echo "have=0" >> "$GITHUB_OUTPUT"
+            echo "這一輪沒有可發布的報價(收盤後、週末、或報價不可信)。"
+          fi
+
+      - name: 推到 ops-data
+        if: steps.quote.outputs.have == '1'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          tmp=$(mktemp -d)
+          cp ops/data/pwa/vix_today.json "$tmp/"
+
+          # 每日心跳也會推 ops-data,兩邊撞上就是非快轉被拒。重抓重套最多三次 ——
+          # 這支一天跑五次,為了一次競態紅燈不值得,而少一筆讀數也沒有症狀。
+          for attempt in 1 2 3; do
+            # 寫成 if/else 不用 `A && B || C`:B 失敗時 C 也會跑,
+            # 而這裡的 C 是「從 main 開一條新的 ops-data」—— 那會讓 push
+            # 變成非快轉而被拒,把一個小競態變成整個步驟紅掉。
+            if git fetch origin +refs/heads/ops-data:refs/remotes/origin/ops-data 2>/dev/null; then
+              git checkout -f -B ops-data origin/ops-data
+            else
+              echo "ops-data 尚不存在,由本次建立"
+              git checkout -f -B ops-data
+            fi
+
+            mkdir -p ops/data/pwa
+            cp "$tmp/vix_today.json" ops/data/pwa/
+            git add -f ops/data/pwa/vix_today.json
+
+            # 這裡【要】因為沒變化就跳過,和心跳相反:這支不負責維持 repo 活動,
+            # 而同一個報價重推一次只會在 ops-data 上留下噪音。
+            if git diff --cached --quiet; then
+              echo "報價與分支上的同一筆,不送出 commit。"
+              exit 0
+            fi
+
+            git commit -m "chore: 盤中 VIX 報價 $(python -c "import json;print(json.load(open('ops/data/pwa/vix_today.json',encoding='utf-8'))['quote_time_et'])")"
+            if git push origin ops-data; then
+              exit 0
+            fi
+            echo "::notice::push 被拒(第 $attempt 次),可能與每日心跳撞上,重抓重套。"
+            sleep 5
+          done
+          echo "::warning::三次都推不上去,這一輪的報價丟棄。PWA 會沿用日檔,不會有症狀。"

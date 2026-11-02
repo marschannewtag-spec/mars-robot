@@ -21,6 +21,7 @@
 #   **本機與 CI 的環境差異**。行尾不是內容,不該讓它決定紅綠。
 
 a7bce22ce9afb03d669abe5dc0af0a744001f3f8e97f246d2942ecbe7c0bae09  cboe_vix_history.csv
+8511293ec95278a7d584cdd92993ad237901d205fcf1d91e7831603a51d083b0  cboe_vix_quote.json
 750a58d407fc16a3c5cc1ec4bfb256cceac08f41f1d4ef1a41a35e0a5875e02f  golden_metrics.json
 0ed98728f52c63f58421d52881029f6ee9b16346266fd4c4caa8f2225bb91c08  golden_signals.csv
 589392f1f0ded6eb30fdfbfcb783e3f68c5b1f47a0f95df5d96493a6d372117d  shiller_sp500.csv
