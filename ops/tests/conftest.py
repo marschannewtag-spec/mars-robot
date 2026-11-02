@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -19,6 +20,40 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 REPO_ROOT = OPS_ROOT.parent
 
 sys.path.insert(0, str(OPS_ROOT / "src"))
+
+INDEX = REPO_ROOT / "index.html"
+
+
+def _index_text() -> str:
+    return INDEX.read_text(encoding="utf-8")
+
+
+def chart_months() -> int:
+    """歷史圖畫幾個月 —— 從 `index.html` 真正那一行解析出來。
+
+    ⚠ 不要在測試裡寫死 96。那個數字的**唯一真相**是
+    `hist.slice(-96)`;寫死一份副本的話,有人把圖拉長到 144 個月時
+    測試照樣綠,而 `config.yml` 的 `min_vix_months` 就不再夠用了
+    (見 `test_the_vix_floor_matches_what_the_chart_actually_needs`)。
+    """
+    m = re.search(r"hist\.slice\(-(\d+)\)", _index_text())
+    assert m, "在 index.html 找不到 `hist.slice(-N)` —— 前提變了,請重寫讀它的測試"
+    n = int(m.group(1))
+    assert 12 <= n <= 1200, f"解析到 {n} 個月,不像真的 —— 解析器壞了比沒有更糟"
+    return n
+
+
+def rolling_z_months() -> int:
+    """風險分數的滾動 z 分數窗 —— 從 `engine.py` 解析,同樣不存副本。"""
+    src = (OPS_ROOT / "src" / "engine.py").read_text(encoding="utf-8")
+    m = re.search(r"close\.rolling\((\d+)\)\.mean\(\)", src)
+    assert m, "在 engine.py 找不到 `close.rolling(N).mean()` —— 前提變了"
+    return int(m.group(1))
+
+
+def mirror_months_needed() -> int:
+    """鏡像至少要發幾個月:圖的長度 + 滾動窗。兩個都是解析來的。"""
+    return chart_months() + rolling_z_months()
 
 
 @pytest.fixture(scope="session")

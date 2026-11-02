@@ -15,7 +15,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#0E1726">
+<meta name="theme-color" content="#0C0D0F">
 <title>現金水位儀 · Cash-Weight Gauge</title>
 <link rel="manifest" href="manifest.json">
 <link rel="apple-touch-icon" href="icon-192.png">
@@ -26,12 +26,19 @@
      能,就不要再長出第三個數值。
      ════════════════════════════════════════════════════════════════════ */
   :root{
-    /* 色:四階表面 + 三階文字 + 四個語意色。不再增加。 */
-    --ink:#0E1726; --surf:#16223A; --surf2:#1B2A45; --line:#26375A;
-    --text:#E8EEF7; --muted:#8A9CB8; --faint:#5C6F90;
+    /* 色:四階表面 + 三階文字 + 四個語意色。不再增加。
+       ⚠ 表面是【中性近黑】,不是海軍藍。2026-11-02 之前這裡是 #0E1726/#16223A,
+         換掉的理由是量出來的,不是品味:
+         1. --faint 在 --surf2 上只有 2.82:1,低於 4.5:1 ——「刻度＝現金水位…」
+            那一行等於半隱形。換到中性底之後是 5.38:1。
+         2. 帶飽和度的底本身會吃掉顏色預算。這個產品唯一該有顏色的東西是
+            風險色(--teal/--amber/--orange/--rose),底色跟它搶。
+         中性化之後每一組文字對比全部上升,沒有一組下降(見 POSTMORTEMS)。 */
+    --ink:#0C0D0F; --surf:#15171A; --surf2:#1E2024; --line:#2A2C30;
+    --text:#FFFFFF; --muted:#B4B4B4; --faint:#949494;
     --teal:#5EEAD4; --amber:#FBBF24; --orange:#FB923C; --rose:#F43F5E;
     /* 軌道底色:所有長條的空軌道共用這一個,不要各自寫 #0c1322。 */
-    --track:rgba(232,238,247,.10);
+    --track:rgba(255,255,255,.10);
 
     --sans:"Inter",system-ui,-apple-system,"PingFang TC","Noto Sans TC",sans-serif;
     --mono:"SF Mono",ui-monospace,"JetBrains Mono","Roboto Mono",Menlo,Consolas,monospace;
@@ -44,8 +51,12 @@
     --r:14px; --r-sm:8px;
     --s2:8px; --s3:12px; --s4:16px;
 
-    /* 字級:四階輔助文字 + 三種數字。 */
-    --fz-h:13px; --fz-lab:11.5px; --fz-body:12.5px; --fz-note:11px;
+    /* 字級:四階輔助文字 + 三種數字。
+       ⚠ 不要再往下調。2026-11-02 之前正文是 12.5px、註腳 11px,量出來
+         【全頁 93% 的文字在 13px 以下】。研究過的 23 個產品畫面裡,
+         正文與儲存格是 13–16px(中位數 14,深色畫面 13),標籤 11–14。
+         字小不等於精緻,等於讀不到 —— 這是一個每天要掃一眼的工具。 */
+    --fz-h:15px; --fz-lab:13px; --fz-body:13px; --fz-note:12px;
     --num-l:64px; --num-m:34px; --num-s:19px;
 
     /* ⚠ 被守衛測試【解析】的數字不收進來,必須保持字面量:
@@ -81,6 +92,12 @@
   .block>h2 .lg{font:500 var(--fz-note) var(--sans);color:var(--faint);
     font-variant-numeric:tabular-nums;text-align:right;min-width:0}
   /* 區塊內的分隔:一條線,不是一個新盒子。 */
+  /* 圖例的色塊就是柱子縮小後的樣子 —— 四個色階 + 一條線。
+     用文字寫「柱=現金%」等於要讀的人自己對照,那是說明不是圖例。 */
+  .sw{display:inline-block;width:8px;height:8px;vertical-align:baseline;
+    border-radius:1px;margin-right:1px}
+  .sw.ln{width:13px;height:2px;background:var(--text);vertical-align:middle;
+    border-radius:0;margin:0 2px 0 0}
   .rule{border-top:1px solid var(--line);margin:13px 0;height:0}
 
   /* 全頁只有這兩個等級的輔助文字:.lab 是資料的名字,.note 是說明。
@@ -93,16 +110,21 @@
      `--mono` 沒有中文字,中文會掉到系統字體 —— 一個標籤裡兩套字體、
      兩種字重與基線。而字距(letter-spacing)是拉丁全大寫標題的語彙,
      中文沒有這個傳統,套上去只會讓字散掉(實測最多被拉開 1.98px)。 */
-  .eyebrow{font:600 11px/1 var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--faint)}
+  /* ⚠ 這裡曾經有 `.eyebrow` —— 標題上方那行全大寫拉丁小標
+     「TREND × VIX · UNION LOGIC」。刪掉的理由有兩個,都不是品味:
+       1. 它沒有講任何 h1 與 .sub 沒講過的事,是第三份同義副本。
+       2. 細小全大寫加字距,是生成頁面最容易辨認的印記之一。
+          (研究樣本:評分 7.5 以上的網站用它 16%,6.5 以下用 57%。)
+     不要加回來。要補充資訊就寫進標題或下面那句。 */
 
   /* ── 1. 頁首 ─────────────────────────────────────────────────────── */
   header{display:flex;justify-content:space-between;align-items:center;
     gap:14px;flex-wrap:wrap;margin-bottom:var(--gap)}
   .htxt{min-width:0}
-  h1{font-size:19px;font-weight:700;letter-spacing:-.01em;margin:5px 0 2px}
+  h1{font-size:var(--num-s);font-weight:700;letter-spacing:-.01em;margin:5px 0 2px}
   .sub{color:var(--muted);font-size:var(--fz-body);line-height:1.55}
   #refresh{flex:none;background:var(--surf2);color:var(--text);border:1px solid var(--line);
-    border-radius:var(--r-sm);padding:9px 14px;min-height:40px;font:600 12px var(--sans);
+    border-radius:var(--r-sm);padding:9px 14px;min-height:40px;font:600 var(--fz-body) var(--sans);
     cursor:pointer;display:flex;align-items:center;gap:7px;transition:.15s}
   #refresh:hover{border-color:var(--teal)}
   #refresh:active{transform:scale(.97)}
@@ -117,13 +139,13 @@
     border-radius:var(--r);padding:var(--pad);margin-top:var(--gap)}
   .readlab{display:flex;align-items:center;gap:8px;
     font:600 var(--fz-lab) var(--sans);color:var(--muted)}
-  .allin{font:700 10.5px var(--sans);color:#04130d;background:var(--teal);
+  .allin{font:700 var(--fz-note) var(--sans);color:#04130d;background:var(--teal);
     padding:3px 8px;border-radius:999px;display:none}
   .allin.on{display:inline-block}
   .big{font:700 var(--num-l)/0.95 var(--mono);letter-spacing:-.02em;
     margin:6px 0 2px;font-variant-numeric:tabular-nums}
-  .big small{font-size:26px;color:var(--muted)}
-  .verdict{font:600 13.5px var(--sans);margin-top:2px}
+  .big small{font-size:var(--num-s);color:var(--muted)}
+  .verdict{font:600 var(--fz-h) var(--sans);margin-top:2px}
   .asof{font:500 var(--fz-note)/1.5 var(--sans);color:var(--faint);
     margin-top:8px;font-variant-numeric:tabular-nums}
 
@@ -144,24 +166,29 @@
     background:var(--track)}
   .tfill{position:absolute;left:0;top:0;bottom:0;border-radius:999px;
     transition:width .7s cubic-bezier(.2,.7,.2,1)}
-  .ttick{position:absolute;top:-3px;bottom:-3px;width:1px;background:rgba(232,238,247,.28)}
+  .ttick{position:absolute;top:-3px;bottom:-3px;width:1px;background:rgba(255,255,255,.28)}
   .ttick.t1{left:var(--t1)}
   .ttick.t2{left:var(--t2)}
+  /* 指針外圍那一圈不是陰影,是【描邊】—— 白色指針要在整條色階上都看得見,
+     包含最淺的薄荷綠。本來寫成 box-shadow:0 0 0 1px,那是用陰影語法畫外框:
+     掃描器會把它當成「靜止元素帶陰影」(本專案禁止),而且當時的色值
+     rgba(14,23,38) 是舊的海軍藍底,換底之後已經對不上。改成 outline,
+     語意與實作一致,也不佔版位。 */
   .tmark{position:absolute;top:-4px;left:0;width:3px;height:18px;background:#fff;border-radius:2px;
-    box-shadow:0 0 0 1px rgba(14,23,38,.55);transition:left .7s cubic-bezier(.2,.7,.2,1)}
-  .tval{position:absolute;top:-21px;left:0;font:700 12px var(--mono);transform:translateX(-50%);
+    outline:1px solid rgba(12,13,15,.65);transition:left .7s cubic-bezier(.2,.7,.2,1)}
+  .tval{position:absolute;top:-21px;left:0;font:700 var(--fz-note) var(--mono);transform:translateX(-50%);
     transition:left .7s cubic-bezier(.2,.7,.2,1);font-variant-numeric:tabular-nums}
   /* 刻度字 = 純數字,位置讀 --t1 / --t2(與刻度線同一個來源)。
      ⚠ 端點 0 與 100 刻意不畫:它們不帶門檻資訊,而 320px 下 90 與 100
        只剩 2px 間距,讀起來像「90100」(實測)。 */
-  .tempscale{position:relative;height:14px;font:500 10px var(--sans);color:var(--faint);
+  .tempscale{position:relative;height:15px;font:500 var(--fz-note) var(--sans);color:var(--faint);
     font-variant-numeric:tabular-nums}
   .tempscale span{position:absolute;top:0;white-space:nowrap;transform:translateX(-50%)}
   .tempscale span:nth-child(1){left:var(--t1)}
   .tempscale span:nth-child(2){left:var(--t2)}
   .templab{display:flex;align-items:baseline;gap:8px;
     font:600 var(--fz-lab) var(--sans);color:var(--muted)}
-  .templab b{font-size:13px;font-weight:700}
+  .templab b{font-size:var(--fz-body);font-weight:700}
 
   /* 兩條腿:桌面並排兩個【等寬】區域,排版規格完全相同。
      不套卡片外殼 —— 左邊一條細線就夠了。 */
@@ -170,20 +197,24 @@
     border-left:2px solid var(--line);padding:1px 0 1px 10px}
   .leg .t{font:600 var(--fz-lab) var(--sans);color:var(--muted);
     display:flex;align-items:center;gap:7px;white-space:nowrap}
-  .leg .v{font:700 21px var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+  .leg .v{font:700 var(--num-s) var(--mono);font-variant-numeric:tabular-nums;text-align:right}
   .leg .d{grid-column:1/-1;font:400 var(--fz-note)/1.55 var(--sans);
     color:var(--faint);margin-top:2px}
   /* white-space:nowrap 不是裝飾:`主導` 兩個字一換行,膠囊就變成一個圓圈,
      看起來像壞掉的圖示(375px 窄欄實測)。 */
-  .pill{font:600 10.5px var(--sans);padding:2px 8px;border-radius:999px;
+  .pill{font:600 var(--fz-note) var(--sans);padding:2px 8px;border-radius:999px;
     border:1px solid currentColor;white-space:nowrap}
   /* 非主導的那一腿會被寫成空字串,而空字串配上 border + padding
      會留下一個 14px 寬的空框 —— 看起來像壞掉的元件。實測畫面上看得到。 */
   .pill:empty{display:none}
 
-  .defnote{display:none;margin-top:var(--s2);padding:7px 10px;border-radius:var(--r-sm);
-    font:400 var(--fz-note)/1.5 var(--sans);
-    background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.45);color:#FBBF24}
+  /* ⚠ 這裡曾經在文字前面放一個 ⚠ emoji。拿掉的理由:emoji 在不同系統上
+     是不同的圖、不同的顏色、有時候是彩色的,對一個講投資部位的工具來說
+     那是雜訊不是訊號。改用【左側 3px 的琥珀色邊】—— 同一個意思,
+     每台機器長得一樣,而且不佔一個字的寬度。 */
+  .defnote{display:none;margin-top:var(--s2);padding:7px 10px 7px 11px;
+    border-radius:var(--r-sm);font:400 var(--fz-note)/1.55 var(--sans);
+    background:rgba(251,191,36,.10);border-left:3px solid var(--amber);color:var(--amber)}
   .defnote.on{display:block}
 
   /* ── 3. 即時指標:三等分,等寬等高,標籤位置一致 ───────────────── */
@@ -197,7 +228,7 @@
   /* 「資料更新」那一格的值是文字(剛剛 / 3 小時前),不是數字 ——
      等寬字沒有中文,那兩個字會掉到另一套字體。規則是「等寬只給數字」。 */
   #sfresh{font-family:var(--sans)}
-  .stat .y{font:400 10.5px var(--sans);color:var(--faint)}
+  .stat .y{font:400 var(--fz-note) var(--sans);color:var(--faint)}
 
   /* ── 4. 歷史圖表 ─────────────────────────────────────────────────── */
   canvas{width:100%;height:190px;display:block}
@@ -216,7 +247,7 @@
     padding:5px 8px;border-radius:var(--r-sm);opacity:.62;transition:.3s}
   .oddrow.hit{opacity:1}
   .oddrow.cur{background:rgba(251,191,36,.10);outline:1px solid rgba(251,191,36,.4)}
-  .oddrow .od{font:700 13px var(--mono);color:var(--text)}
+  .oddrow .od{font:700 var(--fz-body) var(--mono);color:var(--text)}
   .oddrow .obar{height:7px;background:var(--track);border-radius:999px;overflow:hidden}
   .oddrow .obar i{display:block;height:100%;border-radius:999px;background:var(--faint)}
   .oddrow .oev{font:600 var(--fz-lab) var(--sans);color:var(--muted);text-align:right;
@@ -244,18 +275,18 @@
   /* 第一欄放得下「名稱 + 主體膠囊」,而且是【固定】寬度:每一列各自是一個
      grid,用 auto 的話每列會自己算,六列的長條就對不齊了。 */
   .domrow{display:grid;grid-template-columns:66px 1fr 42px;align-items:center;gap:8px;
-    font:600 10.5px var(--sans);color:var(--faint)}
+    font:600 var(--fz-note) var(--sans);color:var(--faint)}
   .domrow .dn{display:flex;align-items:center;gap:5px;white-space:nowrap}
-  .domrow .pill{font-size:9.5px;padding:1px 6px}
+  .domrow .pill{font-size:var(--fz-note);padding:1px 6px}
   .domrow .dbar{height:7px;background:var(--track);border-radius:999px;overflow:hidden}
   .domrow .dbar i{display:block;height:100%;border-radius:999px;background:var(--faint)}
-  .domrow.top{color:var(--text);font-size:11.5px}
+  .domrow.top{color:var(--text);font-size:var(--fz-body)}
   .domrow.top .dbar i{background:var(--teal)}
-  .domrow .dnum{text-align:right;font:600 10.5px var(--mono);font-variant-numeric:tabular-nums}
+  .domrow .dnum{text-align:right;font:600 var(--fz-body) var(--mono);font-variant-numeric:tabular-nums}
 
   .warnhead{display:flex;justify-content:space-between;align-items:baseline;
     margin-bottom:9px;font:600 var(--fz-lab) var(--sans);color:var(--muted)}
-  .warnhead b{font:700 14px var(--mono);font-variant-numeric:tabular-nums}
+  .warnhead b{font:700 var(--fz-h) var(--mono);font-variant-numeric:tabular-nums}
   /* 警訊列:六條長一樣。顏色只表達風險程度,不表達分類。 */
   .flag{border:1px solid var(--line);border-radius:var(--r-sm);margin-bottom:6px}
   .flag>summary{display:grid;grid-template-columns:14px 1fr auto;align-items:center;gap:9px;
@@ -289,7 +320,7 @@
   details.block>summary::-webkit-details-marker{display:none}
   details.block[open]>summary{color:var(--text)}
   /* 「＋」不動的話,展開後它還在說「可以展開」。轉 45° 變成「×」= 可收合。 */
-  .mk{display:inline-block;font:400 15px/1 var(--mono);color:var(--faint);transition:transform .2s}
+  .mk{display:inline-block;font:400 var(--fz-h)/1 var(--mono);color:var(--faint);transition:transform .2s}
   details.block[open] .mk{transform:rotate(45deg)}
   .fine{font:400 var(--fz-lab)/1.7 var(--sans);color:var(--faint);padding-bottom:var(--pad)}
   .fine b{color:var(--muted)}
@@ -305,9 +336,9 @@
      在那之前,規則就是規則:等寬只給數字與代碼。 */
   .fine input{width:100%;background:var(--ink);border:1px solid var(--line);
     border-radius:var(--r-sm);padding:9px 11px;color:var(--text);
-    font:12px var(--sans);margin-top:6px}
+    font:var(--fz-note) var(--sans);margin-top:6px}
   .fine button{background:var(--surf2);color:var(--text);border:1px solid var(--line);
-    border-radius:var(--r-sm);padding:9px 14px;font:600 12px var(--sans);cursor:pointer}
+    border-radius:var(--r-sm);padding:9px 14px;font:600 var(--fz-body) var(--sans);cursor:pointer}
   .fine button:hover{border-color:var(--teal)}
   .frow{display:flex;gap:var(--s2);margin-top:13px;align-items:center}
   a{color:var(--teal);text-decoration:none}
@@ -325,6 +356,29 @@
   @media(min-width:561px){
     .legs{grid-template-columns:repeat(2,minmax(0,1fr))}
     .ddnow{grid-template-columns:minmax(0,auto) minmax(0,1fr);gap:18px;align-items:end}
+  }
+  /* ⚠ 第三個斷點,它存在的理由是量出來的一張圖,不是「桌面也來排排看」:
+     1440px 的截圖上,hero 右邊 55% 是整片空的,而兩條腿(這一屏唯一的
+     證據)被擠在答案【下面】。把證據搬到答案旁邊之後,空洞被關上,
+     而且讀的順序從「數字 → 往下找原因」變成「數字 ← 原因」。
+     700px 是兩欄真的放得下的最小寬度:右欄 252 + 間距 28,左欄仍有
+     約 420px 給 64px 的數字,不會逼它換行。 */
+  @media(min-width:700px){
+    .hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,252px);
+      column-gap:28px;align-content:start}
+    .hero>*{grid-column:1;min-width:0}
+    /* 腿佔滿右欄的第 1–4 列(標籤、數字、判讀、資料日期那四列)。 */
+    .hero>.legs{grid-column:2;grid-row:1/5;align-self:center;
+      grid-template-columns:minmax(0,1fr);gap:16px}
+    .hero>.tempwrap,.hero>.defnote,.hero>.rule{grid-column:1/-1}
+    /* hero 最底下那條帶子原本兩行都靠左,右半邊空著 —— 桌面截圖上
+       看起來像沒寫完。改成一列兩端:左邊是狀態,右邊是那句免責。 */
+    .hero>.templab{grid-column:1;align-self:baseline}
+    /* 整寬靠右,不是擠進 252px 的右欄 —— 擠進去會換行,
+       而且「不預測跌幅」會自己孤零零掉到第二行。 */
+    .hero>.note{grid-column:1/-1;text-align:right;margin-top:2px !important}
+    /* 腿一旦移到右邊,它上面那條分隔線就會跟下面那條貼在一起變成雙線。 */
+    .hero>.r-legs{display:none}
   }
   @media(max-width:560px){
     .strip{grid-template-columns:minmax(0,1fr)}
@@ -344,7 +398,6 @@
 <body>
 <header>
   <div class="htxt">
-    <div class="eyebrow">Trend × VIX · Union Logic</div>
     <h1>現金水位儀</h1>
     <div class="sub">即時計算「趨勢動能 × 真實VIX」聯集策略<br>建議的現金比重 — 最高可達 100%。</div>
   </div>
@@ -381,9 +434,11 @@
   <div class="defnote" id="lagnote"></div>
   <div class="defnote" id="opsnote"></div>
 
-  <div class="rule"></div>
+  <div class="rule r-legs"></div>
 
-  <!-- 兩條腿:桌面並排兩個等寬區域,排版規格完全相同。 -->
+  <!-- 兩條腿:桌面並排兩個等寬區域,排版規格完全相同。
+       ≥700px 時整塊移到大數字右邊(見 .hero 的 @media)——
+       證據要放在答案旁邊,而不是答案下面一片空白。 -->
   <div class="legs">
     <div class="leg">
       <div class="t">趨勢動能腿 <span class="pill" id="mompill">—</span></div>
@@ -411,9 +466,9 @@
 </div>
 
 <div class="block">
-  <h2><span class="ht">現金水位歷史</span> <span class="lg">近 8 年 · 柱=現金% · 線=S&P</span></h2>
+  <h2><span class="ht">現金水位歷史</span> <span class="lg"><i class="sw" style="background:var(--teal)"></i><i class="sw" style="background:var(--amber)"></i><i class="sw" style="background:var(--orange)"></i><i class="sw" style="background:var(--rose)"></i> 現金 0→100%　<i class="sw ln"></i> S&P　近 8 年</span></h2>
   <canvas id="chart" width="720" height="200"></canvas>
-  <div class="note" style="margin-top:7px">柱的<b>顏色＝該月的現金水位</b>,與上方水位條同一個色階 —— 一次 100% 的全現金與一次 24% 的小減碼,顏色不一樣。</div>
+  <div class="note" style="margin-top:7px">每根柱是一個月。顏色與上方水位條同一個色階,所以一次全現金與一次小減碼看得出不一樣。</div>
 </div>
 
 <div class="block">
@@ -468,7 +523,7 @@
 </details>
 
 <details class="block">
-  <summary><span>⚙ 資料來源(預設每日 · 免金鑰 · 自動退回)</span><span class="mk">＋</span></summary>
+  <summary><span>資料來源(預設每日 · 免金鑰 · 自動退回)</span><span class="mk">＋</span></summary>
   <div class="fine">
     <p>趨勢腿資料來源,由新鮮到穩定<b>自動逐層退回</b>,不會斷線:</p>
     <p style="margin-top:8px">① <b>每日 · 自有 Worker</b>(選填網址)— 自架 Cloudflare Worker,最優先。<br>② <b>即時 · TwelveData</b>(選填金鑰)— 想要盤中即時、且願自備免費 key 才需要。<br>③ <b>每日 · 本專案鏡像</b>(<b>預設、免金鑰、免代理</b>)— 本專案的每日自動流程在伺服器端抓 Yahoo ^GSPC 日K,把每月最後一個交易日的收盤發布出來,瀏覽器直接讀。<b>兩欄都留空就走這條</b>,趨勢腿反映到昨收。<br>④ <b>每日 · Yahoo ^GSPC 經 CORS 代理</b>— 只在③抓不到時才試,會依序試 <code>query1/query2</code> 兩個主機 × <code>corsproxy.io</code> 代理。<b>2026-10-19 實測:免費代理已全部失效</b>(corsproxy.io 轉為需 API key、allorigins 持續逾時已移除),留著是因為它哪天可能會回來。<br>⑤ <b>月頻 · Shiller</b>(最終保底)— 前面全部失敗時才用,永遠可用,但那是<b>月均價</b>定義、與回測基準不同,畫面會顯示警示列。</p>
@@ -780,7 +835,10 @@ function drawChart(hist){
   cv.width=W*dpr;cv.height=H*dpr;
   const x=cv.getContext("2d");x.scale(dpr,dpr);x.clearRect(0,0,W,H);
   if(!hist.length)return;
-  const pad={l:6,r:6,t:10,b:18};
+  // ⚠ 左側 34px 是【刻度字的水槽】,不是留白。之前 l:6,第一根柱子
+  //   正好坐在「25%」上面 —— 標籤就算畫在最上層也讀不出來。
+  //   座標軸的字要站在軸上,不能站在資料上。
+  const pad={l:34,r:6,t:10,b:18};
   const n=hist.length, iw=W-pad.l-pad.r, ih=H-pad.t-pad.b;
   const px=i=>pad.l+iw*i/(n-1);
   // cash area (0..1 -> bottom..top)
@@ -788,17 +846,18 @@ function drawChart(hist){
   // 現金軸的參考線 —— 沒有刻度的面積圖只看得出「有起伏」,看不出「多高」,
   // 而「那一次到底拉到幾成」正是看這張圖的理由。
   // 畫在面積之前,所以它在資料底下,不會壓住讀數。
-  x.strokeStyle="rgba(232,238,247,.16)";x.lineWidth=1;
-  x.fillStyle="#7E92B4";x.font="9px ui-monospace,monospace";
-  x.textAlign="left";x.textBaseline="middle";
-  [.5,1].forEach(v=>{
+  //
+  // ⚠ 2026-11-02 之前這裡只畫 [.5,1] 兩條,而且標籤跟格線一起畫在柱子【前面】——
+  //   結果柱子用 .62 的不透明度蓋在「50%」上,那個標籤在截圖上只剩半個字。
+  //   兩件事一起修:刻度補到 25/50/75/100(研究樣本 4–7 條,中位數 5),
+  //   標籤改畫在所有資料【之後】。格線仍在資料底下,標籤必須在最上面 ——
+  //   一個讀不到的刻度,等於沒有刻度。
+  const TICKS=[.25,.5,.75,1];
+  x.strokeStyle="rgba(255,255,255,.13)";x.lineWidth=1;
+  TICKS.forEach(v=>{
     const gy=Math.round(cy(v))+.5;
-    // 線從標籤後面才開始 —— 第一版把標籤放右上角,而 S&P 線在最右端正好
-    // 衝到圖頂,兩個疊在一起(桌面版實測)。座標軸標籤要站在軸上,不是站在資料上。
-    x.beginPath();x.moveTo(pad.l+26,gy);x.lineTo(W-pad.r,gy);x.stroke();
-    x.fillText((v*100)+"%",pad.l,gy);
+    x.beginPath();x.moveTo(pad.l,gy);x.lineTo(W-pad.r,gy);x.stroke();
   });
-  x.textBaseline="alphabetic";
   // 每個月一根柱子,用【它自己的水位】上色 —— 與大數字、水位條共用
   // riskColor(),三處不可能分岔。
   //
@@ -824,9 +883,15 @@ function drawChart(hist){
   const ps=hist.map(d=>Math.log(d.price));const mn=Math.min(...ps),mx=Math.max(...ps);
   const sy=v=>pad.t+ih*(1-(v-mn)/(mx-mn||1))*.85-2;
   x.beginPath();hist.forEach((d,i)=>{const y=sy(Math.log(d.price));i?x.lineTo(px(i),y):x.moveTo(px(i),y);});
-  x.strokeStyle="rgba(232,238,247,.88)";x.lineWidth=1.5;x.stroke();
+  x.strokeStyle="rgba(255,255,255,.9)";x.lineWidth=1.5;x.stroke();
+  // 現金軸的刻度字 —— 畫在柱子與 S&P 線【之後】,否則會被蓋掉。
+  x.fillStyle="#949494";x.font="11px Inter,system-ui,sans-serif";
+  x.textAlign="left";x.textBaseline="middle";
+  x.textAlign="right";
+  TICKS.forEach(v=>{x.fillText((v*100)+"%",pad.l-7,Math.round(cy(v))+.5);});
+  x.textBaseline="alphabetic";
   // year ticks
-  x.fillStyle="#7E92B4";x.font="10px ui-monospace,monospace";x.textAlign="center";
+  x.fillStyle="#949494";x.font="11px Inter,system-ui,sans-serif";x.textAlign="center";
   let lastY="";hist.forEach((d,i)=>{const y=d.ym.slice(0,4);if(y!==lastY&&y%2===0){lastY=y;x.fillText("'"+y.slice(2),px(i),H-5);}});
 }
 // 縮放/轉向後必須重繪:像素緩衝區是在 drawChart 裡依當下寬度設定的,不重繪就會被橫向拉扁。
@@ -897,7 +962,7 @@ function render(data,fetchedAt,fromCache){
   // 退回 Shiller 時價格定義會從「月收盤」變成「月均價」,17.3% 的月份結果不同 —— 必須明說
   $("defnote").classList.toggle("on", !!data.altDef);
   $("defnote").innerHTML = data.altDef
-    ? "⚠ 目前用的是 <b>Shiller 月均價</b>,與回測基準的<b>月收盤</b>定義不同 —— 歷史上約 17% 的月份兩者會給出不同水位。每日來源恢復後會自動切回。"
+    ? "目前用的是 <b>Shiller 月均價</b>,與回測基準的<b>月收盤</b>定義不同 —— 歷史上約 17% 的月份兩者會給出不同水位。每日來源恢復後會自動切回。"
     : "";
   // 資料落後 → 必須說出來。兩種落後,兩種危險,都要講。
   //
@@ -938,7 +1003,7 @@ function render(data,fetchedAt,fromCache){
     +"月份看起來一致,但它不是現況。");
   $("lagnote").classList.toggle("on", parts.length>0);
   $("lagnote").innerHTML = parts.length
-    ? "⚠ "+parts.join("<br>⚠ ")+"<br>來源恢復後會自動更新。"
+    ? parts.join("<br>")+"<br>來源恢復後會自動更新。"
     : "";
 
   $("allin").classList.toggle("on", uni===0);
@@ -1053,13 +1118,13 @@ const OPS_STALE_DAYS=4;   // 心跳是每日的;4 天容得下週末與單次 ou
 // 被停用)也是錯的。說錯話的警示燈和不會響的警示燈一樣沒用。
 function opsWarn(html){const el=$("opsnote");if(!el)return;el.classList.add("on");el.innerHTML=html;}
 function opsMonitorDead(days){
-  opsWarn("⚠ <b>背後的自動監控已 "+days+" 天沒有心跳。</b>每日資料健檢可能已停止運作"
+  opsWarn("<b>背後的自動監控已 "+days+" 天沒有心跳。</b>每日資料健檢可能已停止運作"
     +"（GitHub 會自動停用長期靜置 repo 的排程流程）。<br>"
     +"上面的數字仍是<b>即時抓的、沒有問題</b> —— 失效的是那層在幫你盯"
     +"「資料源有沒有默默壞掉」的機制。處理方式見 repo 的 <code>ops/SETUP.md</code> 第 4 項。");
 }
 function opsDataStalled(days){
-  opsWarn("⚠ <b>自動監控仍在運作,但資料已 "+days+" 天沒有前進。</b>"
+  opsWarn("<b>自動監控仍在運作,但資料已 "+days+" 天沒有前進。</b>"
     +"心跳正常代表排程沒有被停用 —— 停住的是上游資料源或健檢本身。<br>"
     +"上面的數字仍是<b>即時抓的</b>,舊的是那份鏡像。詳情見 repo 的健檢 Issue。");
 }
@@ -1172,18 +1237,32 @@ function renderRegime(s){
     +"這裡是它按定義做不到的另一件事 —— 兩腿都要等 VIX 跳、等均線跌破才會動,"
     +"處理「崩盤中」很好,處理「崩盤前」處理不了。這六條看的是"
     +"<b>價格還在高檔、但內部已經在惡化</b>。<br>"
-    +"⚠ <b>這六個門檻沒有經過回測</b> —— CNN 端點只給 250 天歷史,做不出統計顯著性。"
+    +"<b>這六個門檻沒有經過回測</b> —— CNN 端點只給 250 天歷史,做不出統計顯著性。"
     +"它們是常識性的極端值,不是最佳化出來的參數,請當作「該去看一眼」而不是「該賣了」。"
     +"台灣景氣對策信號為月頻、發布落後約兩個月。"
-    +(stale?"<br>⚠ <b>這份資料已超過 "+SIGNALS_STALE_DAYS+" 天沒更新</b>,下方數值可能已不是現況。":"");
+    +(stale?"<br><b>這份資料已超過 "+SIGNALS_STALE_DAYS+" 天沒更新</b>,下方數值可能已不是現況。":"");
 
   $("regimepanel").classList.add("on");
 }
 function checkRegime(){
+  // ⚠ 兩個 catch,不是一個。2026-11-02 之前這裡只有一個 `.catch(()=>{})`
+  //   包住整條鏈 —— 於是【抓不到資料】與【渲染自己丟例外】在畫面上
+  //   長得一模一樣:面板都是默默不出現。
+  //
+  //   「失敗即靜默」是對【抓不到】的決定(CNN 不送 CORS,斷線是常態)。
+  //   它不該順便蓋掉程式的 bug:例如 signals.json 裡某個分數變成 null,
+  //   `scores[n].toFixed(2)` 會丟 TypeError,而你會以為是上游掛了。
+  //
+  //   這正是本 repo 在 autofix_gate.py 開頭抱怨的同一件事:
+  //   「沒有 token 而安靜跳過,和修好了,在輸出上長得一樣。」
   fetchT(OPS_SIGNALS,null,6000)
     .then(r=>r.ok?r.json():Promise.reject(new Error(r.status)))
-    .then(renderRegime)
-    .catch(()=>{});   // 刻意吞掉 —— 抓不到就當這塊不存在
+    .then(s=>{
+      // 渲染的錯要出聲(console),但不得把頁面其他部分帶倒 —— 這一塊是輔助讀數。
+      try{ renderRegime(s); }
+      catch(e){ console.error("renderRegime 失敗(資料拿到了,是渲染出錯):", e); }
+    })
+    .catch(()=>{});   // 這一個只剩【抓不到】:刻意吞掉,當這塊不存在
 }
 checkRegime();
 // ---- API key 設定 ----

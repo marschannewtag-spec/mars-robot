@@ -13,7 +13,7 @@
 |---|---|
 | `index.html` | **整個 App** — CSS、HTML、JS 全部內嵌在這一個檔 |
 | `sw.js` | Service Worker:HTML 網路優先、靜態檔快取優先、跨網域資料不介入 |
-| `manifest.json` | PWA 安裝設定(直式、深色 `#0E1726`) |
+| `manifest.json` | PWA 安裝設定(直式、深色 `#0C0D0F`) |
 | `icon-192.png` / `icon-512.png` | App 圖示 |
 | `ops/` | 維運專案:訊號引擎(真理來源)、資料管線、測試、健檢與年度報告 |
 | `ops/pine/` | TradingView 版指標 + [執行層驗證步驟](ops/pine/README.md) |

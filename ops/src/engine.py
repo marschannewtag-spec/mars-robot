@@ -139,8 +139,19 @@ def sp_monthly_shiller_avg(shiller: pd.DataFrame) -> pd.DataFrame:
     (與 Yahoo 月均價差異精確為 0.00)。兩種定義在 17.3% 的月份會給出不同的
     現金建議,乖離率最大差 10.19 個百分點。
 
-    2026-08 定案改用月收盤。本函式只保留給 annual_review.py 做定義對照,
-    以及取用 Shiller 的股息欄。不要拿它產生訊號。
+    2026-08 定案改用月收盤。不要拿它產生訊號。
+
+    ⚠ **唯一的呼叫者是 `tests/test_parity.py`**,用來驗「舊定義與新定義真的
+    不一樣、而且差多少」。`實測`(2026-11-02 全樹 grep)沒有任何生產程式呼叫它。
+
+    這段說明在 2026-11-02 之前寫的是「保留給 annual_review.py 做定義對照,
+    以及取用 Shiller 的股息欄」—— **兩句都不成立**。annual_review.py 從來沒有
+    呼叫它;而它回傳的是 `[ym, price]`,根本沒有股息欄
+    (annual_review 是自己 `fetch_data.load("shiller")` 去拿 `Dividend` 的)。
+
+    留著這段錯的說明比沒有更糟 —— 它讓人以為刪掉會弄壞生產路徑,於是不敢碰;
+    也讓人以為這裡拿得到股息。那正是這個檔案下面那段 `union_cash()` 註解在講的
+    同一件事:**文件宣稱有、實際沒接,會讓人停止懷疑。**
     """
     df = shiller.copy()
     df["price"] = pd.to_numeric(df["SP500"], errors="coerce")
@@ -217,7 +228,14 @@ def signal_frame(sp_m: pd.DataFrame, vix_m: pd.DataFrame) -> pd.DataFrame:
     vix_df = vix_m.copy().reset_index(drop=True)
     vix_df["risk"] = vix_risk_series(vix_df).values
 
-    df = mom_df.merge(vix_df[["ym", "risk", "n"]], on="ym", how="inner")
+    # ⚠ 只取 risk。2026-11-02 之前這裡還 merge 了一個 `n`(該月交易日數),
+    #   而從 merge 到 return 之間沒有一行讀它,return 也把它濾掉了 ——
+    #   它什麼都沒做,只是讓下一個讀的人去找「n 用在哪」。
+    #   真正需要 `n` 的兩個消費端各自算自己的:PWA 用 JS 的 buildVixMonthly(),
+    #   年度報告用 annual_review.month_observation_counts()。
+    #   那是刻意的 —— 這個 frame 的 schema 被 test_parity / test_golden /
+    #   pine_sim 三方逐月釘住,不為了一個沒人讀的欄位去動它。
+    df = mom_df.merge(vix_df[["ym", "risk"]], on="ym", how="inner")
     df = df.dropna(subset=["mom"]).reset_index(drop=True)
 
     df["mom_cash"] = df["mom"].map(mom_cash)
