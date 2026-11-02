@@ -46,24 +46,24 @@ concurrency:
 jobs:
   canary:
     name: 最新相容版本組合
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # 刻意不用 ubuntu-latest,理由見 ops/DEPENDENCIES.md
     permissions:
       contents: write # 只用來推 deps/ 分支;main 由分支保護擋住
       issues: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # ⚠ 刻意不開 pip cache。這一層的工作就是「去解析現在最新的是什麼」,
       # 快取會讓它拿到上週的輪子,於是它量的東西變成「上週的最新版」。
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       # parity 測試會用 jsdom 載入線上真的在跑的 index.html。
       # ⚠ Node 側維持原有的精確鎖定(npm ci + package-lock.json)——
       # 這一輪不順便升 Node 相依,否則 canary 綠或紅都分不出是哪一邊造成的。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -176,7 +176,7 @@ jobs:
 
       - name: 保存 canary artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-canary
           path: |

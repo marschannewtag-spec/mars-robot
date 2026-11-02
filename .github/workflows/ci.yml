@@ -36,24 +36,24 @@ permissions:
 jobs:
   test:
     name: 不變量 · 三方一致性 · 黃金基準
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04 # 刻意不用 ubuntu-latest,理由見 ops/DEPENDENCIES.md
     steps:
       # fetch-depth: 0 是必要的 —— 預設只抓一個 commit,底下那個 SW 版本檢查要
       # 比對 github.event.before 與 github.sha,那個 before commit 不在淺層 clone 裡,
       # git diff 會失敗、被 2>/dev/null 吞掉、判斷永遠為 false。
       # 也就是說檢查會【安靜地永遠不觸發】—— 那比沒有檢查更糟,因為看起來有在把關。
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: ops/requirements-ci.lock
 
       # jsdom 用來載入線上真的在跑的 index.html,取出它自己的函式做逐月比對
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm

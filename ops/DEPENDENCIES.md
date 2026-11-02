@@ -26,6 +26,7 @@ PEP 592 的行為是「精確釘住照裝、只給警告;範圍會跳過」。
 | **L2 CI** | `requirements-ci.lock`(精確 pin + hash) | 它的工作是當一把不會自己變動的量尺 |
 | **canary** | 乾淨解析最新相容版本 | 讓「升上去會不會出事」變成被觀測的,而不是被信任的 |
 | **autofix** | runtime + test 範圍 | 唯一需要跑 pytest 的 job |
+| **執行環境**(2026-11-03 補) | `ubuntu-26.04` + action 主版本釘在 node24 那一代 | 遷移期間 `ubuntu-latest` 是不確定的;見 D5 |
 
 **不做的事:不自動合併、不直推 `main`、不放寬黃金基準。**
 
@@ -238,6 +239,71 @@ key,於是「同一個壞掉的版本組合」每週都會被當成新發現 —
 ⚠ 那條「跳過 commit」的分支刻意留著,不是死碼:它是「manifest 內容若哪天
 變成穩定的」時仍然正確的守門式。但要知道**它現在幾乎不會被走到** ——
 這個 repo 對「寫了但走不到的退回路徑」有過兩次教訓,所以寧可寫清楚。
+
+## D5 · Actions 的版本與執行環境也要釘(2026-11-03)
+
+這份文件原本只管 Python 與 Node 套件。但每次 workflow 執行還有兩個相依
+是沒有人在管的:**它跑在哪一版作業系統**,以及**每個 action 跑在哪一版
+Node**。2026-11-02 的執行紀錄同時出現這兩條告示:
+
+```
+Node.js 20 is deprecated. The following actions target Node.js 20 but are
+being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4,
+actions/setup-python@v5
+The ubuntu-latest label will migrate to Ubuntu 26 beginning October 19, 2026
+```
+
+### 為什麼不用 `ubuntu-latest`
+
+直覺是「latest 最安全」。這裡不成立,而且理由是反過來的:
+`actions/runner-images#14748` 說這次遷移「**rolled out over a period of
+several weeks**,2026-10-19 開始、預計 2026-11-19 完成」。也就是說在這
+三到四週裡,**同一個 commit 的兩次執行可能拿到不同的作業系統**,而沒有
+任何東西會告訴你這次拿到的是哪一個。
+
+那正是這個 repo 最常出事的形狀:**同一份事實有 N 個定義,而沒有人對帳。**
+一個每天跑、而且會把資料推出去的管線,不該讓它的作業系統是擲骰子決定的。
+
+所以六個 job 全部改成 `runs-on: ubuntu-26.04`:遷移的終點就是它,與其被
+動地在某一次執行裡被換掉,不如自己換、而且由 CI 當場證明它能跑。
+
+⚠ **這個釘子有保存期限。** Ubuntu 26.04 的 runner image 總有一天會下架,
+而「釘死之後沒有人再想起它」是這條決策自己的失效模式。
+`test_dependency_policy.py::test_no_workflow_runs_on_a_floating_runner_label`
+的失敗訊息裡寫了下一步該怎麼做。
+
+### 為什麼 action 一次升到最新的主版本
+
+`實測`(2026-11-02,逐一讀 `action.yml` 的 `runs.using`):
+
+| action | 原本 | `using` | 改成 | `using` |
+|---|---|---|---|---|
+| `actions/checkout` | v4 | `node20` | **v7** | `node24` |
+| `actions/setup-python` | v5 | `node20` | **v7** | `node24` |
+| `actions/setup-node` | v4 | `node20` | **v7** | `node24` |
+| `actions/upload-artifact` | v4 | `node20` | **v7** | `node24` |
+| `actions/download-artifact` | v4 | `node20` | **v8** | `node24` |
+
+`anthropics/claude-code-action` 不在表上:它是 composite action
+(`using: composite`),沒有 Node 執行期,這條告示碰不到它。它維持
+**釘在完整 SHA**,那是安全邊界的一部分,不隨這次一起動。
+
+跨三個主版本一次升上去,逐一讀過與我們用法相關的 breaking change:
+
+- **`setup-node` v5** 會在 `package.json` 有 `packageManager` 欄位時自動開快取。
+  `實測`:這個 repo 的 `ops/package.json` **沒有**那個欄位,根目錄也沒有
+  `package.json`,而三處用到的地方都已經明寫 `cache: npm` 或完全不給。無影響。
+- **`download-artifact` v5** 改的是 `artifact-ids` 的解壓路徑;我們用的是 `name`。無影響。
+- **`download-artifact` v8** 把 digest 不符從警告改成**錯誤**。這是往嚴格的方向走,
+  正是想要的。
+- **`checkout` v7** 擋掉 `pull_request_target` / `workflow_run` 檢出 fork PR;
+  我們沒有任何 workflow 用這兩個觸發器。無影響。
+- **`checkout` v6** 把憑證改存到另一個檔案。這是唯一真的有風險的一條 ——
+  `daily-health` 與 `intraday-vix` 都靠 checkout 留下來的憑證 `git push`
+  到 `ops-data`。⚠ **CI 全綠證明不了這一條**:`ci.yml` 不推任何東西。
+  判準要對準那個宣稱,所以驗證方式是**真的 dispatch 一次會推送的 workflow**。
+
+---
 
 ## 已知的限制(沒有被這次改造解決)
 
