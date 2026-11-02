@@ -954,6 +954,71 @@ cd ops && python -m pytest tests -q --cov=src --cov=scripts --cov-report=term-mi
 
 ---
 
+## 外部規則集與本專案的交界(2026-11-01)
+
+這台機器上可能裝了全域的 agent 規則集 —— 目前讀過原始碼的是
+ponytail v5.3.3(MIT,`SessionStart` / `SubagentStart` / `UserPromptSubmit`
+三個 hook 注入,預設 level `full`)。
+
+那類規則集的目標是「最小的完整改動」,與本專案多數紀律**同向**:
+它明文要求把改動波及的 caller、測試與 fixture 一起修完
+(`never about the change itself`),也明文要求新的非平凡邏輯
+要留下一個測試或 assert 自檢。所以它不是威脅,是鄰居。
+
+但有三處交界必須寫下來,否則每個 session 都要重新吵一次。
+
+### 一、註解與 docstring 不受「一行」限制
+
+ponytail 的規則是 `Comment only the why the code cannot show, in one line.`
+
+**在這個 repo 不適用。** 本專案的註解與測試 docstring 承載的是:
+`實測` 數字、判準為什麼釘在那個值上、以及刻意**沒有**釘住什麼和為什麼。
+
+那些正是「程式碼無法表達的為什麼」—— 符合那條規則的前半,只是放不進一行。
+例如 `test_the_colour_ramp_only_gets_darker` 的 docstring 裡那張亮度表,
+以及「為什麼不做連續掃描」那段(`round()` 抖動最大 0.0018,
+而相鄰階梯值最小落差 0.0255,差 14 倍)。
+
+把它壓成一行,下一個人只會看到一條**沒有來由的斷言** ——
+而這份 repo 反覆記錄的事故形狀,正是沒有來由的斷言沒人敢動、也沒人能驗。
+
+要砍的是程式碼,不是為什麼。
+
+### 二、ponytail 不保護那三條紅線
+
+`實測`(2026-11-01,讀過 `skills/`、`AGENTS.md`、`.cursor/rules/`、
+`.windsurf/`、`.github/copilot-instructions.md` 全部六份規則副本):
+整組規則**沒有任何一條**禁止為了讓測試變綠而放寬閾值或改基準。
+
+它只說 `finish ... including the callers, tests and fixtures your change breaks`。
+在一般 repo 那是對的。在這個 repo,「把被改壞的 fixture 修好」
+就是〈prompt 裡的硬性禁令〉第二條所禁止的事 —— 改黃金基準是湮滅證據。
+
+所以:**那三條紅線的保護只來自這份文件,不來自任何外部規則集。**
+裝了全域規則集之後,這份文件的地位是變重要,不是變可以省。
+
+### 三、不要用 `ultra`
+
+`ultra` 會在建造前回頭質疑使用者的需求。〈角色定義〉已經劃好那條線:
+要不要加新訊號、要不要調參,是使用者的決定。
+一個會質疑需求的 level 會把那條線往回推。
+
+`full` 是預設值,夠了。新開的空專案用 `lite`
+(它會照你要的做,另外用一行提出更小的選項讓你挑,不自己替你砍)——
+空專案沒有既有結構可照,規則集最強的那幾條剎車
+(「用這個 codebase 已有的 helper」「照它的慣例」)在那裡沒有東西可抓。
+
+### 旁註:它預設會寫一份本機 CSV
+
+`ledger` 預設 `true`,每一輪把一列寫到
+`~/.config/ponytail/band/<project>.csv`,欄位含 `project`、`name`
+(task 名稱或第一句 prompt)、成本、token 數。
+
+`webhookUrl` 預設空字串,`實測`程式路徑:URL 空就不呼叫 `fetch`,
+沒有東西離開這台機器。這個 repo 是公開的,**那個欄位永遠留空**。
+
+---
+
 ## 改動後要做什麼
 
 改 `engine.py`、`index.html` 的計算邏輯、或 Pine → 跑:
