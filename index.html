@@ -563,6 +563,12 @@
 // parseCSV()+buildVixMonthly() 一行都沒改。只有「bytes 從哪來」變了。
 // 產生端在 ops/src/publish_pwa.py,契約由 ops/tests/test_publish_pwa.py 釘住。
 const VIX_URL="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/vix_daily.csv";
+// 盤中那一列。上面的日檔只有【已收盤】的交易日,所以整個交易時段裡,
+// VIX 腿 —— 這個工具唯一的領先腿 —— 看的是昨天。這個檔每個交易時段發幾次,
+// 內容是一列 CBOE 延遲 15 分鐘報價。產生端 ops/src/fetch_vix_quote.py。
+// 它可以缺席、可以凍結、可以壞掉:withLiveVixRow() 的每一條檢查沒過就當它不存在,
+// 畫面退回「只有日檔」,也就是今天的行為。
+const VIX_TODAY_URL="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/vix_today.json";
 const SP_MIRROR="https://raw.githubusercontent.com/marschannewtag-spec/mars-robot/ops-data/ops/data/pwa/sp_monthly.json";
 const SP_URL ="https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv";
 const LS="cwgauge_v2";
@@ -606,7 +612,11 @@ function readCache(){
 function dropCache(){ try{localStorage.removeItem(LS);}catch(e){} }
 // 由快取畫面,失敗就丟掉壞快取並回報 false
 function paintFromCache(o){
+  // o.vt 存的已經是接好盤中那一列的 CSV,所以這裡不再呼叫 withLiveVixRow ——
+  // 離線時重接一次只會因為 MAX_GAP_DAYS 隨日曆走而給出不同答案。
+  // 舊版快取沒有 vlive 這個鍵,讀到 undefined 就當作沒有,不需要遷移。
   try{ const data=compute(o.spArr,parseCSV(o.vt)); data.src=o.src; data.altDef=!!o.altDef;
+       data.vixLive=o.vlive||null;
        render(data,o.at,true); return true; }
   catch(e){ dropCache(); return false; }
 }
@@ -624,6 +634,63 @@ function monthsBetween(a,b){
   return Math.max(0,(pb[1]-pa[1])*12+(pb[2]-pa[2]));
 }
 function parseCSV(t){const L=t.trim().split(/\r?\n/);const H=L[0].split(",");return L.slice(1).map(r=>{const c=r.split(",");const o={};H.forEach((h,i)=>o[h.trim()]=c[i]);return o;});}
+
+// 把盤中那一列接到日檔尾巴。回傳 [csv, 接上去的日期 | null]。
+//
+// 這個函式的每一條檢查都是**不接**的理由,而不接的後果只是回到今天的行為 ——
+// 所以它全部寫成「可疑就不接」,不拋例外、不顯示錯誤。
+// 設計上最重要的是這一條:**日期必須嚴格晚於日檔最後一天**。
+// 歷史不可被一筆 15 分鐘延遲的盤中讀數改寫 —— 黃金基準、parity、健檢
+// 全部錨在那份日檔上。也因為這樣,這個小檔凍結了不會有症狀:
+// 隔天日檔追上來,`d>lastDate` 就不成立,它自動被忽略。
+//
+// ⚠ MAX_GAP_DAYS 那一條不是裝飾:日檔自己凍結的時候(2026-09 那次鏡像
+//   連綠 26 天就是),接一列孤零零的今天上去,會在月序列裡造出一個
+//   前面缺好幾個月的單日月份 —— 滾動窗照位置取,整排都會錯位。
+//   **不能讓新加的東西去遮住舊東西的故障。** 日檔落後超過一週是健檢的事。
+const MAX_GAP_DAYS=7;
+function withLiveVixRow(csv,q){
+  const NO=[csv,null];
+  try{
+    if(!q||typeof q!=="object")return NO;
+    const d=q.date, hi=Number(q.high), cl=Number(q.close);
+    // ⚠ 這一行是**等價突變**:拿掉它整組測試照樣全綠(`實測` 2026-11-02)。
+    //   理由是下面那個 `Date.parse(d+"T00:00:00Z")` —— 七種變形
+    //   (" 2026-11-03"、"2026/11/03"、"2026-1-3"、"03 Nov 2026" …)全部回 NaN,
+    //   於是 gap 是 NaN,`gap>0` 為 false,照樣不接。
+    //
+    //   **留著,而且理由要連同前提一起寫下來:** 它等價的依據是「這個引擎的
+    //   Date.parse 對非 ISO 形式夠嚴格」,而那是 implementation-defined ——
+    //   不是這段程式的結構保證的。換一個瀏覽器引擎、或 V8 哪天放寬了,
+    //   一個解析得掉但 slice(0,7) 取出來不是年月的字串就會造出一個垃圾月份。
+    //   這與 CLAUDE.md 記的 pandas `format=` 是同一個形狀:
+    //   **等價突變也有保存期限。**
+    if(typeof d!=="string"||!/^\d{4}-\d{2}-\d{2}$/.test(d))return NO;
+    // 0 要擋掉:非交易時段的報價曾經把欄位回成 0.0,而 0 接進去之後
+    // lvl=(0-16)/9 會被 clip 成 0、風險分數整個塌掉 —— 畫面上看起來
+    // 只是「今天比較平靜」,沒有任何症狀。
+    if(!isFinite(hi)||!isFinite(cl)||hi<=0||cl<=0||cl>hi)return NO;
+    const lines=String(csv).trim().split(/\r?\n/);
+    if(lines.length<2)return NO;
+    const head=lines[0].split(",").map(s=>s.trim());
+    const iD=head.indexOf("DATE"),iH=head.indexOf("HIGH"),iC=head.indexOf("CLOSE");
+    if(iD<0||iH<0||iC<0)return NO;
+    const last=(lines[lines.length-1].split(",")[iD]||"").trim();
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(last))return NO;
+    // ⚠ 這兩條刻意分成兩行,不合併成 `gap>0&&gap<=MAX_GAP_DAYS`。
+    //   它們是兩個不同的理由,而合在一起的話突變測試分不出是哪一條在擋 ——
+    //   `實測`:第一版還在上面多寫了一個字串比較 `d>last`,它與 `gap>0`
+    //   完全等價,於是把它改成 `d>=last` 整組測試照樣全綠。
+    //   **一條沒有任何測試能讓它變紅的守衛是裝飾**,已刪掉。
+    const gap=(Date.parse(d+"T00:00:00Z")-Date.parse(last+"T00:00:00Z"))/864e5;
+    if(!(gap>0))return NO;             // 不改寫歷史:必須嚴格晚於日檔最後一天
+    if(!(gap<=MAX_GAP_DAYS))return NO; // 日檔自己凍結了,別用一列遮住它
+    // 未來的日期是壞資料。+1 天的寬限涵蓋各地時區,不需要知道使用者在哪。
+    if(d>new Date(Date.now()+864e5).toISOString().slice(0,10))return NO;
+    const cells=head.map((_,i)=>i===iD?d:i===iH?String(hi):i===iC?String(cl):"");
+    return [lines.join("\n")+"\n"+cells.join(",")+"\n", d];
+  }catch(e){ return NO; }
+}
 
 // ---- validated 100%-cap union logic (mirrors Python exactly) ----
 function momCash(mom){let c=0; if(mom<0)c=.30; if(mom<-.03)c=.60; if(mom<-.08)c=.90; if(mom<-.13)c=1.0; return c;}
@@ -1036,12 +1103,16 @@ function render(data,fetchedAt,fromCache){
   // 純文字 → textContent。sLast.ym 來自 CSV 的日期欄,是【外部字串】;
   // 專案規則是外部字串不得直接進 innerHTML,而這裡根本不需要 HTML。
   $("momdesc").textContent=`乖離 ${(sLast.mom*100).toFixed(1)}% · ${sLast.ym}`;
-  $("vixdesc").textContent=`風險分數 ${rLast.toFixed(2)} · ${vLast.ym}${vLast.n<15?" (進行中)":""}`;
+  // 「這個月還沒走完」與「這一筆是開盤中的讀數」是兩件事,而後者包含前者 ——
+  // 所以只說一個,而且只在這裡算一次。以前 `vLast.n<15` 在這支函式裡寫了兩遍,
+  // 那正是這個 repo 反覆記錄的形狀:同一份事實有 N 個定義,沒有人對帳。
+  const vixTag = data.vixLive ? "盤中" : (vLast.n<15 ? "進行中" : "");
+  $("vixdesc").textContent=`風險分數 ${rLast.toFixed(2)} · ${vLast.ym}${vixTag?" ("+vixTag+")":""}`;
   $("mompill").textContent=momC>=vixC&&uni>0?"主導":"";$("mompill").style.color=riskColor(momC);
   $("vixpill").textContent=vixC>momC&&uni>0?"主導":"";$("vixpill").style.color=riskColor(vixC);
 
   $("svix").textContent=vLast.close.toFixed(1);$("svix").style.color=vLast.close>25?"var(--orange)":vLast.close>18?"var(--amber)":"var(--teal)";
-  $("svixd").textContent=vLast.ym+(vLast.n<15?" 進行中":"");
+  $("svixd").textContent=vLast.ym+(vixTag?" "+vixTag:"");
   const above=sLast.price>=sLast.sma;
   $("sma").textContent=(above?"+":"")+(sLast.mom*100).toFixed(1)+"%";$("sma").style.color=above?"var(--teal)":"var(--rose)";
   $("smad").textContent=above?"站上均線":"跌破均線";
@@ -1054,7 +1125,7 @@ function render(data,fetchedAt,fromCache){
   //    而下面「資料更新」那張卡的 #sfreshd 寫的是【逐字相同】的那串。
   //    同一句話出現在同一個畫面的兩個地方,而且沒有任何一方是另一方的補充。
   //    來源與頻率留在那張卡(它的標題就是「資料更新」);這一行只說資料時點。
-  $("asof").textContent=`S&P ${sLast.ym} · VIX→${vLast.close.toFixed(1)} (${vLast.ym})`+(fromCache?" · 離線":"");
+  $("asof").textContent=`S&P ${sLast.ym} · VIX→${vLast.close.toFixed(1)} (${vLast.ym}${vixTag?" "+vixTag:""})`+(fromCache?" · 離線":"");
   drawChart(hist);
   renderOdds(data);
 }
@@ -1062,13 +1133,19 @@ function render(data,fetchedAt,fromCache){
 async function load(force){
   const btn=$("refresh");btn.classList.add("spin");$("err").style.display="none";
   try{
-    const [vt, spRes]=await Promise.all([
+    const [vtRaw, spRes, quote]=await Promise.all([
       fetchT(VIX_URL,force?{cache:"reload"}:{},12000).then(r=>{if(!r.ok)throw 0;return r.text()}),
-      fetchSP(force)
+      fetchSP(force),
+      // 盤中那一列是【補充讀數】,不得讓整頁失敗 —— 抓不到就當它不存在,
+      // 畫面退回只有日檔,也就是 2026-11-02 之前的行為。
+      // 逾時刻意比日檔短:它只有 250 bytes,而它慢不該拖累主路徑。
+      fetchT(VIX_TODAY_URL,force?{cache:"reload"}:{},6000)
+        .then(r=>r.ok?r.json():null).catch(()=>null)
     ]);
-    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src; data.altDef=!!spRes.altDef;
+    const [vt,vlive]=withLiveVixRow(vtRaw,quote);
+    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src; data.altDef=!!spRes.altDef; data.vixLive=vlive;
     const at=Date.now();
-    try{localStorage.setItem(LS,JSON.stringify({vt,spArr:spRes.spArr,src:spRes.src,altDef:!!spRes.altDef,at}));}catch(e){}
+    try{localStorage.setItem(LS,JSON.stringify({vt,vlive,spArr:spRes.spArr,src:spRes.src,altDef:!!spRes.altDef,at}));}catch(e){}
     render(data,at,false);
   }catch(e){
     const o=readCache();
