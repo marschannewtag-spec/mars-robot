@@ -95,6 +95,33 @@ const SCENARIOS = {
   // 必須說出不同的話 —— 否則那一行就不是在報告狀態,只是一句裝飾。
   main_idle:      (d) => d,                                    // uni=0,baseline 就是
   main_fired:     (d) => { d.vixC = 0.24; d.uni = 0.24; d.rLast = 0.62; return d; },
+
+  // 2026-11-03:盤中那一列的標籤。「盤中」描述的是來源,不是「現在」——
+  // 收盤後到日檔追上來之間有幾個小時,那兩件事會分岔,所以時間要寫在畫面上。
+  // 這四個情境問的是同一個問題:**畫面上到底有沒有那個時刻。**
+  live_with_time: (d) => {
+    d.vLast.ym = "2026-11"; d.vLast.n = 1; d.vLast.close = 19.55;
+    d.sLast.ym = "2026-11";
+    d.vixLive = "2026-11-02"; d.vixLiveAt = "13:18 ET"; return d;
+  },
+  // 時間讀不出來時只寫「盤中」,不猜一個出來 —— 寧可少說,不可說錯。
+  live_without_time: (d) => {
+    d.vLast.ym = "2026-11"; d.vLast.n = 1; d.vLast.close = 19.55;
+    d.sLast.ym = "2026-11";
+    d.vixLive = "2026-11-02"; d.vixLiveAt = ""; return d;
+  },
+  // 沒有盤中那一列、而當月還沒走完 → 維持原本的「進行中」,不是「盤中」。
+  month_in_progress: (d) => {
+    d.vLast.ym = "2026-11"; d.vLast.n = 1; d.sLast.ym = "2026-11"; return d;
+  },
+  // 離線重畫走的是快取,時間必須跟著一起回來 —— 否則離線時會退化成
+  // 「盤中」兩個字,而那正是這次要修掉的東西。
+  live_from_cache: (d) => {
+    d.vLast.ym = "2026-11"; d.vLast.n = 1; d.vLast.close = 19.55;
+    d.sLast.ym = "2026-11";
+    d.vixLive = "2026-11-02"; d.vixLiveAt = "13:18 ET";
+    d.__fromCache = true; return d;
+  },
 };
 
 const build = SCENARIOS[scenario];
@@ -104,7 +131,9 @@ if (!build) {
 }
 
 const data = build(baseline());
-w.render(data, Date.parse("2026-10-14T00:00:00Z"), false);
+const fromCache = !!data.__fromCache;
+delete data.__fromCache;
+w.render(data, Date.parse("2026-10-14T00:00:00Z"), fromCache);
 
 const el = (id) => w.document.getElementById(id);
 const note = el("lagnote");
@@ -124,4 +153,10 @@ console.log(JSON.stringify({
   defnote_on: el("defnote").classList.contains("on"),
   // T3:主訊號現況那一行。它在體制面板裡,但由核心寫。
   mainstate: el("mainstate").textContent,
+  // 2026-11-03:盤中標籤出現在這三個地方,三個都要對 —— 同一份事實
+  // 寫在三處而只檢查一處,正是這個 repo 反覆記錄的那個 bug 家族。
+  from_cache: fromCache,
+  asof: el("asof").textContent,
+  vixdesc: el("vixdesc").textContent,
+  svixd: el("svixd").textContent,
 }));

@@ -616,7 +616,7 @@ function paintFromCache(o){
   // 離線時重接一次只會因為 MAX_GAP_DAYS 隨日曆走而給出不同答案。
   // 舊版快取沒有 vlive 這個鍵,讀到 undefined 就當作沒有,不需要遷移。
   try{ const data=compute(o.spArr,parseCSV(o.vt)); data.src=o.src; data.altDef=!!o.altDef;
-       data.vixLive=o.vlive||null;
+       data.vixLive=o.vlive||null; data.vixLiveAt=o.vliveAt||"";
        render(data,o.at,true); return true; }
   catch(e){ dropCache(); return false; }
 }
@@ -690,6 +690,38 @@ function withLiveVixRow(csv,q){
     const cells=head.map((_,i)=>i===iD?d:i===iH?String(hi):i===iC?String(cl):"");
     return [lines.join("\n")+"\n"+cells.join(",")+"\n", d];
   }catch(e){ return NO; }
+}
+
+// 那一列是【什麼時候】的,必須寫在畫面上。
+//
+// 「盤中」描述的是**來源**(這一列來自延遲報價,不是結算的日收盤),那個意思是準的。
+// 但它會被讀成**現在**,而這兩者在收盤後會分岔好幾個小時:`實測`(2026-11-02)
+// 美股 21:00 UTC 收盤,23:59 UTC 時畫面仍寫「2026-11 盤中」,
+// 而那一列的最後成交是 14:01 ET —— 已經 4.7 小時,畫面上沒有任何東西說得出來。
+//
+// 這個空窗是有界的(日檔一追上來那一列就被忽略),但「有界」不等於「可以不講」。
+// 缺資料與沒觸發必須長得不一樣,同理:**舊讀數與即時讀數也必須長得不一樣。**
+//
+// 回空字串 = 不知道時間,那就只寫「盤中」—— 寧可少說,不可說錯。
+// 刻意不換算成使用者的時區:報價本身是美東的,換算會引進一個沒有必要的時區假設,
+// 而這個 repo 已經為時區假設付過兩次學費。
+//
+// ⚠ `appended` 是參數而不是呼叫端各自判斷的條件。第一版把它寫成呼叫端的
+//   三元式(`vlive?liveQuoteTime(q):""`),於是同一條規則存在兩個地方
+//   (load() 一份、橋接器一份),而且**兩份都突變不紅** —— render 自己
+//   也擋了一層,所以沒有輸入能分辨。同一份事實有 N 個定義,就是這個 repo
+//   最常出事的形狀。收進來之後只剩一個地方,而它會紅。
+function liveQuoteTime(q,appended){
+  try{
+    if(!appended)return "";   // 沒被接上去的報價,它的時間是別人的時間
+    const s=q&&q.quote_time_et;
+    if(typeof s!=="string")return "";
+    const m=/^\d{4}-\d{2}-\d{2}T(\d{2}):(\d{2})(?::\d{2})?$/.exec(s);
+    if(!m)return "";
+    // 正規表示式只保證是兩位數字,不保證是合法時刻 —— "99:99" 會通過上面那關。
+    if(+m[1]>23||+m[2]>59)return "";
+    return m[1]+":"+m[2]+" ET";
+  }catch(e){ return ""; }
 }
 
 // ---- validated 100%-cap union logic (mirrors Python exactly) ----
@@ -1106,7 +1138,7 @@ function render(data,fetchedAt,fromCache){
   // 「這個月還沒走完」與「這一筆是開盤中的讀數」是兩件事,而後者包含前者 ——
   // 所以只說一個,而且只在這裡算一次。以前 `vLast.n<15` 在這支函式裡寫了兩遍,
   // 那正是這個 repo 反覆記錄的形狀:同一份事實有 N 個定義,沒有人對帳。
-  const vixTag = data.vixLive ? "盤中" : (vLast.n<15 ? "進行中" : "");
+  const vixTag = data.vixLive ? ("盤中"+(data.vixLiveAt?" "+data.vixLiveAt:"")) : (vLast.n<15 ? "進行中" : "");
   $("vixdesc").textContent=`風險分數 ${rLast.toFixed(2)} · ${vLast.ym}${vixTag?" ("+vixTag+")":""}`;
   $("mompill").textContent=momC>=vixC&&uni>0?"主導":"";$("mompill").style.color=riskColor(momC);
   $("vixpill").textContent=vixC>momC&&uni>0?"主導":"";$("vixpill").style.color=riskColor(vixC);
@@ -1143,9 +1175,10 @@ async function load(force){
         .then(r=>r.ok?r.json():null).catch(()=>null)
     ]);
     const [vt,vlive]=withLiveVixRow(vtRaw,quote);
-    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src; data.altDef=!!spRes.altDef; data.vixLive=vlive;
+    const vliveAt=liveQuoteTime(quote,vlive!==null);
+    const data=compute(spRes.spArr,parseCSV(vt)); data.src=spRes.src; data.altDef=!!spRes.altDef; data.vixLive=vlive; data.vixLiveAt=vliveAt;
     const at=Date.now();
-    try{localStorage.setItem(LS,JSON.stringify({vt,vlive,spArr:spRes.spArr,src:spRes.src,altDef:!!spRes.altDef,at}));}catch(e){}
+    try{localStorage.setItem(LS,JSON.stringify({vt,vlive,vliveAt,spArr:spRes.spArr,src:spRes.src,altDef:!!spRes.altDef,at}));}catch(e){}
     render(data,at,false);
   }catch(e){
     const o=readCache();

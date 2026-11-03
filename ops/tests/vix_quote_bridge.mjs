@@ -38,7 +38,7 @@ const dom = new JSDOM(readFileSync(htmlPath, "utf8"), {
 });
 
 const w = dom.window;
-for (const fn of ["withLiveVixRow", "parseCSV", "buildVixMonthly", "vixRiskSeries"]) {
+for (const fn of ["withLiveVixRow", "liveQuoteTime", "parseCSV", "buildVixMonthly", "vixRiskSeries"]) {
   if (typeof w[fn] !== "function") {
     console.error(`index.html 缺少 ${fn}(或已不是 function 宣告)`);
     process.exit(3);
@@ -77,6 +77,9 @@ const out = quotes.map(({ name, quote }) => {
     name,
     appended: live !== null,
     live,
+    // 「沒接上就沒有時間」那條規則住在 liveQuoteTime 裡面,不是這裡 ——
+    // 這裡只把同樣的兩個參數交給它,和 load() 一模一樣。
+    liveAt: w.liveQuoteTime(quote, live !== null),
     changed: next !== csv,
     monthsBefore: vmBefore.length,
     monthsAfter: vmAfter.length,

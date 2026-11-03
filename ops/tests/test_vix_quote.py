@@ -319,3 +319,253 @@ def test_a_missing_quote_file_changes_nothing(tmp_path: Path) -> None:
     for r in _run_bridge(CSV, cases, tmp_path):
         assert r["appended"] is False, r["name"]
         assert r["changed"] is False, r["name"]
+
+
+# --------------------------------------------------------------------------
+# 那一列是「什麼時候」的 —— 2026-11-03 補
+#
+# 「盤中」描述的是來源,不是現在。`實測`(2026-11-02):美股 21:00 UTC 收盤,
+# 23:59 UTC 時畫面仍寫「2026-11 盤中」,而那一列的最後成交是 14:01 ET ——
+# 已經 4.7 小時,畫面上沒有任何東西說得出來。這幾條釘住修法。
+# --------------------------------------------------------------------------
+
+
+def test_the_appended_row_says_what_time_it_is_from(tmp_path: Path) -> None:
+    """接上去的那一列,畫面要寫得出它的最後成交時間。
+
+    時間取自**產生端真的寫出來的那個欄位**(`quote_time_et`),不是前端另外
+    算一個 —— 兩端對同一份事實各算一次,就是這個 repo 最常出事的形狀。
+    """
+    require_js_bridge(
+        "接上盤中那一列時,畫面會標出它的最後成交時間(美東)—— 失去它就沒有"
+        "人驗過「盤中」這兩個字在收盤後幾小時還會不會被讀成即時。")
+
+    row = fq.parse_quote(REAL)
+    [r] = _run_bridge(CSV, [{"name": "real", "quote": row}], tmp_path)
+
+    assert r["appended"] is True
+    # fixture 的 last_trade_time 是 2026-11-02T13:18:31
+    assert r["liveAt"] == "13:18 ET", r
+
+
+@pytest.mark.parametrize("bad", [
+    None,                       # 欄位不存在
+    "",                         # 空字串
+    "2026-11-02",               # 只有日期,沒有時間
+    "2026-11-02 13:18:31",      # 少了 T
+    "2026-11-02T99:99:99",      # 兩位數字但不是合法時刻
+    "2026-11-02T13:18:31Z",     # 多了時區標記 —— 它宣稱的時區和我們假設的不同
+    13.18,                      # 根本不是字串
+])
+def test_an_unreadable_time_shows_no_time_but_still_uses_the_quote(
+        bad, tmp_path: Path) -> None:
+    """讀不出時間 → 只寫「盤中」,**不要**猜一個出來。
+
+    這一條刻意和「要不要接這一列」分開:時間讀不出來不是報價不可信的理由,
+    價格三個欄位自己有一整套檢查。寧可少說一句,不可說錯一句。
+    """
+    require_js_bridge(
+        "`quote_time_et` 壞掉時畫面只寫「盤中」而不猜時間,而且那一列照樣"
+        "被接上去 —— 失去它就沒有人驗過這兩件事是分開的。")
+
+    row = fq.parse_quote(REAL)
+    row["quote_time_et"] = bad
+    if bad is None:
+        del row["quote_time_et"]
+    [r] = _run_bridge(CSV, [{"name": f"bad-{bad!r}", "quote": row}], tmp_path)
+
+    assert r["appended"] is True, r
+    assert r["liveAt"] == "", r
+
+
+def test_a_rejected_quote_never_contributes_a_time(tmp_path: Path) -> None:
+    """沒被接上去的報價,它的時間不得出現在畫面上 —— 那是別人的時間。
+
+    這一條釘的是 `liveQuoteTime(q, appended)` 的 `appended` 那個閘門。
+    它原本寫在呼叫端的三元式裡,於是 load() 一份、橋接器一份,而且
+    **兩份突變都不紅**(render 自己也擋了一層,沒有輸入能分辨)。
+    規則收進函式之後只剩一個地方,這條測試才量得到它。
+    """
+    require_js_bridge(
+        "報價被拒絕時它的時間不會外洩到畫面上 —— 失去它就沒有人驗過"
+        "「沒接上」與「接上了」在畫面上真的長得不一樣。")
+
+    row = fq.parse_quote(REAL)
+    row["date"] = "2026-10-29"          # 早於日檔最後一天 → 必定不接
+    [r] = _run_bridge(CSV, [{"name": "rejected", "quote": row}], tmp_path)
+
+    assert r["appended"] is False, r
+    assert r["liveAt"] == "", r
+
+
+# --------------------------------------------------------------------------
+# 畫面上到底有沒有寫出那個時刻 —— 2026-11-03 補
+#
+# 上面那幾條走的是 vix_quote_bridge,它只跑純函式,**從來沒有走過 render()**。
+# `實測`(突變測試,2026-11-03):把 render 裡寫時間那一段拿掉、或讓快取路徑
+# 丟掉時間,整組測試照樣全綠 —— 而那兩個突變恰好就是「時間不見了」本身。
+# 判準要對準那個宣稱:宣稱是「畫面上寫得出來」,那就得去看畫面。
+# --------------------------------------------------------------------------
+
+RENDER_BRIDGE = TESTS_DIR / "render_bridge.mjs"
+
+
+def _render(scenario: str, now: str = "2026-11-03T04:00:00Z") -> dict:
+    require_js_bridge(
+        "盤中那一列的時刻真的被寫進 #asof / #vixdesc / #svixd —— 失去它,"
+        "「盤中」這兩個字在收盤後幾小時仍會被讀成即時,而沒有人會發現。")
+    proc = subprocess.run(
+        ["node", str(RENDER_BRIDGE), str(INDEX), scenario, now],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=180)
+    if proc.returncode != 0:
+        pytest.fail(f"渲染橋接器失敗(情境 {scenario}):\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+# 三個地方都要寫 —— 同一份事實寫在三處而只檢查一處,就是這個 repo 最常
+# 出事的形狀。漏掉任何一個,使用者在那一格看到的就是沒有時間的「盤中」。
+SURFACES = ["asof", "vixdesc", "svixd"]
+
+
+@pytest.mark.parametrize("where", SURFACES)
+def test_the_quote_time_is_on_the_screen(where: str) -> None:
+    """接上盤中那一列時,三個出現「盤中」的地方都要帶著時刻。"""
+    got = _render("live_with_time")
+    assert "盤中" in got[where], got
+    assert "13:18 ET" in got[where], got
+
+
+@pytest.mark.parametrize("where", SURFACES)
+def test_without_a_readable_time_the_screen_says_only_intraday(where: str) -> None:
+    """時間讀不出來 → 只寫「盤中」,畫面上不得出現任何 ET 時刻。"""
+    got = _render("live_without_time")
+    assert "盤中" in got[where], got
+    assert "ET" not in got[where], got
+
+
+@pytest.mark.parametrize("where", SURFACES)
+def test_an_incomplete_month_without_a_quote_still_says_in_progress(where: str) -> None:
+    """沒有盤中那一列、當月還沒走完 → 維持原本的「進行中」。
+
+    對照組。少了它,「盤中」有可能被寫成無條件出現,而那就變成
+    每個月初都在宣稱有一筆其實不存在的即時讀數。
+    """
+    got = _render("month_in_progress")
+    assert "進行中" in got[where], got
+    assert "盤中" not in got[where], got
+
+
+@pytest.mark.parametrize("where", SURFACES)
+def test_the_time_survives_the_offline_cache_path(where: str) -> None:
+    """離線重畫走快取,時刻必須跟著回來。
+
+    離線是**最**需要這個時刻的情境 —— 畫面上的讀數可能是好幾天前的。
+    `實測`(突變測試):把 paintFromCache 的 `o.vliveAt` 改成空字串,
+    在加這一條之前整組測試不會紅。
+    """
+    got = _render("live_from_cache")
+    assert got["from_cache"] is True, got
+    assert "盤中" in got[where], got
+    assert "13:18 ET" in got[where], got
+
+
+def test_the_offline_marker_and_the_quote_time_are_different_things() -> None:
+    """「離線」講的是這份畫面哪裡來的,時刻講的是那一列哪一刻的 —— 兩者都要在。
+
+    合成一個的話,線上但報價已經四小時前的那個情境就沒有東西說得出來,
+    而那正是 2026-11-02 23:59 UTC 實測到的那一幕。
+    """
+    live = _render("live_with_time")
+    cached = _render("live_from_cache")
+    assert "離線" not in live["asof"], live["asof"]
+    assert "13:18 ET" in live["asof"], live["asof"]
+    assert "離線" in cached["asof"], cached["asof"]
+    assert "13:18 ET" in cached["asof"], cached["asof"]
+
+
+# --------------------------------------------------------------------------
+# 整條鏈:load() → localStorage → paintFromCache() → 畫面(2026-11-03 補)
+#
+# 上面兩批測試都是綠的,而 `實測`(突變測試)這三個突變全部逃掉:
+#   1. load() 把 appended 閘門傳成永遠 true
+#   2. paintFromCache() 丟掉 o.vliveAt
+#   3. load() 不再把 vliveAt 寫進 localStorage
+# 三個都在同一個縫裡:**沒有任何測試走過 load() 與快取的來回。**
+# 純函式測得到規則,render 測得到畫面,但「規則算出來的東西有沒有真的被
+# 送到畫面、有沒有真的存下來、離線時有沒有真的回得來」沒有人在看。
+# --------------------------------------------------------------------------
+
+LOAD_BRIDGE = TESTS_DIR / "live_load_bridge.mjs"
+
+
+def _load(scenario: str) -> dict:
+    require_js_bridge(
+        "跑線上真的那支 load():報價 → 畫面 → localStorage → 離線重畫 "
+        "整條鏈。失去它,『算對了但沒送到畫面』和『存下來的東西離線時回不來』"
+        "這兩類故障就沒有任何測試在看。")
+    proc = subprocess.run(
+        ["node", str(LOAD_BRIDGE), str(INDEX), scenario],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=180)
+    if proc.returncode != 0:
+        pytest.fail(f"load 橋接器失敗(情境 {scenario}):\n{proc.stderr}")
+    return json.loads(proc.stdout)
+
+
+def test_the_whole_chain_carries_the_quote_time_to_the_screen() -> None:
+    """接上盤中那一列 → 三個畫面欄位都帶時刻,而且快取裡也存了它。"""
+    got = _load("accepted")
+    for k in ("asof", "vixdesc", "svixd"):
+        assert "盤中 13:18 ET" in got["online"][k], (k, got["online"])
+    assert got["cache"]["vlive"] == "2026-11-02", got["cache"]
+    assert got["cache"]["vliveAt"] == "13:18 ET", got["cache"]
+
+
+def test_the_time_is_actually_written_into_the_cache() -> None:
+    """`vliveAt` 必須真的被寫進 localStorage,不能只活在記憶體裡。
+
+    只活在記憶體裡的話,線上看起來完全正常,而**離線時時刻會消失** ——
+    那正是最需要它的情境。`實測`:拿掉那個鍵,在加這一條之前整組測試不會紅。
+    """
+    got = _load("accepted")
+    assert got["cache"]["vliveAt"] != "<缺鍵>", (
+        "localStorage 裡根本沒有 vliveAt 這個鍵:" + json.dumps(got["cache"]))
+
+
+def test_the_offline_repaint_still_shows_the_time() -> None:
+    """把剛剛存下來的那一筆餵回 `paintFromCache()`,時刻必須一起回來。
+
+    `實測`:把 `o.vliveAt` 改成空字串,在加這一條之前整組測試不會紅 ——
+    因為 render_bridge 是直接把 `vixLiveAt` 塞進 data,從來沒有走過
+    快取的來回。
+    """
+    got = _load("accepted")
+    assert got["offline"]["painted"] is True, got["offline"]
+    for k in ("asof", "vixdesc", "svixd"):
+        assert "盤中 13:18 ET" in got["offline"][k], (k, got["offline"])
+    assert "離線" in got["offline"]["asof"], got["offline"]
+
+
+@pytest.mark.parametrize("scenario", ["rejected", "no_quote"])
+def test_a_quote_that_was_not_used_leaves_no_trace(scenario: str) -> None:
+    """沒被接上去的報價:畫面上沒有「盤中」,快取裡的時刻是空的。
+
+    快取那一半是這條的重點。畫面那一半 `render()` 自己也擋著,所以只看畫面
+    的話,「load 把閘門傳成永遠 true」這個突變分辨不出來 —— `實測` 它逃掉過。
+    存下來的值必須本身就是誠實的,不能靠下游再擋一次。
+    """
+    got = _load(scenario)
+    for k in ("asof", "vixdesc", "svixd"):
+        assert "盤中" not in got["online"][k], (k, got["online"])
+    assert got["cache"]["vliveAt"] == "", got["cache"]
+    assert not got["cache"]["vlive"], got["cache"]
+
+
+def test_a_broken_time_does_not_stop_the_row_from_being_used() -> None:
+    """時刻讀不出來 → 照樣接上那一列,只是不寫時間。整條鏈上都一樣。"""
+    got = _load("broken_time")
+    assert "盤中" in got["online"]["asof"], got["online"]
+    assert "ET" not in got["online"]["asof"], got["online"]
+    assert got["cache"]["vlive"] == "2026-11-02", got["cache"]
+    assert got["cache"]["vliveAt"] == "", got["cache"]
