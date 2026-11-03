@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "dependency-install",
-  "generated_at": "2026-11-02T01:07:47+00:00",
+  "generated_at": "2026-11-03T03:10:17+00:00",
   "phase": "success",
   "resolution_complete": true,
   "install_exit_code": 0,
@@ -14,12 +14,12 @@
     "platform": "linux-x86_64",
     "runner_os": "Linux",
     "runner_arch": "X64",
-    "pip": "26.2.2"
+    "pip": "26.3"
   },
   "run": {
-    "commit": "fda83393ddff4e07e35742239da1eff39ea4eee5",
+    "commit": "6906c67fc3605c3541b41ae886034f17f3c7e06e",
     "workflow": "L1 每日資料健檢",
-    "run_id": "41370778719",
+    "run_id": "41570538023",
     "attempt": "1"
   },
   "distributions": {
@@ -28,7 +28,7 @@
     "idna": "3.20",
     "numpy": "2.5.4",
     "pandas": "2.3.3",
-    "pip": "26.2.2",
+    "pip": "26.3",
     "python-dateutil": "4.0.0",
     "pytz": "2026.6",
     "pyyaml": "6.0.3",
@@ -37,6 +37,6 @@
     "urllib3": "2.8.0"
   },
   "n_distributions": 12,
-  "dedupe_key": "combo:cb7e57a0333a33d4",
+  "dedupe_key": "combo:06cf569bf969f7fa",
   "error": null
 }
