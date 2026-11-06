@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "dependency-install",
-  "generated_at": "2026-11-05T01:53:37+00:00",
+  "generated_at": "2026-11-06T01:55:13+00:00",
   "phase": "success",
   "resolution_complete": true,
   "install_exit_code": 0,
@@ -10,7 +10,7 @@
     "requirements.txt": "sha256:6b340c97e48b38a912fbd9f03ed41bbef165096c0c0e41045a726dd533160ce4"
   },
   "environment": {
-    "python": "3.12.15",
+    "python": "3.12.16",
     "platform": "linux-x86_64",
     "runner_os": "Linux",
     "runner_arch": "X64",
@@ -19,7 +19,7 @@
   "run": {
     "commit": "6906c67fc3605c3541b41ae886034f17f3c7e06e",
     "workflow": "L1 每日資料健檢",
-    "run_id": "41951520160",
+    "run_id": "42146935276",
     "attempt": "1"
   },
   "distributions": {
@@ -37,6 +37,6 @@
     "urllib3": "2.8.0"
   },
   "n_distributions": 12,
-  "dedupe_key": "combo:06cf569bf969f7fa",
+  "dedupe_key": "combo:b38586b2d0929aa3",
   "error": null
 }
