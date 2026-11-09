@@ -3,12 +3,22 @@
 //  策略:HTML 網路優先(部署新版立即生效)· 靜態檔快取優先 · 資料 API 不快取
 //  ⚠ 每次改動 index.html 後,把下面版本號 +1(v4→v5),舊快取才會被清掉!
 // ============================================================================
-const CACHE = "cwgauge-v32";
+const CACHE = "cwgauge-v33";
 const SHELL = ["./", "./index.html", "./manifest.json", "./icon-192.png", "./icon-512.png"];
 
 self.addEventListener("install", (e) => {
   self.skipWaiting();                                   // 新 SW 立即接管
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
+  // ⚠ 這裡【不准】接 `.catch(() => {})`。
+  //    `addAll` 是全有全無,部署傳播中任何一個 shell 檔短暫抓不到就整批 reject。
+  //    吞掉它 = 對瀏覽器謊稱「裝好了」:這個版本帶著【空的】快取被啟用,
+  //    而 install 一個版本只跑一次 —— 那個使用者在下次 CACHE +1 之前
+  //    永遠沒有離線 shell,畫面上沒有任何症狀(`實測` 2026-11-03 命中過一次)。
+  //
+  //    讓它 reject,規格就會把這個新 worker 丟掉:舊版 SW 與它的快取照常服務,
+  //    而 index.html 每次載入都會 register(),下一次開頁面就自動重試。
+  //    代價:SHELL 裡若有【永久】不存在的檔案,新版本會永遠裝不起來 ——
+  //    那由 test_every_shell_file_exists 擋在 CI。
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
 });
 
 self.addEventListener("activate", (e) => {
@@ -84,11 +94,11 @@ self.addEventListener("fetch", (e) => {
           return res;
         })
         // 離線 → 先找這個網址、再退回離線首頁。
-        // ⚠ 最後那個 `|| Response.error()` 不是裝飾:install 的 addAll 是原子的,
-        //    而它整批失敗時 `.catch(() => {})` 會無聲吞掉 —— 於是「使用者第一次
-        //    開 PWA 時就離線」或「Pages 部署空窗期」會留下一個【完全空的快取】。
-        //    那時兩次 match 都是 undefined,respondWith 就收到 Promise<undefined>,
-        //    而規格說那不是 Response 就直接算網路錯誤。
+        // ⚠ 最後那個 `|| Response.error()` 不是裝飾:快取可能是空的。
+        //    install 失敗已經不會再留下空快取(2026-11-09 起 reject 而非吞掉),
+        //    但瀏覽器仍會因儲存空間壓力驅逐快取、使用者也會自己清 —— SW 還在,
+        //    快取沒了。那時兩次 match 都是 undefined,respondWith 就收到
+        //    Promise<undefined>,而規格說那不是 Response 就直接算網路錯誤。
         //    分支 ③ 本來就有這層兜底,② 沒有 —— 兩個分支不一致遲早會變成 bug。
         //    (2026-10-19 由 sw_bridge 的 navigate_offline_no_shell 實測到。)
         .catch(() =>

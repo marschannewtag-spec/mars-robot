@@ -133,8 +133,19 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status,
   const listeners = load(cachesObj, net);
 
   // 先讓 install 把 shell 放進去,重現真實的初始狀態
+  //
+  // ⚠ 要記下 waitUntil 那個 promise 是 resolve 還是 reject —— 那是瀏覽器
+  //   唯一看得到的「install 成功了沒」。原本這裡 `.then(done, done)` 把兩者
+  //   當成同一件事,於是「install 失敗卻回報成功」這個 bug 在橋接器裡
+  //   根本不是一個可觀測量,只能從「快取是空的」間接推。
+  //   (2026-11-09:那正是 sw.js 的 `.catch(() => {})` 做的事。)
+  let installOutcome = null;
   for (const fn of listeners.install || []) {
-    await new Promise((done) => fn({ waitUntil: (p) => Promise.resolve(p).then(done, done) }));
+    await new Promise((done) => fn({
+      waitUntil: (p) => Promise.resolve(p).then(
+        () => { installOutcome ??= "resolved"; done(); },
+        () => { installOutcome = "rejected"; done(); }),
+    }));
   }
   phase = status;
   fetchLog.length = 0;          // install 的 addAll 也走 net,那幾次不算
@@ -163,6 +174,7 @@ async function dispatchFetch({ url, mode = "no-cors", method = "GET", status,
   const name = [...cachesObj.stores.keys()][0];
   const after = [...cachesObj.stores.get(name).keys()];
   return {
+    installOutcome,
     intercepted: responded !== null,
     status: outStatus,
     respType,
@@ -211,5 +223,11 @@ console.log(JSON.stringify({
     // ② 離線導覽 + 連 install 都失敗(快取全空)→ 仍然不得收到 undefined
     navigate_offline_no_shell: await dispatchFetch({
       url: ORIGIN + "/", mode: "navigate", status: 0, installStatus: 0 }),
+
+    // ── install 本身 ─────────────────────────────────────────────────────
+    // 部署傳播中,SHELL 裡某個檔案短暫 404 —— 網路是通的,只是那一刻抓不到。
+    // 和上面的「離線」是不同的失敗:addAll 對非 2xx 一樣整批 reject。
+    install_404: await dispatchFetch({
+      url: ORIGIN + "/", mode: "navigate", status: 200, installStatus: 404 }),
   },
 }, null, 1));

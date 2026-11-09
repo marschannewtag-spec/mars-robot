@@ -3206,3 +3206,69 @@ const vixTag = (data.vixLiveAt?data.vixLiveAt+" ":"")+(data.vixLive ? "盤中" :
    這個 repo 的老問題又來一次:判準對準了形狀,不是宣稱。
 3. **橋接器綠 ≠ 使用者走的那條路綠。** 每多一支只跑片段的橋接器,
    就多一段「兩邊都測到了,中間沒人管」的接縫。
+
+### install 失敗了,卻對瀏覽器說「裝好了」(2026-11-09)
+
+`sw.js` 的 install 寫成:
+
+```js
+e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
+```
+
+`addAll` 是全有全無,部署傳播中任何一個 shell 檔短暫抓不到就整批 reject ——
+而那個 `.catch` 把它變成 resolve。瀏覽器只看得到 waitUntil 的結果,於是這個
+版本**帶著空的快取被啟用**。install 一個版本只跑一次,所以那個使用者在下次
+`CACHE` +1 之前永遠沒有離線 shell。畫面上沒有任何症狀:線上時分支 ② 是網路
+優先,一切正常;只有離線打開時才會發現打不開。
+
+`實測`(2026-11-03):命中過一次,用不同的 script URL 強迫 install 重跑就正常了。
+當時記成「已知未修」,寫在交接文件裡。
+
+#### 為什麼既有的測試沒抓到
+
+`sw_bridge.mjs` 其實早就造得出「install 失敗」(2026-10-19 把假的 `addAll`
+改成真的走網路之後),`navigate_offline_no_shell` 也真的走到了空快取。
+但橋接器派送 install 時寫的是:
+
+```js
+waitUntil: (p) => Promise.resolve(p).then(done, done)
+```
+
+**resolve 與 reject 被當成同一件事。** 於是「install 有沒有把失敗傳出去」
+不是一個可觀測量 —— 測試只能看到它的下游後果(快取是空的),
+而且還把那個後果當成**要兜底的正常狀態**,在分支 ② 補了 `Response.error()`。
+那一層兜底是對的,但它處理的是症狀;病根在 install,而沒有人在量 install。
+
+#### 補了什麼
+
+- 橋接器記下 `installOutcome`(`resolved` / `rejected`),新增 `install_404`
+  情境(網路通、shell 檔 404 —— 與離線是不同的失敗)。
+- `test_a_failed_install_is_reported_to_the_browser`(離線、404 兩種)+
+  控制組 `test_a_successful_install_is_still_reported_as_success`。
+- `sw.js` 拿掉那個 catch;`CACHE` v32 → **v33**,讓 v32 已經中招的使用者
+  重新 install 一次(否則他們的空快取會一直留著)。
+
+`實測`,配對突變:
+
+| `sw.js` 的 install | 網路正常 | 404 | 離線 | 結果 |
+|---|---|---|---|---|
+| 接 `.catch(() => {})`(原本) | resolved | **resolved** | **resolved** | 新測試紅 |
+| 無條件 `Promise.reject()` | **rejected** | rejected | rejected | 控制組紅 |
+| 修好的版本 | resolved | rejected | rejected | 全綠 |
+
+#### 代價,以及擋住它的那條測試
+
+reject 之後,SHELL 若列了一個**永久**不存在的檔案,新版 SW 就永遠裝不起來,
+使用者一直停在舊版 —— 一樣沒有症狀。暫時抓不到會自己好,永久不存在不會。
+`test_every_shell_file_exists` 因此從「好習慣」變成承重的那一條。
+
+`推論`(未在真的瀏覽器實測):「reject → 新 worker 被丟棄 → 下次 `register()`
+重試」是 Service Worker 規格的行為,`index.html` 每次載入都呼叫 `register()`。
+瀏覽器窗格不讓本機 SW 註冊,所以和 2026-10-26 那條一樣,這一段只有規格與
+橋接器,沒有真機。
+
+#### 教訓
+
+> **一個把成功與失敗收斂成同一個回呼的測試替身,會讓「吞掉錯誤」這類 bug
+> 在測試裡不存在。** 替身要保留真實介面上的每一個分岔 —— 瀏覽器分得出
+> resolve 與 reject,假的 waitUntil 也必須分得出來。

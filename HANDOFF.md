@@ -142,17 +142,31 @@ GitHub 帳號**時才要重設。
 
 ## 6. 目前的狀態(2026-11-09)
 
-- `main` 最新:PR #26 合併(盤中 VIX 報價的時刻顯示)
-- PWA 快取版本:`cwgauge-v32`
+- `main` 最新:PR #29 合併(sw.js install 失敗不再被吞掉)
+- PWA 快取版本:`cwgauge-v33`
 - 五支 workflow 全部跑在 `ubuntu-26.04`,`actions/*` 都在 Node 24 那一代
 - 分支只剩 `main` 與 `ops-data`
 
-### 已知、還沒處理的一件事
+### 交接時記下的已知問題:已修(PR #29)
 
-`sw.js` 的 `install` 把 `cache.addAll()` 的失敗整個 `catch(() => {})` 吞掉。
-`addAll` 是全有全無,部署傳播中任何一個 shell 檔案短暫抓不到,整組就失敗 ——
-而 `install` 一個版本只跑一次,於是那個使用者在**下次版本號 +1 之前永遠沒有
-shell 快取**,離線打不開,畫面上沒有任何症狀。
+`sw.js` 的 `install` 原本把 `cache.addAll()` 的失敗 `catch(() => {})` 吞掉,
+於是部署那幾秒第一次載入的使用者會帶著空的快取被啟用,下次版本號 +1 之前
+離線都打不開。現在 install 會 reject,瀏覽器丟掉那個新 worker、下次開頁面重試;
+`CACHE` 升到 v33 讓已中招的使用者重裝一次。經過與測試見
+`ops/POSTMORTEMS.md` 的 2026-11-09 那條。
 
-`實測`(2026-11-03):命中過一次,用不同的 script URL 強迫 install 重跑就正常了。
-命中條件很窄(要剛好在部署那幾秒第一次載入),但後果是持續的。**還沒修。**
+### 新機器實際接手時踩到的(2026-11-09,Windows 11)
+
+照第 2 節的三行指令,在一台全新的 Windows 上實際跑過一次,**`實測` 619 → 621
+passed、1 skipped**(skip 的是 `signals.json`,不進版控,CI 上同樣 skip)。
+三行指令本身沒問題,卡住的都是指令**之前**的東西:
+
+- **沒有 Git。** `winget install Git.Git` 與安裝程式都可能失敗(下載 504、
+  系統安裝要 UAC)。免安裝的 PortableGit 解壓到 `%LOCALAPPDATA%\Programs\Git`,
+  把 `cmd\` 與 `bin\` 加進使用者 PATH 即可 —— `bin\` 才有測試要的 `bash`。
+- **`python` 是 Microsoft Store 的空殼。** 已經裝了 Python 但沒加進 PATH 時,
+  `python` 會指向 `WindowsApps\python.exe` 並叫你去 Store。用 `py -0p` 找出
+  真正的路徑,把它排在使用者 PATH 的 `WindowsApps` **前面**。
+- **PortableGit 的預設 credential helper 是 `helper-selector`**,第一次 push 會卡在
+  「Cannot prompt」。設 `git config --global credential.helper manager`,
+  然後在互動式終端機裡 push 一次登入。
