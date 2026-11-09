@@ -1149,5 +1149,14 @@ pip install -r ops/requirements.txt -r ops/requirements-test.txt
 反過來單獨 +1(沒動 `index.html`)是安全的,效果是強制清一次所有使用者的快取 ——
 修掉快取污染類的問題時就該這樣做,否則舊的壞條目會留在使用者機器上。
 
+`sw.js` 的 `install` **不准吞掉 `addAll` 的失敗**(不准接 `.catch(() => {})`)。
+吞掉 = 對瀏覽器謊稱裝好了,這個版本帶著空的快取被啟用,而 install 一個版本只跑
+一次 —— 下次 +1 之前那個使用者都沒有離線 shell。讓它 reject,瀏覽器會丟掉這個
+新 worker、保留舊的,下次開頁面自動重試。由
+`tests/test_sw.py::test_a_failed_install_is_reported_to_the_browser`(離線與 404 兩種)
+與它的控制組 `test_a_successful_install_is_still_reported_as_success` 一起釘住。
+代價是 SHELL 若列了**永久**不存在的檔案,新版會永遠裝不起來 ——
+`test_every_shell_file_exists` 因此是承重的,不是裝飾。
+
 黃金基準真的該變時(例如刻意改了策略)→ 重新產生 `tests/fixtures/golden_*`,
 並在 commit 訊息裡寫清楚**為什麼**數字該變。基準漂移若沒有理由,那就是 bug。

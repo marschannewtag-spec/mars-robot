@@ -189,8 +189,10 @@ def test_non_get_is_not_intercepted(run: dict) -> None:
 def test_every_shell_file_exists(sw_src: str) -> None:
     """`addAll` 是**原子**的:SHELL 裡少一個檔,整批就 reject。
 
-    而 install 的 `.catch(() => {})` 會把它吞掉 —— 於是 SW 註冊成功、
-    版本號也對,離線卻完全不能用,沒有任何錯誤訊息。
+    2026-11-09 起 install 會把那個 reject 傳給瀏覽器(而不是吞掉),
+    所以這條的份量變重了:SHELL 列了一個**永久**不存在的檔案,
+    新版 SW 就**永遠裝不起來** —— 使用者一直停在舊版 SW,沒有任何錯誤訊息。
+    暫時抓不到會自己重試;永久不存在只有這裡擋得住。
     """
     m = re.search(r"const SHELL\s*=\s*\[(.*?)\]", sw_src, re.DOTALL)
     assert m, "找不到 SHELL"
@@ -198,7 +200,7 @@ def test_every_shell_file_exists(sw_src: str) -> None:
                if p and not (REPO_ROOT / p).exists()]
     assert not missing, (
         f"SHELL 列了不存在的檔案:{missing} —— addAll 是原子操作,"
-        f"一個失敗就整批不進快取,而 install 的 catch 會把它靜靜吞掉"
+        f"一個失敗就整批 reject,這個版本的 SW 會永遠裝不起來"
     )
 
 
@@ -256,9 +258,11 @@ def test_offline_navigation_falls_back_to_the_offline_homepage(run: dict) -> Non
 
 
 def test_offline_navigation_with_an_empty_cache_is_not_undefined(run: dict) -> None:
-    """install 整批失敗(使用者第一次開就離線 / 部署空窗期)→ 快取是空的。
+    """SW 還在、快取卻是空的 → 分支 ② 仍不得收到 undefined。
 
-    `addAll` 是原子的,而 install 的 `.catch(() => {})` 會把失敗無聲吞掉。
+    2026-11-09 之前這是 install 失敗被吞掉的直接後果;現在 install 會 reject,
+    這個狀態改由「瀏覽器驅逐快取 / 使用者清掉 storage」造成。橋接器用
+    install 失敗來造出空快取,只是因為那是最容易做出來的方法。
     那時分支 ② 的兩次 match 都是 undefined,若沒有最後那層兜底,
     `respondWith()` 就會收到 `Promise<undefined>`。
 
@@ -269,6 +273,39 @@ def test_offline_navigation_with_an_empty_cache_is_not_undefined(run: dict) -> N
         f"respondWith() 收到了 undefined —— 分支 ② 缺少兜底:{s}"
     )
     assert s["respType"] == "error", f"應該回 Response.error():{s}"
+
+
+@pytest.mark.parametrize("case", ["navigate_offline_no_shell", "install_404"])
+def test_a_failed_install_is_reported_to_the_browser(run: dict, case: str) -> None:
+    """install 抓不到 shell → waitUntil 的 promise 必須 reject,不得被吞掉。
+
+    `install` 一個版本只跑一次。被吞掉的失敗在瀏覽器看來就是「裝好了」,
+    於是這個 SW 帶著一個【空的】快取被啟用,而且在下次 `CACHE` +1 之前
+    不會再試 —— 那個使用者離線打不開,畫面上沒有任何症狀。
+    (`實測` 2026-11-03:命中過一次,換一個 script URL 強迫 install 重跑才好。)
+
+    reject 的話,規格會把這個新 worker 丟掉:舊版 SW 和它的快取照常服務,
+    而 `index.html` 每次載入都呼叫 `register()`,下一次開頁面就會重試。
+
+    兩種失敗都要量:離線(fetch 拋例外)與部署傳播中的 404(網路通、檔案還沒到)。
+    """
+    s = run["scenarios"][case]
+    assert s["installOutcome"] == "rejected", (
+        f"{case}:install 沒抓到 shell,卻對瀏覽器回報成功"
+        f"(installOutcome={s['installOutcome']!r})。\n"
+        "這個版本會帶著空的快取被啟用,而且在 CACHE 版本號 +1 之前不會再試 —— "
+        "不要在 install 的 waitUntil 裡 catch 掉 addAll 的失敗。")
+
+
+def test_a_successful_install_is_still_reported_as_success(run: dict) -> None:
+    """控制組:證明上面那條量的是「失敗有沒有傳出去」,不是「install 永遠 reject」。
+
+    少了這一條,把 install 改成無條件 throw 也會讓上面綠燈 ——
+    那樣 SW 永遠裝不起來,PWA 從此沒有離線功能。
+    """
+    s = run["scenarios"]["navigate_200"]
+    assert s["installOutcome"] == "resolved", (
+        f"網路正常時 install 沒有成功:installOutcome={s['installOutcome']!r}")
 
 
 def test_the_bridge_really_can_fail_an_install(run: dict) -> None:
