@@ -1,10 +1,10 @@
 {
-  "date": "2026-11-10",
-  "high": 21.43,
-  "low": 19.71,
-  "close": 20.1,
-  "quote_time_et": "2026-11-10T15:08:31",
-  "generated_at": "2026-11-10T20:23:39+00:00",
+  "date": "2026-11-11",
+  "high": 18.74,
+  "low": 17.33,
+  "close": 17.48,
+  "quote_time_et": "2026-11-11T14:50:31",
+  "generated_at": "2026-11-11T20:05:39+00:00",
   "source": "https://cdn.cboe.com/api/global/delayed_quotes/quotes/_VIX.json",
   "note": "CBOE 延遲 15 分鐘報價。只有在日期嚴格晚於 vix_daily.csv 最後一天時才會被 PWA 接上去;日檔追上來之後它自動被忽略。"
 }
