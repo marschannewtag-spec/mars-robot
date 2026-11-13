@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "dependency-install",
-  "generated_at": "2026-11-12T02:36:03+00:00",
+  "generated_at": "2026-11-13T02:17:09+00:00",
   "phase": "success",
   "resolution_complete": true,
   "install_exit_code": 0,
@@ -19,7 +19,7 @@
   "run": {
     "commit": "f088c32acee0732cc7b5b07f585b3981050b9591",
     "workflow": "L1 每日資料健檢",
-    "run_id": "43142511366",
+    "run_id": "43351023777",
     "attempt": "1"
   },
   "distributions": {
