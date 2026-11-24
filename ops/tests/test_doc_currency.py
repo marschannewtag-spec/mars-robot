@@ -39,7 +39,11 @@ import pytest
 from conftest import OPS_ROOT, REPO_ROOT
 
 DOCS = ["ops/CLAUDE.md", "ops/POSTMORTEMS.md", "ops/SETUP.md",
-        "ops/DEPENDENCIES.md", "README.md"]
+        "ops/DEPENDENCIES.md", "README.md",
+        # 根目錄的 CLAUDE.md 是接手入口,會被 Claude Code 自動載入 ——
+        # 它替舊狀態背書的殺傷力比其他文件更大,因為沒有人會特地去讀它、
+        # 它是自己送上門的。所以它也要受這一組的約束。
+        "CLAUDE.md"]
 
 # `<路徑> 目前 N 行`
 CLAIM = re.compile(r"`([\w./-]+\.\w+)\s+目前\s+([0-9,]+)\s*行`")
