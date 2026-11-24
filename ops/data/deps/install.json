@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "kind": "dependency-install",
-  "generated_at": "2026-11-23T02:04:11+00:00",
+  "generated_at": "2026-11-24T05:40:59+00:00",
   "phase": "success",
   "resolution_complete": true,
   "install_exit_code": 0,
@@ -19,12 +19,12 @@
   "run": {
     "commit": "f088c32acee0732cc7b5b07f585b3981050b9591",
     "workflow": "L1 每日資料健檢",
-    "run_id": "45098038493",
+    "run_id": "45334986890",
     "attempt": "1"
   },
   "distributions": {
     "certifi": "2026.11.20",
-    "charset-normalizer": "3.5.2",
+    "charset-normalizer": "3.5.3",
     "idna": "3.20",
     "numpy": "2.5.5",
     "pandas": "2.3.3",
@@ -37,6 +37,6 @@
     "urllib3": "2.8.0"
   },
   "n_distributions": 12,
-  "dedupe_key": "combo:473632047951a237",
+  "dedupe_key": "combo:a0a15ff0f206cde9",
   "error": null
 }
