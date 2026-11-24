@@ -17,6 +17,8 @@
 | `icon-192.png` / `icon-512.png` | App 圖示 |
 | `ops/` | 維運專案:訊號引擎(真理來源)、資料管線、測試、健檢與年度報告 |
 | `ops/pine/` | TradingView 版指標 + [執行層驗證步驟](ops/pine/README.md) |
+| [`HANDOFF.md`](HANDOFF.md) | **換一台電腦接手**:環境、安裝、不在 repo 裡的東西、第一天該讀什麼 |
+| [`CODEX.md`](CODEX.md) | **給非 Claude 的 AI 代理的維護契約**:哪些能改、哪些改了會讓工具靜默說謊 |
 
 ---
 
